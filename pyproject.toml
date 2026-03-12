@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-runtime-framework"
+version = "0.1.0"
+description = "Reusable Agent runtime framework with an integrated graph execution module."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openai",
+  "pydantic",
+  "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["agent_runtime_framework*"]
