@@ -82,24 +82,48 @@ def _normalize_llm_intent(parsed: dict, user_input: str) -> DesktopIntent | None
 
 def _interpret_with_rules(user_input: str) -> DesktopIntent:
     text = user_input.strip()
-    if "列出" in text:
-        return DesktopIntent(user_input=text, action="list")
+    if any(marker in text for marker in ("列出", "列一下", "有哪些文件", "有什么文件")):
+        return DesktopIntent(
+            user_input=text,
+            action="list",
+            target_name=_extract_target_name(text, action="list"),
+        )
     if "总结" in text or "总结一下" in text:
-        return DesktopIntent(user_input=text, action="summarize", target_name=_extract_target_name(text))
+        return DesktopIntent(user_input=text, action="summarize", target_name=_extract_target_name(text, action="summarize"))
     if "读取" in text or "看" in text:
         return DesktopIntent(
             user_input=text,
             action="read",
-            target_name=_extract_target_name(text),
+            target_name=_extract_target_name(text, action="read"),
             use_last_focus=("刚才" in text or "那个文件" in text or "上一个" in text),
         )
     return DesktopIntent(user_input=text, action="list")
 
 
-def _extract_target_name(text: str) -> str | None:
-    for marker in ("读取", "总结", "再看", "看", "一下", "刚才那个文件"):
+def _extract_target_name(text: str, *, action: str) -> str | None:
+    for marker in (
+        "读取",
+        "总结",
+        "再看",
+        "看",
+        "列出",
+        "列一下",
+        "一下",
+        "刚才那个文件",
+        "都有哪些文件",
+        "有哪些文件",
+        "有什么文件",
+        "下面",
+        "目录",
+        "吗",
+        "呢",
+        "可以给我",
+        "我想知道",
+    ):
         text = text.replace(marker, "")
-    cleaned = text.strip().strip("。")
+    cleaned = " ".join(text.split()).strip().strip("。？！?!.，,").strip()
+    if action == "list" and cleaned in {"当前", "当前目录", "这个", "这个目录"}:
+        return None
     return cleaned or None
 
 
@@ -130,8 +154,6 @@ def _resolve(intent: DesktopIntent, context: ApplicationContext) -> list[Resourc
     )
     if hints.use_last_focus and snapshot.focused_resources:
         return list(snapshot.focused_resources)
-    if hints.use_default_directory:
-        return [default_directory]
     resolved = context.resource_resolver.resolve(
         ResolveRequest(
             user_input=intent.user_input,

@@ -65,6 +65,16 @@ from agent_runtime_framework.memory import (
     SessionSnapshot,
     WorkingMemory,
 )
+from agent_runtime_framework.models import (
+    AuthSession,
+    InMemoryCredentialStore,
+    ModelProfile,
+    ModelRegistry,
+    ModelRouter,
+    ModelRuntime,
+    OpenAICompatibleProvider,
+    resolve_model_runtime,
+)
 from agent_runtime_framework.observability import InMemoryRunObserver, RunEvent, RunObserver
 from agent_runtime_framework.policy import PermissionLevel, PolicyDecision, SimpleDesktopPolicy
 from agent_runtime_framework.resources import (
@@ -111,7 +121,9 @@ __all__ = [
     "GraphExecutor",
     "GraphResult",
     "GraphValidationError",
+    "AuthSession",
     "InMemoryIndexMemory",
+    "InMemoryCredentialStore",
     "InMemoryResourceIndex",
     "InMemoryRunObserver",
     "InMemorySessionMemory",
@@ -156,6 +168,11 @@ __all__ = [
     "execute_tool_call",
     "LocalFileResourceRepository",
     "LocalResourceResolver",
+    "ModelProfile",
+    "ModelRegistry",
+    "ModelRouter",
+    "ModelRuntime",
+    "OpenAICompatibleProvider",
     "ResolveRequest",
     "Resource",
     "ResourceIndex",
@@ -163,4 +180,5 @@ __all__ = [
     "ResourceRef",
     "ResourceRepository",
     "ResourceResolver",
+    "resolve_model_runtime",
 ]

@@ -9,6 +9,7 @@ from agent_runtime_framework.assistant.approval import ApprovalManager, Approval
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry
 from agent_runtime_framework.assistant.session import AssistantSession, ExecutionPlan, PlannedAction
 from agent_runtime_framework.assistant.skills import SkillRegistry
+from agent_runtime_framework.models import resolve_model_runtime
 from agent_runtime_framework.runtime import parse_structured_output
 
 
@@ -195,8 +196,8 @@ class AgentLoop:
             for capability in capabilities
         )
         selected = parse_structured_output(
-            self.context.application_context.llm_client,
-            model=self.context.application_context.llm_model,
+            runtime.client if (runtime := resolve_model_runtime(self.context.application_context, "capability_selector")) is not None else self.context.application_context.llm_client,
+            model=runtime.profile.model_name if runtime is not None else self.context.application_context.llm_model,
             system_prompt=(
                 "你是桌面 AI 助手的 capability selector。"
                 "请只输出合法 JSON，字段为 capability_name。"

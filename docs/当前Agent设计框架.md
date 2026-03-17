@@ -114,7 +114,63 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 
 这使得 MCP 工具已经具备“可发现 schema”能力，而不是只能以静态回调形式存在。
 
-## 6. 当前桌面能力如何挂进来
+## 6. 模型接入层设计
+
+当前框架已经开始使用 LLM，但还没有独立的“模型接入层”。后续为了支持：
+
+- 用户选择使用哪个模型
+- 同时接入多个 provider
+- 用户为不同 provider 做 auth 登录
+- conversation / planner / selector / summarizer 使用不同模型
+
+需要把模型能力从 `ApplicationContext.llm_client` 这种单点字段，提升为一个单独子系统。
+
+建议新增一个 `models/` 或 `providers/llm/` 模块，核心对象包括：
+
+- `ModelProvider`
+- `ModelRegistry`
+- `ModelProfile`
+- `AuthSession`
+- `CredentialStore`
+- `ModelRouter`
+
+职责划分建议如下：
+
+- `ModelProvider`
+  负责对接具体厂商，如 OpenAI、Anthropic、Gemini、OpenRouter 或本地模型网关。
+
+- `ModelRegistry`
+  负责注册所有可用 provider 与模型清单，并暴露统一查询接口。
+
+- `ModelProfile`
+  负责描述单个模型的语义属性，例如：
+  - `provider`
+  - `model_name`
+  - `display_name`
+  - `context_window`
+  - `supports_tools`
+  - `supports_vision`
+  - `cost_level`
+  - `latency_level`
+  - `reasoning_level`
+  - `auth_requirement`
+
+- `AuthSession`
+  负责描述用户与某个 provider 的登录状态，而不是把 API key 直接散落在 application config 里。
+
+- `CredentialStore`
+  负责安全存储 provider 凭据。桌面端阶段建议优先对接系统 keychain，而不是明文配置。
+
+- `ModelRouter`
+  负责把不同子任务分配给不同模型，例如：
+  - 对话走 conversation model
+  - capability selector 走 cheap-fast model
+  - planner / reviewer 走 stronger reasoning model
+  - summarize 走 long-context model
+
+这层的关键点不是“多接几个模型”，而是让模型成为框架中的一级资源，而不是一个散落在各处的 SDK client。
+
+## 7. 当前桌面能力如何挂进来
 
 当前桌面内容能力仍由 `desktop_content_application` 承担，但它现在只是 capability 体系中的一个实现，而不再是整个系统的顶层入口。
 
@@ -126,7 +182,7 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 
 当前 Agent 会把它作为 `desktop_content` capability 注册进 `CapabilityRegistry`，然后由 `AgentLoop` 选择是否调用。
 
-## 7. 当前设计的边界
+## 8. 当前设计的边界
 
 当前 Agent 框架已经具备：
 
@@ -136,6 +192,7 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - skills 插槽
 - MCP 插槽
 - 桌面内容 capability
+- conversation capability
 - LLM-first capability selector
 - approval / resume 骨架
 
@@ -145,5 +202,6 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - 统一 artifact 系统
 - 更强的 planner / reviewer 结构化 LLM 版本
 - 会话级 MCP 生命周期治理
+- 独立的模型注册 / 认证 / 路由层
 
-因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但深度智能编排仍偏薄”的阶段。
+因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但模型基础设施与深度智能编排仍偏薄”的阶段。

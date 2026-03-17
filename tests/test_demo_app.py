@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
@@ -41,3 +42,58 @@ def test_demo_assets_are_loadable():
     assert "Desktop Assistant Demo" in html
     assert "fetchSession" in script
     assert ":root" in css
+
+
+def test_demo_assistant_app_exposes_model_state_and_selection(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    before = app.models_payload()
+    auth = app.authenticate_provider("openai", {"api_key": "test-key"})
+    selected = app.select_model("conversation", "openai", "gpt-4.1-mini")
+
+    assert before["providers"]
+    assert auth["auth_session"]["authenticated"] is True
+    assert selected["routes"]["conversation"]["model_name"] == "gpt-4.1-mini"
+
+
+def test_demo_assistant_app_creates_default_config_center(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = create_demo_assistant_app(workspace)
+    config = app.config_payload()
+
+    assert config["providers"][0]["provider"] == "dashscope"
+    assert config["routes"]["conversation"]["model_name"] == "qwen3.5-plus"
+    assert (workspace / ".arf_demo_config.json").exists()
+
+
+def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    result = app.update_config(
+        {
+            "providers": {
+                "dashscope": {
+                    "api_key": "sk-test",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                }
+            },
+            "routes": {
+                "conversation": {
+                    "provider": "dashscope",
+                    "model_name": "qwen-plus",
+                }
+            },
+        }
+    )
+
+    persisted = json.loads((workspace / ".arf_demo_config.json").read_text(encoding="utf-8"))
+
+    assert result["config"]["routes"]["conversation"]["model_name"] == "qwen-plus"
+    assert result["models"]["routes"]["conversation"]["model_name"] == "qwen-plus"
+    assert persisted["providers"]["dashscope"]["api_key"] == "sk-test"

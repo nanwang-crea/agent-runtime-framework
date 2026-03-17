@@ -60,6 +60,24 @@ def test_desktop_application_lists_directory(tmp_path: Path):
     assert "b.txt" in result.final_answer
 
 
+def test_desktop_application_lists_named_subdirectory_instead_of_root(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "root.txt").write_text("root", encoding="utf-8")
+    target_dir = workspace / "agent_runtime_framework"
+    target_dir.mkdir()
+    (target_dir / "sub.py").write_text("print('ok')", encoding="utf-8")
+
+    app = create_desktop_content_application()
+    runner = ApplicationRunner(app, _build_context(workspace))
+
+    result = runner.run("可以给我列一下 agent_runtime_framework 下面都有哪些文件吗？")
+
+    assert result.status == "completed"
+    assert "sub.py" in result.final_answer
+    assert "root.txt" not in result.final_answer
+
+
 def test_desktop_application_reads_file_after_follow_up_reference(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -16,15 +16,20 @@ from agent_runtime_framework.assistant import (
     route_default_capability,
 )
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
+from agent_runtime_framework.models import InMemoryCredentialStore, ModelProfile, ModelRegistry, ModelRouter, OpenAICompatibleProvider
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
+from agent_runtime_framework.demo.config import DemoConfigStore, config_payload
 
 
 @dataclass(slots=True)
 class DemoAssistantApp:
     workspace: Path
     context: AssistantContext
+    model_registry: ModelRegistry
+    model_router: ModelRouter
+    config_store: DemoConfigStore
     _pending_tokens: dict[str, Any]
 
     def chat(self, message: str) -> dict[str, Any]:
@@ -58,6 +63,83 @@ class DemoAssistantApp:
                 for turn in session.turns
             ],
         }
+
+    def models_payload(self) -> dict[str, Any]:
+        providers: list[dict[str, Any]] = []
+        for provider_name in self.model_registry.provider_names():
+            providers.append(
+                {
+                    "provider": provider_name,
+                    "authenticated": bool(self.model_registry.auth_session(provider_name) and self.model_registry.auth_session(provider_name).authenticated),
+                    "auth_session": self.model_registry.auth_session(provider_name).as_dict() if self.model_registry.auth_session(provider_name) else None,
+                    "models": [
+                        profile.as_dict()
+                        for profile in self.model_registry.list_models(provider_name)
+                    ],
+                }
+            )
+        return {
+            "providers": providers,
+            "routes": self.model_router.routes_payload(),
+        }
+
+    def config_payload(self) -> dict[str, Any]:
+        return config_payload(self.config_store.load_or_create(), path=self.config_store.path)
+
+    def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        updated = self.config_store.update(payload)
+        self._apply_config(updated)
+        return {
+            "config": config_payload(updated, path=self.config_store.path),
+            "models": self.models_payload(),
+        }
+
+    def authenticate_provider(self, provider_name: str, credentials: dict[str, Any]) -> dict[str, Any]:
+        session = self.model_registry.authenticate(provider_name, credentials)
+        self.config_store.update(
+            {
+                "providers": {
+                    provider_name: {
+                        "api_key": str(credentials.get("api_key") or ""),
+                        "base_url": str(credentials.get("base_url") or ""),
+                    }
+                }
+            }
+        )
+        return {
+            "auth_session": session.as_dict(),
+            "config": self.config_payload(),
+            **self.models_payload(),
+        }
+
+    def select_model(self, role: str, provider: str, model_name: str) -> dict[str, Any]:
+        self.model_router.set_route(role, provider=provider, model_name=model_name)
+        self.config_store.update(
+            {
+                "routes": {
+                    role: {
+                        "provider": provider,
+                        "model_name": model_name,
+                    }
+                }
+            }
+        )
+        return self.models_payload()
+
+    def _apply_config(self, config: dict[str, Any]) -> None:
+        for provider_name, provider_config in (config.get("providers") or {}).items():
+            api_key = str((provider_config or {}).get("api_key") or "").strip()
+            base_url = str((provider_config or {}).get("base_url") or "").strip()
+            if api_key:
+                self.model_registry.authenticate(
+                    provider_name,
+                    {"api_key": api_key, "base_url": base_url},
+                )
+        for role, route in (config.get("routes") or {}).items():
+            provider = str((route or {}).get("provider") or "").strip()
+            model_name = str((route or {}).get("model_name") or "").strip()
+            if provider and model_name:
+                self.model_router.set_route(role, provider=provider, model_name=model_name)
 
     def plan_history_payload(self) -> list[dict[str, Any]]:
         session = self.context.session
@@ -104,10 +186,41 @@ class DemoAssistantApp:
         }
 
 
-def create_demo_assistant_app(workspace: str | Path) -> DemoAssistantApp:
+def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, Any] | None = None) -> DemoAssistantApp:
     workspace_path = Path(workspace).expanduser().resolve()
     if not workspace_path.exists():
         raise FileNotFoundError(f"workspace does not exist: {workspace_path}")
+    config_store = DemoConfigStore(workspace_path / ".arf_demo_config.json")
+    model_registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    model_registry.register_provider(OpenAICompatibleProvider())
+    model_registry.register_provider(
+        OpenAICompatibleProvider(
+            provider_name="dashscope",
+            default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            available_models=[
+                ModelProfile(
+                    provider="dashscope",
+                    model_name="qwen3.5-plus",
+                    display_name="Qwen 3.5 Plus",
+                    cost_level="medium",
+                    latency_level="medium",
+                    reasoning_level="high",
+                    recommended_roles=["conversation", "capability_selector", "planner"],
+                ),
+                ModelProfile(
+                    provider="dashscope",
+                    model_name="qwen-plus",
+                    display_name="Qwen Plus",
+                    cost_level="low",
+                    latency_level="low",
+                    reasoning_level="medium",
+                    recommended_roles=["conversation", "capability_selector"],
+                ),
+            ],
+        )
+    )
+    model_router = ModelRouter(model_registry)
+    loaded_config = config_store.load_or_create(seed=seed_config)
     app_context = ApplicationContext(
         resource_repository=LocalFileResourceRepository([workspace_path]),
         session_memory=InMemorySessionMemory(),
@@ -115,6 +228,10 @@ def create_demo_assistant_app(workspace: str | Path) -> DemoAssistantApp:
         policy=SimpleDesktopPolicy(),
         tools=ToolRegistry(),
         config={"default_directory": str(workspace_path)},
+        services={
+            "model_registry": model_registry,
+            "model_router": model_router,
+        },
     )
     context = AssistantContext(
         application_context=app_context,
@@ -125,8 +242,13 @@ def create_demo_assistant_app(workspace: str | Path) -> DemoAssistantApp:
     )
     context.capabilities.register(create_conversation_capability())
     context.capabilities.register_application("desktop_content", create_desktop_content_application())
-    return DemoAssistantApp(
+    app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
+        model_registry=model_registry,
+        model_router=model_router,
+        config_store=config_store,
         _pending_tokens={},
     )
+    app._apply_config(loaded_config)
+    return app

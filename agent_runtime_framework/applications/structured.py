@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, TypeVar
 
 from agent_runtime_framework.applications.core import ApplicationContext
+from agent_runtime_framework.models import resolve_model_runtime
 from agent_runtime_framework.runtime import parse_structured_output
 
 
@@ -27,9 +28,10 @@ def run_stage_parser(
             return custom_value
 
     if llm_system_prompt and llm_user_prompt:
+        runtime = resolve_model_runtime(context, _role_for_stage(service_name))
         llm_value = parse_structured_output(
-            context.llm_client,
-            model=context.llm_model,
+            runtime.client if runtime is not None else context.llm_client,
+            model=runtime.profile.model_name if runtime is not None else context.llm_model,
             system_prompt=llm_system_prompt,
             user_prompt=llm_user_prompt,
             normalizer=normalizer,
@@ -39,3 +41,14 @@ def run_stage_parser(
             return llm_value
 
     return fallback()
+
+
+def _role_for_stage(service_name: str) -> str:
+    mapping = {
+        "intent_parser": "interpreter",
+        "resolver_parser": "resolver",
+        "planner_parser": "planner",
+        "executor_parser": "executor",
+        "composer_parser": "composer",
+    }
+    return mapping.get(service_name, service_name)

@@ -1,20 +1,27 @@
 import { FormEvent, useEffect, useState } from "react";
-import { fetchSession, respondApproval, sendMessage } from "./api";
-import type { AssistantResponse, PlanPayload, SessionPayload } from "./types";
+import { authenticateProvider, fetchConfig, fetchModels, fetchSession, respondApproval, selectModel, sendMessage, updateConfig } from "./api";
+import type { AssistantResponse, ConfigResponse, ModelsResponse, PlanPayload, SessionPayload } from "./types";
 
 const examples = ["列出当前目录", "读取 README.md", "总结 README.md"];
+const modelRoles = ["conversation", "capability_selector", "planner"];
 
 function App() {
   const [workspace, setWorkspace] = useState("");
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
+  const [models, setModels] = useState<ModelsResponse>({ providers: [], routes: {} });
+  const [config, setConfig] = useState<ConfigResponse>({ path: "", providers: [], routes: {} });
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
   const [pendingTokenId, setPendingTokenId] = useState<string | null>(null);
   const [approvalText, setApprovalText] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
 
   useEffect(() => {
     void loadSession();
+    void loadModels();
+    void loadConfig();
   }, []);
 
   async function loadSession() {
@@ -22,6 +29,16 @@ function App() {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
+  }
+
+  async function loadModels() {
+    const payload = await fetchModels();
+    setModels(payload);
+  }
+
+  async function loadConfig() {
+    const payload = await fetchConfig();
+    setConfig(payload);
   }
 
   function applyResponse(payload: AssistantResponse) {
@@ -54,6 +71,41 @@ function App() {
     }
     setStatus("running");
     applyResponse(await respondApproval(pendingTokenId, approved));
+  }
+
+  async function handleAuth(provider: string) {
+    const payload = await authenticateProvider(provider, apiKey, baseUrl);
+    setModels(payload);
+    await loadConfig();
+    setApiKey("");
+  }
+
+  async function handleModelSelect(role: string, provider: string, modelName: string) {
+    if (!provider || !modelName) {
+      return;
+    }
+    const payload = await selectModel(role, provider, modelName);
+    setModels(payload);
+    await loadConfig();
+  }
+
+  async function handleSaveConfig(provider: string, modelName: string) {
+    const payload = await updateConfig({
+      providers: {
+        [provider]: {
+          api_key: apiKey,
+          base_url: baseUrl,
+        },
+      },
+      routes: {
+        conversation: { provider, model_name: modelName },
+        capability_selector: { provider, model_name: modelName },
+        planner: { provider, model_name: modelName },
+      },
+    });
+    setConfig(payload.config);
+    setModels(payload.models);
+    setApiKey("");
   }
 
   return (
@@ -148,6 +200,112 @@ function App() {
             )}
           </div>
         </section>
+      </section>
+
+      <section className="card models-card">
+        <div className="card-head">
+          <h2>Model Center</h2>
+        </div>
+        <div className="config-summary">
+          <span>Config Path</span>
+          <code>{config.path || "加载中..."}</code>
+        </div>
+        <div className="models-grid">
+          <div className="provider-panel">
+            <h3>Config Center</h3>
+            {config.providers.map((provider) => (
+              <div key={`config-${provider.provider}`} className="provider-card">
+                <div className="provider-head">
+                  <strong>{provider.provider}</strong>
+                  <span className={`pill ${provider.api_key_set ? "ready" : "idle"}`}>
+                    {provider.api_key_set ? provider.api_key_preview : "not configured"}
+                  </span>
+                </div>
+                <p className="provider-meta">默认 base URL: {provider.base_url || "未配置"}</p>
+                <input
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={`${provider.provider} API key`}
+                />
+                <input
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder={provider.base_url || "base URL"}
+                />
+                <button type="button" className="primary" onClick={() => void handleSaveConfig(provider.provider, "qwen3.5-plus")}>
+                  保存为默认配置
+                </button>
+              </div>
+            ))}
+
+            <h3>Provider Auth</h3>
+            {models.providers.map((provider) => (
+              <div key={provider.provider} className="provider-card">
+                <div className="provider-head">
+                  <strong>{provider.provider}</strong>
+                  <span className={`pill ${provider.authenticated ? "ready" : "idle"}`}>
+                    {provider.authenticated ? "authenticated" : "not ready"}
+                  </span>
+                </div>
+                <p className="provider-meta">
+                  {provider.auth_session?.error_message || "通过 API key 完成 provider 登录。"}
+                </p>
+                <input
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={`${provider.provider} API key`}
+                />
+                <input
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder="可选 base URL"
+                />
+                <button type="button" className="primary" onClick={() => void handleAuth(provider.provider)}>
+                  登录 / 更新
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="routes-panel">
+            <h3>Role Routing</h3>
+            {modelRoles.map((role) => {
+              const selected = models.routes[role];
+              const provider = models.providers.find((item) => item.provider === selected?.provider) || models.providers[0];
+              return (
+                <div key={role} className="route-card">
+                  <label>{role}</label>
+                  <select
+                    value={provider?.provider || ""}
+                    onChange={(event) => {
+                      const nextProvider = models.providers.find((item) => item.provider === event.target.value);
+                      const nextModel = nextProvider?.models[0]?.model_name || "";
+                      void handleModelSelect(role, event.target.value, nextModel);
+                    }}
+                  >
+                    <option value="">选择 provider</option>
+                    {models.providers.map((item) => (
+                      <option key={item.provider} value={item.provider}>
+                        {item.provider}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={selected?.model_name || provider?.models[0]?.model_name || ""}
+                    onChange={(event) => void handleModelSelect(role, provider?.provider || "", event.target.value)}
+                  >
+                    <option value="">选择模型</option>
+                    {(provider?.models || []).map((model) => (
+                      <option key={`${provider?.provider}-${model.model_name}`} value={model.model_name}>
+                        {model.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </section>
     </main>
   );

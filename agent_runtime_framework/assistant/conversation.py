@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
+from agent_runtime_framework.models import resolve_model_runtime
 
 
 def create_conversation_capability(name: str = "conversation") -> CapabilitySpec:
@@ -46,17 +47,22 @@ def route_default_capability(user_input: str, _session: Any, registry: Any, _con
 
 
 def _run_conversation(user_input: str, context: Any, session: Any) -> str:
-    llm_client = context.application_context.llm_client
+    runtime = resolve_model_runtime(context.application_context, "conversation")
+    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
     if llm_client is not None and hasattr(llm_client, "chat"):
-        response = llm_client.chat.completions.create(
-            model=context.application_context.llm_model,
-            messages=_build_messages(user_input, session),
-            temperature=0.3,
-            max_tokens=400,
-        )
-        content = response.choices[0].message.content or ""
-        if content.strip():
-            return content.strip()
+        try:
+            response = llm_client.chat.completions.create(
+                model=model_name,
+                messages=_build_messages(user_input, session),
+                temperature=0.3,
+                max_tokens=400,
+            )
+            content = response.choices[0].message.content or ""
+            if content.strip():
+                return content.strip()
+        except Exception:
+            pass
     return _fallback_conversation_reply(user_input)
 
 

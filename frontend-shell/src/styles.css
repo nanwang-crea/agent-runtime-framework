@@ -25,7 +25,9 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input,
+select {
   font: inherit;
 }
 
@@ -95,6 +97,33 @@ h1 {
   display: grid;
   gap: 20px;
   grid-template-columns: 1.15fr 0.95fr;
+}
+
+.models-card {
+  margin-top: 20px;
+}
+
+.models-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.config-summary {
+  margin: 12px 0 18px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.config-summary span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .card {
@@ -197,6 +226,16 @@ textarea {
   background: rgba(255, 255, 255, 0.72);
 }
 
+input,
+select {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .composer .primary {
   margin-top: 12px;
 }
@@ -217,6 +256,42 @@ textarea {
 
 .timeline-card h3 {
   margin-bottom: 10px;
+}
+
+.provider-panel,
+.routes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.provider-card,
+.route-card {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.provider-meta {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.route-card label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
 }
 
 .timeline-step {
@@ -255,7 +330,8 @@ code {
 
 @media (max-width: 980px) {
   .masthead,
-  .content-grid {
+  .content-grid,
+  .models-grid {
     grid-template-columns: 1fr;
   }
 

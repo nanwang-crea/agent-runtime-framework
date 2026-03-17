@@ -26,15 +26,18 @@ def parse_structured_output(
     if llm_client is None or not hasattr(llm_client, "chat"):
         return None
 
-    response = llm_client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    try:
+        response = llm_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    except Exception:
+        return None
     raw_content = response.choices[0].message.content or ""
     try:
         parsed = json.loads(_extract_json_block(raw_content))
