@@ -11,7 +11,7 @@
 
 The first built-in application is `desktop_content_application`, which supports directory listing, file resolution, content reading, summary generation, and follow-up references based on session memory. Its intent interpretation is LLM-first when an `llm_client` is available in application context, with a lightweight rule fallback for offline or test-only usage. Structured stage resolution is shared through `run_stage_parser`, so interpret, resolve, plan, execute, and compose can all follow the same precedence: custom service override, then LLM structured parsing, then deterministic fallback. Concrete desktop actions are executed through `DesktopActionHandlerRegistry`, and repository grounding uses `ResolverPipeline`, so desktop-specific behavior is modular without pushing deterministic file operations into the LLM.
 
-The next-stage target is a Codex-style desktop AI assistant built on top of this foundation. Phase 1 of that target is a single-agent loop with skills and MCP extension slots. The framework now includes the first skeleton of that layer: assistant sessions, a unified capability registry, skill registration, static MCP provider slots, and an agent loop that can dispatch to application, skill, or MCP capabilities. This means the framework no longer stops at a single desktop content application and can now start evolving as a true assistant platform.
+The next-stage target is a Codex-style desktop AI assistant built on top of this foundation. Phase 1 of that target is a single-agent loop with skills and MCP extension slots. The framework now includes the first skeleton of that layer: assistant sessions, a unified capability registry, skill registration, discoverable MCP provider slots, and an agent loop that can dispatch to application, skill, or MCP capabilities. Capability selection is already LLM-first when a model is available, with triggered-skill fallback when no explicit selector is provided. Selector prompts now include capability metadata such as description, safety level, and input contract, so selection is no longer based on names alone. This means the framework no longer stops at a single desktop content application and can now start evolving as a true assistant platform.
 
 ## Layering
 
@@ -50,7 +50,7 @@ The current first version introduces these concepts:
 - `CapabilityRegistry`: a unified registry for local applications, local tools, skills, and MCP-exposed tools
 - `ApprovalManager`: a higher-level approval layer above low-level policy checks, used for user-facing confirmations
 
-The framework now treats `desktop_content_application` as the first built-in capability, not as the final shell for the whole assistant.
+The framework now treats `desktop_content_application` as the first built-in capability, not as the final shell for the whole assistant. `AgentLoop` already supports three selection layers: explicit selector override, LLM-first structured capability selection, and triggered-skill fallback.
 
 ## Capability System
 
@@ -70,6 +70,8 @@ This should be expressed through a common interface such as:
 - `CapabilityResult`
 - `CapabilityProvider`
 
+The current framework skeleton has already started this direction: `CapabilitySpec` now carries description, safety level, and input contract metadata that the agent loop can surface to the LLM selector.
+
 The important design rule is that skills and MCP integrations should not be bolted directly into `desktop.py` or any single application. They should register through the same capability registry that local desktop capabilities use.
 
 ## Skills and MCP
@@ -82,7 +84,9 @@ Skills should be modeled as structured assistant capabilities rather than free-f
 - tool or capability dependencies
 - output contract
 
-MCP integration should be modeled as an external capability provider. The framework should not hardcode one MCP server flow into the assistant loop. Instead, it should allow MCP providers to expose capabilities into the registry with metadata describing name, schema, safety level, and invocation contract.
+The current framework skeleton already supports the first part of this metadata model through trigger phrases, required capability declarations, and planner hints on `SkillSpec`.
+
+MCP integration should be modeled as an external capability provider. The framework should not hardcode one MCP server flow into the assistant loop. Instead, it should allow MCP providers to expose capabilities into the registry with metadata describing name, schema, safety level, and invocation contract. The current skeleton now supports discoverable MCP tools via `MCPToolSpec` and provider-side `list_tools()`.
 
 This leads to a layered capability selection order:
 

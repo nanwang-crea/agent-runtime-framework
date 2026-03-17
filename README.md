@@ -31,5 +31,7 @@ Key first-stage modules:
 `agent_runtime_framework.applications.run_stage_parser` builds on top of it so application stages can consistently use: service override -> LLM structured parsing -> deterministic fallback.
 Desktop-specific deterministic behavior is modularized through `ResolverPipeline` and `DesktopActionHandlerRegistry`.
 The assistant runtime provides `AssistantSession`, `CapabilityRegistry`, `AgentLoop`, `SkillRegistry`, and MCP provider slots so desktop capabilities can be composed into a Codex-style single-agent loop.
+`AgentLoop` now supports LLM-first structured capability selection with triggered-skill fallback, and `SkillRegistry` carries trigger phrases, required capability hints, and planner hints for later planning layers.
+`CapabilitySpec` now carries description, safety level, and input contract metadata, and MCP providers can expose discoverable tool schemas through `MCPToolSpec`.
 
 Reference architecture notes live in [docs/desktop-content-architecture.md](docs/desktop-content-architecture.md).

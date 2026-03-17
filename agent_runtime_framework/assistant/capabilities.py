@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent_runtime_framework.applications import ApplicationRunner, ApplicationSpec
@@ -14,6 +14,9 @@ class CapabilitySpec:
     name: str
     runner: CapabilityRunner
     source: str
+    description: str = ""
+    safety_level: str = "local"
+    input_contract: dict[str, Any] = field(default_factory=dict)
 
 
 class CapabilityRegistry:
@@ -28,7 +31,15 @@ class CapabilityRegistry:
             result = ApplicationRunner(spec, context.application_context).run(user_input)
             return result.final_answer
 
-        self.register(CapabilitySpec(name=name, runner=_runner, source="application"))
+        self.register(
+            CapabilitySpec(
+                name=name,
+                runner=_runner,
+                source="application",
+                description=f"Application capability: {name}",
+                safety_level="application",
+            )
+        )
 
     def register_skill_registry(self, skills: Any) -> None:
         for skill_name in skills.names():
@@ -41,16 +52,23 @@ class CapabilityRegistry:
                     name=f"skill:{skill_name}",
                     runner=runner,
                     source="skill",
+                    description=spec.description,
+                    safety_level="skill",
+                    input_contract={"trigger_phrases": list(spec.trigger_phrases)},
                 )
             )
 
     def register_mcp_provider(self, provider: Any) -> None:
-        for capability_name, runner in provider.capabilities().items():
+        for tool in provider.list_tools():
+            runner = tool.runner or (lambda user_input, context, session, _name=tool.name: f"mcp:{_name}")
             self.register(
                 CapabilitySpec(
-                    name=f"mcp:{capability_name}",
+                    name=f"mcp:{tool.name}",
                     runner=runner,
                     source="mcp",
+                    description=tool.description,
+                    safety_level=tool.safety_level,
+                    input_contract=dict(tool.input_schema),
                 )
             )
 
