@@ -47,11 +47,16 @@ def _handle_list(resources: list[ResourceRef], context: ApplicationContext, exec
     directory = resources[0]
     children = context.resource_repository.list_directory(directory)
     visible_children = children[:1] if execution_mode == "preview" else children
+    directories = [ref for ref in visible_children if ref.kind == "directory"]
+    files = [ref for ref in visible_children if ref.kind == "file"]
     return {
         "kind": "list",
         "focused_resources": [directory],
         "items": visible_children,
-        "text": "\n".join(ref.title for ref in visible_children),
+        "directory_name": directory.title,
+        "directories": directories,
+        "files": files,
+        "text": _format_list_result(directory.title, directories, files, execution_mode),
     }
 
 
@@ -89,3 +94,23 @@ def _handle_summarize(resources: list[ResourceRef], context: ApplicationContext,
         "focused_resources": [target],
         "text": summary,
     }
+
+
+def _format_list_result(
+    directory_name: str,
+    directories: list[ResourceRef],
+    files: list[ResourceRef],
+    execution_mode: str,
+) -> str:
+    total = len(directories) + len(files)
+    if total == 0:
+        return f"`{directory_name}` 下面当前是空的。"
+
+    parts = [f"`{directory_name}` 下面一共有 {total} 项内容。"]
+    if directories:
+        parts.append(f"目录：{', '.join(ref.title for ref in directories)}。")
+    if files:
+        parts.append(f"文件：{', '.join(ref.title for ref in files)}。")
+    if execution_mode == "preview" and total > 1:
+        parts.append("当前是预览模式，只展示了前面的内容。")
+    return "\n".join(parts)

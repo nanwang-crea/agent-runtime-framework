@@ -68,6 +68,14 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(app.chat(message))
                 return
+            if self.path == "/api/chat/stream":
+                payload = self._read_json()
+                message = str(payload.get("message") or "").strip()
+                if not message:
+                    self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_event_stream(app.stream_chat(message))
+                return
             if self.path == "/api/approve":
                 payload = self._read_json()
                 token_id = str(payload.get("token_id") or "").strip()
@@ -136,6 +144,19 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        def _send_event_stream(self, events) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            for event in events:
+                event_name = str(event.get("type") or "message")
+                payload = json.dumps(event, ensure_ascii=False)
+                self.wfile.write(f"event: {event_name}\n".encode("utf-8"))
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
 
     return DemoHandler
 

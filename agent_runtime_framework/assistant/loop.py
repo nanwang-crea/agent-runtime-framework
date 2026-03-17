@@ -27,6 +27,7 @@ class AgentLoopResult:
     status: str
     final_answer: str
     capability_name: str
+    execution_trace: list[dict[str, Any]] = field(default_factory=list)
     approval_request: ApprovalRequest | None = None
     resume_token: ResumeToken | None = None
 
@@ -112,10 +113,13 @@ class AgentLoop:
                     status="needs_approval",
                     final_answer=request.reason,
                     capability_name=capability.name,
+                    execution_trace=_plan_trace(plan),
                     approval_request=request,
                     resume_token=token,
                 )
-            last_answer = capability.runner(step.instruction, self.context, session)
+            runner_output = capability.runner(step.instruction, self.context, session)
+            normalized = _normalize_runner_output(runner_output)
+            last_answer = normalized["final_answer"]
             last_capability = capability.name
             step.status = "completed"
             step.observation = last_answer
@@ -124,6 +128,7 @@ class AgentLoop:
             status="completed",
             final_answer=last_answer,
             capability_name=last_capability,
+            execution_trace=_plan_trace(plan) + list(normalized.get("execution_trace", [])),
         )
 
     def _review_plan(self, plan: ExecutionPlan, session: AssistantSession) -> dict[str, Any]:
@@ -243,3 +248,28 @@ def _normalize_plan(goal: str, planned: Any) -> ExecutionPlan | None:
     if not steps:
         return None
     return ExecutionPlan(goal=goal, steps=steps)
+
+
+def _normalize_runner_output(output: Any) -> dict[str, Any]:
+    if isinstance(output, dict):
+        return {
+            "final_answer": str(output.get("final_answer") or output.get("text") or ""),
+            "execution_trace": list(output.get("execution_trace") or []),
+            "observations": list(output.get("observations") or []),
+        }
+    return {
+        "final_answer": str(output or ""),
+        "execution_trace": [],
+        "observations": [],
+    }
+
+
+def _plan_trace(plan: ExecutionPlan) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": f"plan:{index}",
+            "status": step.status,
+            "detail": f"{step.capability_name} -> {step.instruction}",
+        }
+        for index, step in enumerate(plan.steps)
+    ]

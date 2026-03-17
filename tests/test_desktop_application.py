@@ -56,6 +56,8 @@ def test_desktop_application_lists_directory(tmp_path: Path):
     result = runner.run("列出当前目录")
 
     assert result.status == "completed"
+    assert "下面一共有" in result.final_answer
+    assert "文件：" in result.final_answer
     assert "a.md" in result.final_answer
     assert "b.txt" in result.final_answer
 
@@ -76,6 +78,27 @@ def test_desktop_application_lists_named_subdirectory_instead_of_root(tmp_path: 
     assert result.status == "completed"
     assert "sub.py" in result.final_answer
     assert "root.txt" not in result.final_answer
+
+
+def test_desktop_application_uses_focused_directory_for_follow_up_list(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target_dir = workspace / "docs"
+    target_dir.mkdir()
+    (target_dir / "a.md").write_text("a", encoding="utf-8")
+    (workspace / "root.txt").write_text("root", encoding="utf-8")
+
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    runner = ApplicationRunner(app, context)
+
+    first = runner.run("列一下 docs 下面都有哪些文件")
+    second = runner.run("再列一下下面的文件")
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert "a.md" in second.final_answer
+    assert "root.txt" not in second.final_answer
 
 
 def test_desktop_application_reads_file_after_follow_up_reference(tmp_path: Path):

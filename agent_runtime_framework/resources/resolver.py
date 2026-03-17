@@ -47,7 +47,7 @@ class ResolverPipeline:
 
 def resolve_last_focus(request: ResolveRequest, _repository: ResourceRepository) -> list[ResourceRef]:
     text = request.user_input.strip()
-    if "刚才" in text or "上一个" in text or "那个文件" in text:
+    if "刚才" in text or "上一个" in text or "那个文件" in text or "下面" in text or "里面" in text:
         return list(request.last_focused)
     return []
 

@@ -19,6 +19,7 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["final_answer"] == "line one\nline two\nline three"
     assert payload["session"]["turns"][-1]["role"] == "assistant"
     assert payload["plan_history"]
+    assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
 
 
@@ -97,3 +98,17 @@ def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
     assert result["config"]["routes"]["conversation"]["model_name"] == "qwen-plus"
     assert result["models"]["routes"]["conversation"]["model_name"] == "qwen-plus"
     assert persisted["providers"]["dashscope"]["api_key"] == "sk-test"
+
+
+def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("你是谁？", chunk_size=8))
+
+    assert events[0]["type"] == "start"
+    assert any(event["type"] == "step" for event in events)
+    assert any(event["type"] == "delta" for event in events)
+    assert events[-1]["type"] == "final"
+    assert events[-1]["payload"]["status"] == "completed"

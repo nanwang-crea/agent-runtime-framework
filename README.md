@@ -58,6 +58,7 @@ The demo currently includes both a general `conversation` capability and the bui
 - authenticate a model provider
 - choose models for `conversation`, `capability_selector`, and `planner`
 - manage a local config center backed by `.arf_demo_config.json`
+- stream chat replies through the demo API
 
 For the current local workspace, the demo config center is seeded to use:
 

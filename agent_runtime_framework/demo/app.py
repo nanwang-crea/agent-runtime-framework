@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -38,6 +39,23 @@ class DemoAssistantApp:
         if result.resume_token is not None:
             self._pending_tokens[result.resume_token.token_id] = result.resume_token
         return payload
+
+    def stream_chat(self, message: str, *, chunk_size: int = 24):
+        yield {"type": "start", "message": message}
+        payload = self.chat(message)
+        for step in payload.get("execution_trace", []):
+            yield {"type": "step", "step": step}
+        final_answer = str(payload.get("final_answer") or "")
+        if not final_answer:
+            yield {"type": "final", "payload": payload}
+            return
+        for index in range(0, len(final_answer), chunk_size):
+            yield {
+                "type": "delta",
+                "delta": final_answer[index : index + chunk_size],
+            }
+            time.sleep(0.012)
+        yield {"type": "final", "payload": payload}
 
     def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
         token = self._pending_tokens.pop(token_id, None)
@@ -178,6 +196,7 @@ class DemoAssistantApp:
             "status": result.status,
             "final_answer": result.final_answer,
             "capability_name": result.capability_name,
+            "execution_trace": list(result.execution_trace),
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),

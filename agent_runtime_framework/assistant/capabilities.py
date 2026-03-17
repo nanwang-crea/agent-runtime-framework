@@ -6,7 +6,7 @@ from typing import Any, Callable
 from agent_runtime_framework.applications import ApplicationRunner, ApplicationSpec
 
 
-CapabilityRunner = Callable[[str, Any, Any], str]
+CapabilityRunner = Callable[[str, Any, Any], Any]
 
 
 @dataclass(slots=True)
@@ -32,9 +32,26 @@ class CapabilityRegistry:
         self._capabilities[spec.name] = spec
 
     def register_application(self, name: str, spec: ApplicationSpec) -> None:
-        def _runner(user_input: str, context: Any, session: Any) -> str:
+        def _runner(user_input: str, context: Any, session: Any) -> dict[str, Any]:
             result = ApplicationRunner(spec, context.application_context).run(user_input)
-            return result.final_answer
+            return {
+                "final_answer": result.final_answer,
+                "execution_trace": [
+                    {
+                        "name": step.name,
+                        "status": step.status,
+                        "detail": step.detail,
+                    }
+                    for step in result.steps
+                ],
+                "observations": [
+                    {
+                        "kind": observation.kind,
+                        "payload": dict(observation.payload),
+                    }
+                    for observation in result.observations
+                ],
+            }
 
         self.register(
             CapabilitySpec(

@@ -32,11 +32,18 @@ export type AssistantResponse = {
   status: string;
   final_answer: string;
   capability_name: string;
+  execution_trace: ExecutionTraceStep[];
   approval_request: ApprovalRequest | null;
   resume_token_id: string | null;
   session: SessionPayload;
   plan_history: PlanPayload[];
   workspace: string;
+};
+
+export type ExecutionTraceStep = {
+  name: string;
+  status: string;
+  detail: string | null;
 };
 
 export type SessionResponse = {

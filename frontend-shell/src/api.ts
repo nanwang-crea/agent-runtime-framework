@@ -1,4 +1,4 @@
-import type { AssistantResponse, ConfigResponse, ModelsResponse, SessionResponse } from "./types";
+import type { AssistantResponse, ConfigResponse, ExecutionTraceStep, ModelsResponse, SessionResponse } from "./types";
 
 const API_BASE = import.meta.env.VITE_ASSISTANT_API_BASE || "";
 
@@ -20,6 +20,64 @@ export function sendMessage(message: string): Promise<AssistantResponse> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
   });
+}
+
+export async function sendMessageStream(
+  message: string,
+  handlers: {
+    onStart?: (event: { message: string }) => void;
+    onDelta?: (event: { delta: string }) => void;
+    onStep?: (event: { step: ExecutionTraceStep }) => void;
+    onFinal?: (payload: AssistantResponse) => void;
+  },
+): Promise<AssistantResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let finalPayload: AssistantResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const segments = buffer.split("\n\n");
+    buffer = segments.pop() || "";
+    for (const segment of segments) {
+      const lines = segment.split("\n");
+      const eventLine = lines.find((line) => line.startsWith("event:"));
+      const dataLine = lines.find((line) => line.startsWith("data:"));
+      if (!eventLine || !dataLine) {
+        continue;
+      }
+      const eventName = eventLine.slice(6).trim();
+      const payload = JSON.parse(dataLine.slice(5).trim());
+      if (eventName === "start") {
+        handlers.onStart?.({ message: String(payload.message || "") });
+      } else if (eventName === "step") {
+        handlers.onStep?.({ step: payload.step as ExecutionTraceStep });
+      } else if (eventName === "delta") {
+        handlers.onDelta?.({ delta: String(payload.delta || "") });
+      } else if (eventName === "final") {
+        finalPayload = payload.payload as AssistantResponse;
+        handlers.onFinal?.(finalPayload);
+      }
+    }
+  }
+
+  if (finalPayload === null) {
+    throw new Error("Missing final stream payload");
+  }
+  return finalPayload;
 }
 
 export function respondApproval(tokenId: string, approved: boolean): Promise<AssistantResponse> {

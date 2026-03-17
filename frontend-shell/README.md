@@ -11,8 +11,10 @@
 - 已经接好现有 demo API 协议：`/api/session`、`/api/chat`、`/api/approve`
 - 已经接好模型层协议：`/api/models`、`/api/providers/auth`、`/api/models/select`
 - 已经接好配置中心协议：`/api/config`
+- 已经接好流式聊天协议：`/api/chat/stream`
 - 已经具备 Electron 主进程与 preload 骨架
 - 可以先作为 Web 壳开发，也可以直接作为 Electron 壳运行
+- 前端已经拆成 `Chat / History / Settings` 三个分层视图
 
 ## 先作为 Web 壳运行
 

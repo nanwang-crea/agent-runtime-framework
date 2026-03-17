@@ -287,6 +287,11 @@ def _execute(action: DesktopAction, context: ApplicationContext, _working_memory
 
 
 def _compose(outcome: dict, _context: ApplicationContext) -> tuple[str, list[Observation]]:
+    if outcome.get("kind") == "list":
+        text = str(outcome.get("text") or "")
+        observations = [Observation(kind=outcome.get("kind", "result"), payload={"text": text})]
+        return text, observations
+
     compose_options = run_stage_parser(
         context=_context,
         service_name="composer_parser",
