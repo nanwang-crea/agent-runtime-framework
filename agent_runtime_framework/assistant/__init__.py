@@ -2,6 +2,7 @@
 
 from agent_runtime_framework.assistant.approval import ApprovalManager, ApprovalRequest, ResumeToken
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry, CapabilitySpec
+from agent_runtime_framework.assistant.conversation import create_conversation_capability, route_default_capability
 from agent_runtime_framework.assistant.loop import AgentLoop, AgentLoopResult, AssistantContext
 from agent_runtime_framework.assistant.mcp import MCPClient, MCPClientAdapter, MCPProvider, MCPToolSpec, StaticMCPProvider
 from agent_runtime_framework.assistant.session import AssistantSession, AssistantTurn, ExecutionPlan, PlannedAction
@@ -17,12 +18,14 @@ __all__ = [
     "AssistantTurn",
     "CapabilityRegistry",
     "CapabilitySpec",
+    "create_conversation_capability",
     "ExecutionPlan",
     "MCPClient",
     "MCPClientAdapter",
     "MCPProvider",
     "MCPToolSpec",
     "PlannedAction",
+    "route_default_capability",
     "ResumeToken",
     "SkillRegistry",
     "SkillSpec",

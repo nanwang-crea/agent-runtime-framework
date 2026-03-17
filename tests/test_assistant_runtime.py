@@ -16,6 +16,8 @@ from agent_runtime_framework.assistant import (
     ResumeToken,
     SkillRegistry,
     StaticMCPProvider,
+    create_conversation_capability,
+    route_default_capability,
 )
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -105,6 +107,20 @@ def test_agent_loop_invokes_desktop_content_capability(tmp_path: Path):
 
     assert result.final_answer == "hello desktop"
     assert result.capability_name == "desktop_content"
+
+
+def test_default_capability_router_prefers_conversation_for_normal_chat(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register(create_conversation_capability())
+    context.capabilities.register_application("desktop_content", create_desktop_content_application())
+    context.services["capability_selector"] = route_default_capability
+
+    result = AgentLoop(context).run("你是谁？")
+
+    assert result.capability_name == "conversation"
+    assert "我现在已经支持正常对话" in result.final_answer
 
 
 def test_agent_loop_invokes_skill_capability_when_selected(tmp_path: Path):

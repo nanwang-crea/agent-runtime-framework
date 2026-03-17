@@ -63,7 +63,7 @@ function App() {
           <p className="kicker">Agent Runtime Framework</p>
           <h1>Desktop Assistant Shell</h1>
           <p className="lede">
-            这是面向桌面 AI 助手的前端壳骨架。当前通过 demo API 驱动，后面可平滑接到 Tauri 命令层和更完整的 agent runtime。
+            这是面向桌面 AI 助手的前端壳骨架。当前通过 demo API 驱动，后面会继续接到 Electron 原生能力层和更完整的 agent runtime。
           </p>
         </div>
         <div className="workspace">

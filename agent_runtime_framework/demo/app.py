@@ -6,7 +6,15 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.applications import ApplicationContext, create_desktop_content_application
-from agent_runtime_framework.assistant import AgentLoop, AssistantContext, AssistantSession, CapabilityRegistry, SkillRegistry
+from agent_runtime_framework.assistant import (
+    AgentLoop,
+    AssistantContext,
+    AssistantSession,
+    CapabilityRegistry,
+    SkillRegistry,
+    create_conversation_capability,
+    route_default_capability,
+)
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
@@ -112,8 +120,10 @@ def create_demo_assistant_app(workspace: str | Path) -> DemoAssistantApp:
         application_context=app_context,
         capabilities=CapabilityRegistry(),
         skills=SkillRegistry(),
+        services={"capability_selector": route_default_capability},
         session=AssistantSession(session_id=str(uuid4())),
     )
+    context.capabilities.register(create_conversation_capability())
     context.capabilities.register_application("desktop_content", create_desktop_content_application())
     return DemoAssistantApp(
         workspace=workspace_path,
