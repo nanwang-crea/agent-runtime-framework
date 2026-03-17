@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Desktop Assistant Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="hero">
+        <p class="eyebrow">Agent Runtime Framework</p>
+        <h1>Desktop Assistant Demo</h1>
+        <p class="subhead">
+          一个最小可运行的桌面 AI 助手演示。当前内置的是本地文件目录能力，你可以直接列目录、读取文件、总结文档。
+        </p>
+        <div class="workspace-card">
+          <span class="label">Workspace</span>
+          <code id="workspacePath">加载中...</code>
+        </div>
+        <div class="examples">
+          <button class="example" data-message="列出当前目录">列出当前目录</button>
+          <button class="example" data-message="读取 README.md">读取 README.md</button>
+          <button class="example" data-message="总结 README.md">总结 README.md</button>
+        </div>
+      </section>
+
+      <section class="panel shell">
+        <div class="panel-header">
+          <h2>Assistant</h2>
+          <span id="statusBadge" class="badge idle">idle</span>
+        </div>
+        <div id="messages" class="messages"></div>
+        <form id="chatForm" class="composer">
+          <textarea id="messageInput" rows="3" placeholder="输入你的请求，例如：总结 README.md"></textarea>
+          <div class="composer-actions">
+            <button type="submit" class="primary">发送</button>
+          </div>
+        </form>
+        <div id="approvalBox" class="approval hidden">
+          <p id="approvalText"></p>
+          <div class="approval-actions">
+            <button id="approveBtn" class="primary" type="button">批准继续</button>
+            <button id="rejectBtn" class="secondary" type="button">拒绝</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel plan-panel">
+        <div class="panel-header">
+          <h2>Plan History</h2>
+        </div>
+        <div id="planHistory" class="plan-history"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+  </html>

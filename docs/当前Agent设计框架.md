@@ -15,12 +15,12 @@
 
 当前 Agent 的主链路可以概括为：
 
-`用户输入 -> AgentLoop -> capability 选择 -> capability 执行 -> 回复写回会话`
+`用户输入 -> AgentLoop -> plan -> capability 执行 -> review -> continue/stop -> 回复写回会话`
 
 其中核心对象如下：
 
 - `AssistantSession`
-  负责保存当前线程中的 user / assistant turn、最近聚焦的 capability 等会话状态。
+  负责保存当前线程中的 user / assistant turn、最近聚焦的 capability、计划历史等会话状态。
 
 - `AssistantContext`
   负责聚合 agent 运行时依赖，包括：
@@ -31,11 +31,17 @@
   - `session`
 
 - `AgentLoop`
-  负责单轮代理决策与执行。当前选择顺序为：
-  1. 显式 `capability_selector` override
-  2. LLM-first 结构化 capability 选择
-  3. triggered-skill fallback
-  4. 默认 desktop capability / 首个 capability
+  负责最小可行的代理循环。当前主流程为：
+  1. `planner` 生成 `ExecutionPlan`
+  2. 执行 `PlannedAction`
+  3. `reviewer` 判断 `continue / stop`
+  4. 如遇高风险 capability，则进入 `approval / resume`
+
+- `ExecutionPlan`
+- `PlannedAction`
+- `ApprovalManager`
+- `ApprovalRequest`
+- `ResumeToken`
 
 ## 3. Capability 体系
 
@@ -54,12 +60,19 @@
 - `description`
 - `safety_level`
 - `input_contract`
+- `cost_hint`
+- `latency_hint`
+- `risk_class`
+- `dependency_readiness`
+- `output_type`
 
 这样 capability selector 在选择能力时，已经不再只看 capability 名称，而是可以同时参考：
 
 - capability 的用途说明
 - capability 的安全等级
 - capability 的输入契约
+- capability 的成本 / 延迟 / 风险
+- capability 的依赖就绪度与输出类型
 
 ## 4. Skill 接入方式
 
@@ -92,6 +105,11 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - `description`
 - `input_schema`
 - `safety_level`
+- `cost_hint`
+- `latency_hint`
+- `risk_class`
+- `dependency_readiness`
+- `output_type`
 - `runner`
 
 这使得 MCP 工具已经具备“可发现 schema”能力，而不是只能以静态回调形式存在。
@@ -113,18 +131,19 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 当前 Agent 框架已经具备：
 
 - 单代理主循环
+- 最小 `plan -> act -> review -> continue/stop` 循环
 - 多 capability 统一编排
 - skills 插槽
 - MCP 插槽
 - 桌面内容 capability
 - LLM-first capability selector
+- approval / resume 骨架
 
 但仍然没有：
 
-- 长链路规划器
-- 多步自反思
 - 子代理委派
-- 会话级 approval / resume 编排
 - 统一 artifact 系统
+- 更强的 planner / reviewer 结构化 LLM 版本
+- 会话级 MCP 生命周期治理
 
-因此它现在属于“单代理平台骨架已成型，但智能编排层仍较薄”的阶段。
+因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但深度智能编排仍偏薄”的阶段。

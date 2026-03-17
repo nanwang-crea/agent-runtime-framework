@@ -17,6 +17,11 @@ class CapabilitySpec:
     description: str = ""
     safety_level: str = "local"
     input_contract: dict[str, Any] = field(default_factory=dict)
+    cost_hint: str = "medium"
+    latency_hint: str = "medium"
+    risk_class: str = "low"
+    dependency_readiness: str = "ready"
+    output_type: str = "text"
 
 
 class CapabilityRegistry:
@@ -38,6 +43,8 @@ class CapabilityRegistry:
                 source="application",
                 description=f"Application capability: {name}",
                 safety_level="application",
+                risk_class="moderate",
+                output_type="application_result",
             )
         )
 
@@ -55,6 +62,11 @@ class CapabilityRegistry:
                     description=spec.description,
                     safety_level="skill",
                     input_contract={"trigger_phrases": list(spec.trigger_phrases)},
+                    cost_hint="medium",
+                    latency_hint="medium",
+                    risk_class="low",
+                    dependency_readiness="partial" if spec.required_capabilities else "ready",
+                    output_type="skill_result",
                 )
             )
 
@@ -69,6 +81,11 @@ class CapabilityRegistry:
                     description=tool.description,
                     safety_level=tool.safety_level,
                     input_contract=dict(tool.input_schema),
+                    cost_hint=tool.cost_hint,
+                    latency_hint=tool.latency_hint,
+                    risk_class=tool.risk_class,
+                    dependency_readiness=tool.dependency_readiness,
+                    output_type=tool.output_type,
                 )
             )
 

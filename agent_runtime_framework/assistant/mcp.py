@@ -13,6 +13,11 @@ class MCPToolSpec:
     description: str
     input_schema: dict[str, Any] = field(default_factory=dict)
     safety_level: str = "mcp"
+    cost_hint: str = "medium"
+    latency_hint: str = "medium"
+    risk_class: str = "moderate"
+    dependency_readiness: str = "ready"
+    output_type: str = "text"
     runner: MCPRunner | None = None
 
 
@@ -39,6 +44,11 @@ class StaticMCPProvider:
                     description=str(item.get("description") or item["name"]),
                     input_schema=dict(item.get("input_schema") or {}),
                     safety_level=str(item.get("safety_level") or "mcp"),
+                    cost_hint=str(item.get("cost_hint") or "medium"),
+                    latency_hint=str(item.get("latency_hint") or "medium"),
+                    risk_class=str(item.get("risk_class") or "moderate"),
+                    dependency_readiness=str(item.get("dependency_readiness") or "ready"),
+                    output_type=str(item.get("output_type") or "text"),
                     runner=item.get("runner"),
                 )
                 for item in tools
@@ -63,6 +73,11 @@ class MCPClientAdapter:
                     description=str(item.get("description") or name),
                     input_schema=dict(item.get("input_schema") or {}),
                     safety_level=str(item.get("safety_level") or "mcp"),
+                    cost_hint=str(item.get("cost_hint") or "medium"),
+                    latency_hint=str(item.get("latency_hint") or "medium"),
+                    risk_class=str(item.get("risk_class") or "moderate"),
+                    dependency_readiness=str(item.get("dependency_readiness") or "ready"),
+                    output_type=str(item.get("output_type") or "text"),
                     runner=self._build_runner(name),
                 )
             )

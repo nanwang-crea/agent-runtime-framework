@@ -8,7 +8,12 @@ from agent_runtime_framework.assistant import (
     AgentLoop,
     AssistantContext,
     AssistantSession,
+    ApprovalManager,
+    ApprovalRequest,
     CapabilityRegistry,
+    CapabilitySpec,
+    PlannedAction,
+    ResumeToken,
     SkillRegistry,
     StaticMCPProvider,
 )
@@ -258,4 +263,144 @@ def test_agent_loop_llm_selector_prompt_includes_capability_metadata(tmp_path: P
 
     prompt = llm.completions.last_kwargs["messages"][1]["content"]
     assert "Builds reports" in prompt
-    assert "trigger_phrases" in prompt
+    assert "risk:" in prompt
+    assert "cost:" in prompt
+
+
+def test_capability_registry_preserves_extended_metadata(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register(
+        CapabilitySpec(
+            name="report_builder",
+            runner=lambda user_input, context, session: "report built",
+            source="custom",
+            description="Generate a report artifact",
+            safety_level="local",
+            input_contract={"type": "string"},
+            cost_hint="medium",
+            latency_hint="slow",
+            risk_class="moderate",
+            dependency_readiness="ready",
+            output_type="report",
+        )
+    )
+
+    capability = context.capabilities.require("report_builder")
+
+    assert capability.cost_hint == "medium"
+    assert capability.latency_hint == "slow"
+    assert capability.risk_class == "moderate"
+    assert capability.dependency_readiness == "ready"
+    assert capability.output_type == "report"
+
+
+def test_agent_loop_executes_planned_steps_until_reviewer_stops(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    executed: list[str] = []
+    context.capabilities.register(
+        CapabilitySpec(
+            name="collect_files",
+            runner=lambda user_input, context, session: executed.append("collect") or "files collected",
+            source="custom",
+            description="Collect files",
+        )
+    )
+    context.capabilities.register(
+        CapabilitySpec(
+            name="write_report",
+            runner=lambda user_input, context, session: executed.append("report") or "report written",
+            source="custom",
+            description="Write report",
+        )
+    )
+    context.services["planner"] = lambda user_input, session, registry, _context: [
+        PlannedAction(capability_name="collect_files", instruction="collect target files"),
+        PlannedAction(capability_name="write_report", instruction="write a report"),
+    ]
+    context.services["reviewer"] = lambda plan, session, registry, _context: {"decision": "stop"}
+
+    result = AgentLoop(context).run("build a report")
+
+    assert result.status == "completed"
+    assert result.capability_name == "write_report"
+    assert result.final_answer == "report written"
+    assert executed == ["collect", "report"]
+    session = context.session
+    assert session is not None
+    assert len(session.plan_history) == 1
+    assert [step.status for step in session.plan_history[0].steps] == ["completed", "completed"]
+
+
+def test_agent_loop_returns_approval_request_and_can_resume(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register(
+        CapabilitySpec(
+            name="rename_files",
+            runner=lambda user_input, context, session: "renamed safely",
+            source="custom",
+            description="Rename files",
+            safety_level="write",
+            risk_class="high",
+        )
+    )
+    context.services["planner"] = lambda user_input, session, registry, _context: [
+        PlannedAction(capability_name="rename_files", instruction="rename all screenshots")
+    ]
+    context.services["approval_manager"] = ApprovalManager()
+
+    pending = AgentLoop(context).run("rename screenshots")
+
+    assert pending.status == "needs_approval"
+    assert pending.approval_request is not None
+    assert pending.resume_token is not None
+    assert pending.approval_request.capability_name == "rename_files"
+
+    resumed = AgentLoop(context).resume(pending.resume_token, approved=True)
+
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "renamed safely"
+    assert resumed.capability_name == "rename_files"
+
+
+def test_skill_and_mcp_capabilities_fill_extended_metadata(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.skills.register(
+        "report_skill",
+        "Build reports",
+        trigger_phrases=["report"],
+        required_capabilities=["desktop_content"],
+        planner_hint="Use after collecting files.",
+    )
+    context.capabilities.register_skill_registry(context.skills)
+    context.capabilities.register_mcp_provider(
+        StaticMCPProvider.tools(
+            [
+                {
+                    "name": "external_search",
+                    "description": "Search external sources",
+                    "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+                    "safety_level": "network",
+                    "risk_class": "high",
+                    "latency_hint": "slow",
+                    "output_type": "search_results",
+                }
+            ]
+        )
+    )
+
+    skill_capability = context.capabilities.require("skill:report_skill")
+    mcp_capability = context.capabilities.require("mcp:external_search")
+
+    assert skill_capability.dependency_readiness == "partial"
+    assert skill_capability.output_type == "skill_result"
+    assert mcp_capability.risk_class == "high"
+    assert mcp_capability.latency_hint == "slow"
+    assert mcp_capability.output_type == "search_results"

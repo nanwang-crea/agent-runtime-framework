@@ -82,11 +82,18 @@ class LocalFileResourceRepository:
         if not path.is_dir():
             raise NotADirectoryError(path)
         lowered = name.lower()
-        matches: list[ResourceRef] = []
-        for child in sorted(path.rglob("*"), key=lambda item: str(item)):
+        matches: list[tuple[tuple[int, int, int, str], ResourceRef]] = []
+        for child in path.rglob("*"):
             if lowered in child.name.lower():
-                matches.append(ResourceRef.for_path(child))
-        return matches
+                ref = ResourceRef.for_path(child)
+                relative = child.relative_to(path)
+                depth = len(relative.parts)
+                hidden_penalty = 1 if any(part.startswith(".") for part in relative.parts) else 0
+                exact_penalty = 0 if child.name.lower() == lowered else 1
+                rank = (hidden_penalty, depth, exact_penalty, str(relative))
+                matches.append((rank, ref))
+        matches.sort(key=lambda item: item[0])
+        return [ref for _, ref in matches]
 
     def load_text(self, ref: ResourceRef) -> str:
         path = self._resolve_path(ref)

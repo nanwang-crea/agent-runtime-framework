@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Protocol
 
 from agent_runtime_framework.resources.models import ResourceRef
@@ -34,7 +35,14 @@ class ResolverPipeline:
 
     @classmethod
     def default(cls) -> "ResolverPipeline":
-        return cls([resolve_last_focus, resolve_default_directory])
+        return cls(
+            [
+                resolve_last_focus,
+                resolve_explicit_path,
+                resolve_default_directory,
+                resolve_target_name,
+            ]
+        )
 
 
 def resolve_last_focus(request: ResolveRequest, _repository: ResourceRepository) -> list[ResourceRef]:
@@ -49,6 +57,52 @@ def resolve_default_directory(request: ResolveRequest, _repository: ResourceRepo
     if "当前目录" in text or "这个目录" in text:
         return [request.default_directory]
     return []
+
+
+def resolve_explicit_path(request: ResolveRequest, repository: ResourceRepository) -> list[ResourceRef]:
+    candidates = _extract_path_candidates(request.user_input)
+    if not candidates:
+        return []
+    default_directory = Path(request.default_directory.location)
+    for candidate in candidates:
+        candidate_path = Path(candidate).expanduser()
+        possible_paths = [candidate_path]
+        if not candidate_path.is_absolute():
+            possible_paths.insert(0, default_directory / candidate_path)
+        for possible_path in possible_paths:
+            try:
+                resource = repository.get(ResourceRef.for_path(possible_path))
+            except (FileNotFoundError, ValueError):
+                continue
+            return [resource.ref]
+    return []
+
+
+def resolve_target_name(request: ResolveRequest, repository: ResourceRepository) -> list[ResourceRef]:
+    candidates = _extract_path_candidates(request.user_input)
+    if not candidates:
+        return []
+    for candidate in candidates:
+        matches = repository.find_by_name(request.default_directory, candidate)
+        if matches:
+            return [matches[0]]
+    return []
+
+
+def _extract_path_candidates(text: str) -> list[str]:
+    cleaned = text.strip()
+    for marker in ("读取", "读一下", "看", "打开", "总结", "总结一下", "列出", "分析"):
+        cleaned = cleaned.replace(marker, " ")
+    cleaned = cleaned.replace("：", " ").replace(":", " ").strip("。 ")
+    raw_tokens = [token.strip(" \"'[]()") for token in cleaned.split() if token.strip(" \"'[]()")]
+    candidates: list[str] = []
+    for token in raw_tokens:
+        if "/" in token or "." in token or token.startswith("~"):
+            candidates.append(token)
+            continue
+        if len(raw_tokens) == 1:
+            candidates.append(token)
+    return candidates
 
 
 class LocalResourceResolver:
