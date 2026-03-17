@@ -1,5 +1,17 @@
 """Public exports for agent_runtime_framework."""
 
+from agent_runtime_framework.assistant import (
+    AgentLoop,
+    AgentLoopResult,
+    AssistantContext,
+    AssistantSession,
+    AssistantTurn,
+    CapabilityRegistry,
+    MCPProvider,
+    SkillRegistry,
+    SkillSpec,
+    StaticMCPProvider,
+)
 from agent_runtime_framework.core.errors import (
     AgentRuntimeError,
     PolicyViolationError,
@@ -63,7 +75,13 @@ from agent_runtime_framework.runtime import parse_structured_output
 from agent_runtime_framework.tools import ToolCall, ToolRegistry, ToolResult, execute_tool_call
 
 __all__ = [
+    "AgentLoop",
+    "AgentLoopResult",
+    "AssistantContext",
+    "AssistantSession",
+    "AssistantTurn",
     "ApplicationContext",
+    "CapabilityRegistry",
     "DesktopActionHandlerRegistry",
     "ApplicationRunner",
     "ApplicationSpec",
@@ -85,6 +103,7 @@ __all__ = [
     "IndexMemory",
     "JsonLLMRouter",
     "Observation",
+    "MCPProvider",
     "parse_structured_output",
     "PermissionLevel",
     "PolicyViolationError",
@@ -99,6 +118,8 @@ __all__ = [
     "RuntimeLimits",
     "SessionMemory",
     "SessionSnapshot",
+    "SkillRegistry",
+    "SkillSpec",
     "SimpleDesktopPolicy",
     "StateGraph",
     "StepRecord",
@@ -108,6 +129,7 @@ __all__ = [
     "ToolResult",
     "ToolExecutionError",
     "WorkingMemory",
+    "StaticMCPProvider",
     "create_desktop_content_application",
     "execute_tool_call",
     "LocalFileResourceRepository",

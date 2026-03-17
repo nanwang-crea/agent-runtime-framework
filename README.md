@@ -14,9 +14,11 @@ The framework now has two entry levels:
 
 - low-level graph/runtime primitives for generic agent execution
 - a first-stage desktop content application layer for local files, directories, and document chunks
+- an assistant runtime layer for single-agent capability selection with skills and MCP slots
 
 Key first-stage modules:
 
+- `agent_runtime_framework.assistant`
 - `agent_runtime_framework.graph`
 - `agent_runtime_framework.tools`
 - `agent_runtime_framework.runtime`
@@ -28,5 +30,6 @@ Key first-stage modules:
 `agent_runtime_framework.runtime.parse_structured_output` provides a reusable LLM-first structured parsing helper that applications can share instead of embedding prompt + JSON parsing logic locally.
 `agent_runtime_framework.applications.run_stage_parser` builds on top of it so application stages can consistently use: service override -> LLM structured parsing -> deterministic fallback.
 Desktop-specific deterministic behavior is modularized through `ResolverPipeline` and `DesktopActionHandlerRegistry`.
+The assistant runtime provides `AssistantSession`, `CapabilityRegistry`, `AgentLoop`, `SkillRegistry`, and MCP provider slots so desktop capabilities can be composed into a Codex-style single-agent loop.
 
 Reference architecture notes live in [docs/desktop-content-architecture.md](docs/desktop-content-architecture.md).
