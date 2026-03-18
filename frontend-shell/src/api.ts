@@ -1,4 +1,4 @@
-import type { AssistantResponse, ConfigResponse, ExecutionTraceStep, ModelsResponse, SessionResponse } from "./types";
+import type { AssistantError, AssistantResponse, ConfigResponse, ExecutionTraceStep, MemoryPayload, ModelsResponse, SessionResponse } from "./types";
 
 /**
  * 后端 API 根地址。
@@ -37,11 +37,14 @@ export async function sendMessageStream(
   message: string,
   handlers: {
     onStart?: (event: { message: string }) => void;
+    onStatus?: (event: { phase: string; label: string }) => void;
     onDelta?: (event: { delta: string }) => void;
     onStep?: (event: { step: ExecutionTraceStep }) => void;
+    onMemory?: (event: { memory: MemoryPayload }) => void;
+    onError?: (event: { error: AssistantError }) => void;
     onFinal?: (payload: AssistantResponse) => void;
   },
-): Promise<AssistantResponse> {
+): Promise<AssistantResponse | null> {
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -54,6 +57,7 @@ export async function sendMessageStream(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let finalPayload: AssistantResponse | null = null;
+  let errorPayload: AssistantError | null = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -74,10 +78,20 @@ export async function sendMessageStream(
       const payload = JSON.parse(dataLine.slice(5).trim());
       if (eventName === "start") {
         handlers.onStart?.({ message: String(payload.message || "") });
+      } else if (eventName === "status") {
+        handlers.onStatus?.({
+          phase: String(payload.status?.phase || ""),
+          label: String(payload.status?.label || ""),
+        });
       } else if (eventName === "step") {
         handlers.onStep?.({ step: payload.step as ExecutionTraceStep });
       } else if (eventName === "delta") {
         handlers.onDelta?.({ delta: String(payload.delta || "") });
+      } else if (eventName === "memory") {
+        handlers.onMemory?.({ memory: payload.memory as MemoryPayload });
+      } else if (eventName === "error") {
+        errorPayload = payload.error as AssistantError;
+        handlers.onError?.({ error: errorPayload });
       } else if (eventName === "final") {
         finalPayload = payload.payload as AssistantResponse;
         handlers.onFinal?.(finalPayload);
@@ -86,7 +100,7 @@ export async function sendMessageStream(
     }
   }
 
-  if (finalPayload === null) {
+  if (finalPayload === null && errorPayload === null) {
     throw new Error("Missing final stream payload");
   }
   return finalPayload;

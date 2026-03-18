@@ -28,6 +28,29 @@ export type ApprovalRequest = {
   risk_class: string;
 };
 
+export type AssistantError = {
+  code: string;
+  message: string;
+  detail: string | null;
+  stage: string | null;
+  retriable: boolean;
+  suggestion: string | null;
+};
+
+export type ResourceMemory = {
+  resource_id: string;
+  kind: string;
+  location: string;
+  title: string;
+};
+
+export type MemoryPayload = {
+  focused_resource: ResourceMemory | null;
+  recent_resources: ResourceMemory[];
+  last_summary: string | null;
+  active_capability: string | null;
+};
+
 export type AssistantResponse = {
   status: string;
   final_answer: string;
@@ -37,6 +60,8 @@ export type AssistantResponse = {
   resume_token_id: string | null;
   session: SessionPayload;
   plan_history: PlanPayload[];
+  memory: MemoryPayload;
+  error?: AssistantError | null;
   workspace: string;
 };
 
@@ -50,6 +75,7 @@ export type SessionResponse = {
   workspace: string;
   session: SessionPayload;
   plan_history: PlanPayload[];
+  memory: MemoryPayload;
 };
 
 export type ModelProfile = {

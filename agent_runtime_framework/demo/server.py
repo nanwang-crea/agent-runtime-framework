@@ -57,6 +57,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                         "workspace": str(app.workspace),
                         "session": app.session_payload(),
                         "plan_history": app.plan_history_payload(),
+                        "memory": app.memory_payload(),
                     }
                 )
                 return
@@ -165,10 +166,30 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(b": stream-start\n\n")
             self.wfile.flush()
-            for event in events:
-                event_name = str(event.get("type") or "message")
-                payload = json.dumps(event, ensure_ascii=False)
-                self.wfile.write(f"event: {event_name}\n".encode("utf-8"))
+            try:
+                for event in events:
+                    event_name = str(event.get("type") or "message")
+                    payload = json.dumps(event, ensure_ascii=False)
+                    self.wfile.write(f"event: {event_name}\n".encode("utf-8"))
+                    self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+            except Exception as exc:
+                logging.getLogger("demo.server").exception("stream request failed: %s", exc)
+                payload = json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "code": "STREAM_BROKEN",
+                            "message": "流式请求中断。",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                            "stage": "stream",
+                            "retriable": True,
+                            "suggestion": "可以重试一次；如果持续出现，请检查后端日志。",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                self.wfile.write(b"event: error\n")
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()
             self.close_connection = True

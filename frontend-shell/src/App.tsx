@@ -10,9 +10,11 @@ import {
   updateConfig,
 } from "./api";
 import type {
+  AssistantError,
   AssistantResponse,
   ConfigResponse,
   ExecutionTraceStep,
+  MemoryPayload,
   ModelsResponse,
   PlanPayload,
   SessionPayload,
@@ -32,10 +34,18 @@ function App() {
   const [workspace, setWorkspace] = useState("");
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
+  const [memory, setMemory] = useState<MemoryPayload>({
+    focused_resource: null,
+    recent_resources: [],
+    last_summary: null,
+    active_capability: null,
+  });
   const [models, setModels] = useState<ModelsResponse>({ providers: [], routes: {} });
   const [config, setConfig] = useState<ConfigResponse>({ path: "", providers: [], routes: {} });
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
+  const [streamStatus, setStreamStatus] = useState("等待新请求");
+  const [streamError, setStreamError] = useState<AssistantError | null>(null);
   const [pendingTokenId, setPendingTokenId] = useState<string | null>(null);
   const [approvalText, setApprovalText] = useState("");
   const [activeView, setActiveView] = useState<ViewId>("chat");
@@ -55,6 +65,7 @@ function App() {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
+    setMemory(payload.memory);
   }
 
   async function loadModels() {
@@ -84,8 +95,11 @@ function App() {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
+    setMemory(payload.memory);
     setStatus(payload.status);
     setPendingTokenId(payload.resume_token_id);
+    setStreamStatus(payload.status === "error" ? "请求失败" : "请求完成");
+    setStreamError(payload.error || null);
     setExecutionTrace((current) => {
       if (payload.execution_trace && payload.execution_trace.length > 0) {
         return payload.execution_trace;
@@ -106,31 +120,66 @@ function App() {
       return;
     }
     setStatus("streaming");
+    setStreamStatus("请求已发送");
+    setStreamError(null);
     setPendingUserMessage(trimmed);
     setStreamingReply("");
     setExecutionTrace([]);
     setMessage("");
-    await sendMessageStream(trimmed, {
-      onStart: () => {
-        setActiveView("chat");
-        setExecutionTrace([
-          {
-            name: "stream",
-            status: "running",
-            detail: "waiting_first_delta",
-          },
-        ]);
-      },
-      onDelta: ({ delta }) => {
-        setStreamingReply((current) => current + delta);
-      },
-      onStep: ({ step }) => {
-        setExecutionTrace((current) => [...current, step]);
-      },
-      onFinal: (finalPayload) => {
-        applyResponse(finalPayload);
-      },
-    });
+    try {
+      await sendMessageStream(trimmed, {
+        onStart: () => {
+          setActiveView("chat");
+          setExecutionTrace([
+            {
+              name: "stream",
+              status: "running",
+              detail: "waiting_first_delta",
+            },
+          ]);
+        },
+        onStatus: ({ label }) => {
+          setStreamStatus(label || "处理中");
+        },
+        onDelta: ({ delta }) => {
+          setStreamingReply((current) => current + delta);
+        },
+        onStep: ({ step }) => {
+          setExecutionTrace((current) => [...current, step]);
+        },
+        onMemory: ({ memory: nextMemory }) => {
+          setMemory(nextMemory);
+        },
+        onError: ({ error }) => {
+          setStatus("error");
+          setStreamStatus("请求失败");
+          setStreamError(error);
+          setExecutionTrace((current) => [
+            ...current,
+            {
+              name: error.stage || "run",
+              status: "error",
+              detail: `${error.code} · ${error.message}`,
+            },
+          ]);
+        },
+        onFinal: (finalPayload) => {
+          applyResponse(finalPayload);
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "流式请求失败";
+      setStatus("error");
+      setStreamStatus("请求失败");
+      setStreamError({
+        code: "STREAM_BROKEN",
+        message,
+        detail: message,
+        stage: "stream",
+        retriable: true,
+        suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+      });
+    }
     setPendingUserMessage("");
     setStreamingReply("");
   }
@@ -294,6 +343,19 @@ function App() {
                     </div>
                   ))
                 )}
+                {streamError ? (
+                  <div className="message assistant error-message">
+                    <small>Assistant</small>
+                    <div>
+                      <strong>{streamError.message}</strong>
+                      {streamError.suggestion ? <p>{streamError.suggestion}</p> : null}
+                      <p className="error-meta">
+                        {streamError.code}
+                        {streamError.stage ? ` · ${streamError.stage}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <form className="composer" onSubmit={handleSubmit}>
@@ -328,8 +390,8 @@ function App() {
                 <h3>Live Context</h3>
               </div>
               <div className="context-block">
-                <span>Current Stream</span>
-                <p>{streamingReply || "当前没有流式输出。"}</p>
+                <span>Current Activity</span>
+                <p>{streamStatus}</p>
               </div>
               <div className="context-block">
                 <span>Execution Steps</span>
@@ -345,6 +407,34 @@ function App() {
                 ) : (
                   <p>当前还没有执行步骤。</p>
                 )}
+              </div>
+              <div className="context-block">
+                <span>Focused Resource</span>
+                {memory.focused_resource ? (
+                  <p>
+                    {memory.focused_resource.title} · {memory.focused_resource.kind}
+                  </p>
+                ) : (
+                  <p>当前没有焦点资源。</p>
+                )}
+              </div>
+              <div className="context-block">
+                <span>Recent Context</span>
+                {memory.recent_resources.length > 0 ? (
+                  <ul className="flat-list">
+                    {memory.recent_resources.map((resource) => (
+                      <li key={resource.resource_id}>
+                        <strong>{resource.title}</strong> · {resource.kind}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>当前没有最近资源。</p>
+                )}
+              </div>
+              <div className="context-block">
+                <span>Working Summary</span>
+                <p>{memory.last_summary || "当前还没有工作摘要。"}</p>
               </div>
               <div className="context-block">
                 <span>Latest Plan</span>

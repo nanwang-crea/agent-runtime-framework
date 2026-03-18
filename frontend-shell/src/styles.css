@@ -211,6 +211,11 @@ select {
   color: #8b5a16;
 }
 
+.pill.error {
+  background: rgba(163, 40, 40, 0.12);
+  color: #8c1f1f;
+}
+
 .chat-layout,
 .history-layout,
 .settings-layout {
@@ -312,6 +317,15 @@ select {
   box-shadow: inset 0 0 0 1px rgba(21, 92, 73, 0.14);
 }
 
+.message.error-message {
+  border-color: rgba(163, 40, 40, 0.22);
+  background: rgba(163, 40, 40, 0.08);
+}
+
+.message.error-message p {
+  margin: 8px 0 0;
+}
+
 .message small {
   display: block;
   margin-bottom: 6px;
@@ -380,6 +394,11 @@ textarea {
 .context-block strong {
   display: block;
   margin-top: 8px;
+}
+
+.error-meta {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .flat-list {

@@ -118,7 +118,7 @@ def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
     assert events[-1]["payload"]["status"] == "completed"
 
 
-def test_demo_assistant_app_chunks_fallback_conversation_stream(tmp_path: Path):
+def test_demo_assistant_app_emits_single_delta_for_fallback_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
@@ -126,8 +126,55 @@ def test_demo_assistant_app_chunks_fallback_conversation_stream(tmp_path: Path):
     events = list(app.stream_chat("你现在是跟我流式输出嘛？", chunk_size=6))
     delta_events = [event for event in events if event["type"] == "delta"]
 
-    assert len(delta_events) > 1
+    assert len(delta_events) == 1
     assert "".join(event["delta"] for event in delta_events) == events[-1]["payload"]["final_answer"]
+
+
+def test_demo_assistant_app_emits_single_delta_for_non_conversation_results(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("读取 README.md", chunk_size=4))
+    delta_events = [event for event in events if event["type"] == "delta"]
+
+    assert len(delta_events) == 1
+    assert delta_events[0]["delta"] == "line one\nline two\nline three"
+
+
+def test_demo_assistant_app_emits_structured_error_for_directory_summarize(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs_dir = workspace / "docs"
+    docs_dir.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("总结 docs"))
+
+    error_events = [event for event in events if event["type"] == "error"]
+
+    assert error_events
+    assert error_events[-1]["error"]["code"] == "RESOURCE_IS_DIRECTORY"
+    assert "目标是目录" in error_events[-1]["error"]["message"]
+    assert error_events[-1]["error"]["retriable"] is True
+    assert events[-1]["type"] == "error"
+
+
+def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    readme = workspace / "README.md"
+    readme.write_text("line one\nline two\nline three", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("读取 README.md"))
+
+    memory_events = [event for event in events if event["type"] == "memory"]
+
+    assert memory_events
+    assert memory_events[-1]["memory"]["focused_resource"]["title"] == "README.md"
+    assert "line one" in str(memory_events[-1]["memory"]["last_summary"])
 
 
 class _StreamingCompletions:
@@ -165,8 +212,7 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
 
     delta_events = [event for event in events if event["type"] == "delta"]
 
-    assert delta_events
-    assert "".join(event["delta"] for event in delta_events) == "你好，我是流式回复"
+    assert [event["delta"] for event in delta_events] == ["你好", "，我是流式回复"]
     assert events[-1]["payload"]["final_answer"] == "你好，我是流式回复"
     assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
     assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)

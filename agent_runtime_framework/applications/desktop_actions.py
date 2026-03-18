@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from agent_runtime_framework.applications.core import ApplicationContext
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.resources import ResourceRef
 
 
@@ -64,6 +65,15 @@ def _handle_read(resources: list[ResourceRef], context: ApplicationContext, exec
     if not resources:
         return {"kind": "read", "focused_resources": [], "text": "未定位到目标资源。"}
     target = resources[0]
+    if target.kind == "directory":
+        raise AppError(
+            code="RESOURCE_IS_DIRECTORY",
+            message="目标是目录，不能直接读取为单个文件内容。",
+            detail=target.location,
+            stage="execute",
+            retriable=True,
+            suggestion="可以先列出目录内容，或指定目录下的某个文件。",
+        )
     text = context.resource_repository.load_text(target)
     if execution_mode == "preview":
         text = text.splitlines()[0] if text.splitlines() else text[:120]
@@ -78,6 +88,15 @@ def _handle_summarize(resources: list[ResourceRef], context: ApplicationContext,
     if not resources:
         return {"kind": "summarize", "focused_resources": [], "text": "未定位到目标资源。"}
     target = resources[0]
+    if target.kind == "directory":
+        raise AppError(
+            code="RESOURCE_IS_DIRECTORY",
+            message="目标是目录，不能直接总结为单个文件内容。",
+            detail=target.location,
+            stage="execute",
+            retriable=True,
+            suggestion="可以先列出目录内容，或指定 README.md、docs 下的具体文件。",
+        )
     cache_key = f"summary:{target.location}"
     cached = context.index_memory.get(cache_key)
     if cached is not None:
