@@ -86,7 +86,12 @@ function App() {
     setPlans(payload.plan_history);
     setStatus(payload.status);
     setPendingTokenId(payload.resume_token_id);
-    setExecutionTrace(payload.execution_trace || []);
+    setExecutionTrace((current) => {
+      if (payload.execution_trace && payload.execution_trace.length > 0) {
+        return payload.execution_trace;
+      }
+      return current;
+    });
     setApprovalText(
       payload.approval_request
         ? `${payload.approval_request.reason} | ${payload.approval_request.capability_name} | ${payload.approval_request.instruction}`
@@ -108,6 +113,13 @@ function App() {
     await sendMessageStream(trimmed, {
       onStart: () => {
         setActiveView("chat");
+        setExecutionTrace([
+          {
+            name: "stream",
+            status: "running",
+            detail: "waiting_first_delta",
+          },
+        ]);
       },
       onDelta: ({ delta }) => {
         setStreamingReply((current) => current + delta);
@@ -181,10 +193,19 @@ function App() {
 
   const displayedTurns = useMemo(() => {
     const turns = [...session.turns];
-    if (pendingUserMessage) {
+    const hasCommittedPendingUser = turns.some(
+      (turn, index) => turn.role === "user" && turn.content === pendingUserMessage && index >= Math.max(0, turns.length - 2),
+    );
+    if (pendingUserMessage && !hasCommittedPendingUser) {
       turns.push({ role: "user", content: pendingUserMessage });
     }
-    if (streamingReply) {
+    const latestTurn = turns[turns.length - 1];
+    const hasCommittedAssistant =
+      latestTurn?.role === "assistant" &&
+      (latestTurn.content === streamingReply ||
+        latestTurn.content.startsWith(streamingReply) ||
+        streamingReply.startsWith(latestTurn.content));
+    if (streamingReply && !hasCommittedAssistant) {
       turns.push({ role: "assistant", content: streamingReply });
     }
     return turns;

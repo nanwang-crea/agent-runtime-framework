@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Iterable
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
 from agent_runtime_framework.models import resolve_model_runtime
+
+logger = logging.getLogger(__name__)
 
 
 def create_conversation_capability(name: str = "conversation") -> CapabilitySpec:
@@ -47,10 +50,71 @@ def route_default_capability(user_input: str, _session: Any, registry: Any, _con
 
 
 def _run_conversation(user_input: str, context: Any, session: Any) -> str:
+    diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
+    final_answer = "".join(stream_conversation_reply(user_input, context, session, diagnostics=diagnostics))
+    source = str(diagnostics.get("source") or "fallback")
+    reason = str(diagnostics.get("reason") or "")
+    status = "completed" if source == "model" else "fallback"
+    return {
+        "final_answer": final_answer,
+        "execution_trace": [
+            {
+                "name": "conversation",
+                "status": status,
+                "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
+            }
+        ],
+    }
+
+
+def stream_conversation_reply(
+    user_input: str,
+    context: Any,
+    session: Any,
+    *,
+    diagnostics: dict[str, str | None] | None = None,
+) -> Iterable[str]:
+    meta = diagnostics if diagnostics is not None else {}
+    meta["source"] = "fallback"
+    meta["reason"] = "llm_unavailable"
     runtime = resolve_model_runtime(context.application_context, "conversation")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+
+    if llm_client is None or not hasattr(llm_client, "chat"):
+        reason = (
+            "llm_unavailable: 未配置可用模型。请在前端「模型 / 配置」中："
+            "1) 为 dashscope 填写 API Key 并认证；"
+            "2) 为 conversation 选择模型（如 qwen3.5-plus）。"
+        )
+        meta["reason"] = reason
+        logger.warning("conversation fallback: %s", reason)
+
     if llm_client is not None and hasattr(llm_client, "chat"):
+        # 优先使用流式请求；成功则逐 chunk yield，并标记 source=model, reason=stream
+        try:
+            response = llm_client.chat.completions.create(
+                model=model_name,
+                messages=_build_messages(user_input, session),
+                temperature=0.3,
+                max_tokens=400,
+                stream=True,
+            )
+            streamed = False
+            for chunk in _iter_stream_text(response):
+                streamed = True
+                if chunk:
+                    yield chunk
+            if streamed:
+                meta["source"] = "model"
+                meta["reason"] = "stream"
+                return
+            meta["reason"] = "empty_stream"
+        except Exception as exc:
+            # 流式请求失败（如网络/代理/接口不支持）时，再试一次非流式，尽量仍返回模型结果
+            error_detail = _format_error_detail(exc)
+            meta["reason"] = f"stream_error:{error_detail}"
+            logger.exception("conversation stream request failed: %s", error_detail)
         try:
             response = llm_client.chat.completions.create(
                 model=model_name,
@@ -60,10 +124,15 @@ def _run_conversation(user_input: str, context: Any, session: Any) -> str:
             )
             content = response.choices[0].message.content or ""
             if content.strip():
-                return content.strip()
-        except Exception:
-            pass
-    return _fallback_conversation_reply(user_input)
+                meta["source"] = "model"
+                meta["reason"] = "non_stream_fallback"
+                yield content.strip()
+                return
+        except Exception as exc2:
+            error_detail = _format_error_detail(exc2)
+            meta["reason"] = f"model_error:{error_detail}"
+            logger.exception("conversation non-stream request failed: %s", error_detail)
+    yield _fallback_conversation_reply(user_input)
 
 
 def _build_messages(user_input: str, session: Any) -> list[dict[str, str]]:
@@ -77,17 +146,49 @@ def _build_messages(user_input: str, session: Any) -> list[dict[str, str]]:
             ),
         }
     ]
-    for turn in getattr(session, "turns", [])[-6:]:
+    recent_turns = list(getattr(session, "turns", [])[-6:])
+    if recent_turns:
+        last_turn = recent_turns[-1]
+        if getattr(last_turn, "role", None) == "user" and getattr(last_turn, "content", "") == user_input:
+            recent_turns = recent_turns[:-1]
+    for turn in recent_turns:
         messages.append({"role": turn.role, "content": turn.content})
     messages.append({"role": "user", "content": user_input})
     return messages
+
+
+def _iter_stream_text(response: Any) -> Iterable[str]:
+    if not hasattr(response, "__iter__"):
+        return []
+
+    def _generator() -> Iterable[str]:
+        for chunk in response:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if content:
+                yield str(content)
+
+    return _generator()
 
 
 def _fallback_conversation_reply(user_input: str) -> str:
     text = user_input.strip()
     if not text:
         return "你可以直接和我聊天，或者让我读取、列出、总结当前工作区里的文件。"
-    return (
-        "我现在已经支持正常对话，也可以帮你处理当前工作区里的文件和目录。"
-        f"你刚才说的是：{text}"
-    )
+    lowered = text.lower()
+    if any(token in text for token in ("你好", "嗨", "hello", "hi")):
+        return "你好。我可以陪你对话，也可以帮你查看当前工作区里的文件、目录和内容。"
+    if "流式" in text:
+        return "当前接口支持流式事件；如果你在页面上还是看到整段一次性出现，通常说明前端渲染或模型回包链路还没有真正按增量消费。"
+    if "代办" in text:
+        return "可以。我能帮你整理代办、拆步骤，或者直接检查当前工作区里和任务相关的文件。"
+    return "我可以继续和你对话，也可以按你的意图去查看工作区里的文件、目录或文档内容。"
+
+
+def _format_error_detail(exc: Exception) -> str:
+    detail = f"{type(exc).__name__}: {exc}".strip()
+    detail = " ".join(detail.split())
+    return detail[:240]

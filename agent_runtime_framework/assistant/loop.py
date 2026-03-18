@@ -7,6 +7,7 @@ from uuid import uuid4
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.approval import ApprovalManager, ApprovalRequest, ResumeToken
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry
+from agent_runtime_framework.assistant.conversation import route_default_capability
 from agent_runtime_framework.assistant.session import AssistantSession, ExecutionPlan, PlannedAction
 from agent_runtime_framework.assistant.skills import SkillRegistry
 from agent_runtime_framework.models import resolve_model_runtime
@@ -170,6 +171,9 @@ class AgentLoop:
         triggered_skill = self.context.skills.match_triggered(user_input)
         if triggered_skill is not None:
             return f"skill:{triggered_skill.name}"
+        default_selected = route_default_capability(user_input, session, self.context.capabilities, self.context)
+        if default_selected is not None:
+            return default_selected
         if "desktop_content" in self.context.capabilities.names():
             return "desktop_content"
         names = self.context.capabilities.names()

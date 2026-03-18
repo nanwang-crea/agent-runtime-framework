@@ -20,6 +20,7 @@ class _CompatibleChatCompletions:
                 "messages": kwargs["messages"],
                 "temperature": kwargs.get("temperature", 0.0),
                 "max_tokens": kwargs.get("max_tokens"),
+                "stream": bool(kwargs.get("stream")),
             }
         ).encode("utf-8")
         req = urllib_request.Request(
@@ -31,6 +32,8 @@ class _CompatibleChatCompletions:
             },
             method="POST",
         )
+        if kwargs.get("stream"):
+            return _streaming_response_chunks(req)
         with urllib_request.urlopen(req, timeout=60) as response:
             parsed = json.loads(response.read().decode("utf-8"))
         content = (
@@ -53,6 +56,40 @@ class _CompatibleChat:
 class _CompatibleClient:
     def __init__(self, api_key: str, base_url: str) -> None:
         self.chat = _CompatibleChat(api_key, base_url)
+
+
+def _streaming_response_chunks(req: Any):
+    with urllib_request.urlopen(req, timeout=60) as response:
+        yield from _iter_streaming_chunks(response)
+
+
+def _iter_streaming_chunks(response: Any):
+    for raw_line in response:
+        line = raw_line.decode("utf-8").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        parsed = json.loads(payload)
+        content = (
+            parsed.get("choices", [{}])[0]
+            .get("delta", {})
+            .get("content")
+        )
+        yield type(
+            "ChatCompletionChunk",
+            (),
+            {
+                "choices": [
+                    type(
+                        "Choice",
+                        (),
+                        {"delta": type("Delta", (), {"content": content})()},
+                    )()
+                ]
+            },
+        )()
 
 
 @dataclass(slots=True)

@@ -1,6 +1,17 @@
 import type { AssistantResponse, ConfigResponse, ExecutionTraceStep, ModelsResponse, SessionResponse } from "./types";
 
-const API_BASE = import.meta.env.VITE_ASSISTANT_API_BASE || "";
+/**
+ * 后端 API 根地址。
+ * - 未设置时：若页面是 file://（如 Electron 打包/dist），则用 http://127.0.0.1:8765，否则用空（相对路径，依赖 Vite 代理）。
+ */
+const API_BASE = (() => {
+  const env = import.meta.env.VITE_ASSISTANT_API_BASE;
+  if (env && String(env).trim()) return String(env).trim();
+  if (typeof window !== "undefined" && window.location?.protocol === "file:") {
+    return "http://127.0.0.1:8765";
+  }
+  return "";
+})();
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
@@ -50,10 +61,10 @@ export async function sendMessageStream(
       break;
     }
     buffer += decoder.decode(value, { stream: true });
-    const segments = buffer.split("\n\n");
+    const segments = buffer.split(/\r?\n\r?\n/);
     buffer = segments.pop() || "";
     for (const segment of segments) {
-      const lines = segment.split("\n");
+      const lines = segment.split(/\r?\n/);
       const eventLine = lines.find((line) => line.startsWith("event:"));
       const dataLine = lines.find((line) => line.startsWith("data:"));
       if (!eventLine || !dataLine) {
@@ -71,6 +82,7 @@ export async function sendMessageStream(
         finalPayload = payload.payload as AssistantResponse;
         handlers.onFinal?.(finalPayload);
       }
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 

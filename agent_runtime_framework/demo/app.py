@@ -14,8 +14,9 @@ from agent_runtime_framework.assistant import (
     CapabilityRegistry,
     SkillRegistry,
     create_conversation_capability,
-    route_default_capability,
 )
+from agent_runtime_framework.assistant.conversation import stream_conversation_reply
+from agent_runtime_framework.assistant.session import ExecutionPlan, PlannedAction
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import InMemoryCredentialStore, ModelProfile, ModelRegistry, ModelRouter, OpenAICompatibleProvider
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -42,6 +43,14 @@ class DemoAssistantApp:
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
+        session = self.context.session
+        if session is None:
+            session = AssistantSession(session_id=str(uuid4()))
+            self.context.session = session
+        capability_name = AgentLoop(self.context)._select_capability(message, session)
+        if capability_name == "conversation":
+            yield from self._stream_conversation(message, session, chunk_size=chunk_size)
+            return
         payload = self.chat(message)
         for step in payload.get("execution_trace", []):
             yield {"type": "step", "step": step}
@@ -55,6 +64,56 @@ class DemoAssistantApp:
                 "delta": final_answer[index : index + chunk_size],
             }
             time.sleep(0.012)
+        yield {"type": "final", "payload": payload}
+
+    def _stream_conversation(self, message: str, session: AssistantSession, *, chunk_size: int):
+        session.add_turn("user", message)
+        plan = ExecutionPlan(
+            goal=message,
+            steps=[PlannedAction(capability_name="conversation", instruction=message, status="in_progress")],
+        )
+        session.plan_history.append(plan)
+        yield {
+            "type": "step",
+            "step": {
+                "name": "conversation",
+                "status": "running",
+                "detail": "streaming_response",
+            },
+        }
+        chunks: list[str] = []
+        diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
+        for chunk in stream_conversation_reply(message, self.context, session, diagnostics=diagnostics):
+            for index in range(0, len(chunk), chunk_size):
+                piece = chunk[index : index + chunk_size]
+                chunks.append(piece)
+                yield {"type": "delta", "delta": piece}
+                time.sleep(0.012)
+        final_answer = "".join(chunks).strip()
+        session.add_turn("assistant", final_answer)
+        plan.steps[0].status = "completed"
+        plan.steps[0].observation = final_answer
+        session.focused_capability = "conversation"
+        source = str(diagnostics.get("source") or "fallback")
+        reason = str(diagnostics.get("reason") or "")
+        status = "completed" if source == "model" else "fallback"
+        payload = {
+            "status": "completed",
+            "final_answer": final_answer,
+            "capability_name": "conversation",
+            "execution_trace": [
+                {
+                    "name": "conversation",
+                    "status": status,
+                    "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
+                }
+            ],
+            "approval_request": None,
+            "resume_token_id": None,
+            "session": self.session_payload(),
+            "plan_history": self.plan_history_payload(),
+            "workspace": str(self.workspace),
+        }
         yield {"type": "final", "payload": payload}
 
     def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
@@ -256,7 +315,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         application_context=app_context,
         capabilities=CapabilityRegistry(),
         skills=SkillRegistry(),
-        services={"capability_selector": route_default_capability},
+        services={},
         session=AssistantSession(session_id=str(uuid4())),
     )
     context.capabilities.register(create_conversation_capability())

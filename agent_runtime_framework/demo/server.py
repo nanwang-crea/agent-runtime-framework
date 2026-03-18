@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -9,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.demo.app import DemoAssistantApp, create_demo_assistant_app
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+)
+logging.getLogger("agent_runtime_framework.assistant").setLevel(logging.WARNING)
 
 
 def main() -> None:
@@ -32,6 +39,8 @@ def main() -> None:
 
 def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
     class DemoHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def do_GET(self) -> None:
             if self.path == "/":
                 self._send_text(_load_asset("index.html"), content_type="text/html; charset=utf-8")
@@ -63,6 +72,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/chat":
                 payload = self._read_json()
                 message = str(payload.get("message") or "").strip()
+                logging.getLogger("demo.server").info("POST /api/chat message=%r", message[:80] if message else "")
                 if not message:
                     self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -71,6 +81,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/chat/stream":
                 payload = self._read_json()
                 message = str(payload.get("message") or "").strip()
+                logging.getLogger("demo.server").info("POST /api/chat/stream message=%r", message[:80] if message else "")
                 if not message:
                     self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -148,15 +159,19 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
         def _send_event_stream(self, events) -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
+            self.wfile.write(b": stream-start\n\n")
+            self.wfile.flush()
             for event in events:
                 event_name = str(event.get("type") or "message")
                 payload = json.dumps(event, ensure_ascii=False)
                 self.wfile.write(f"event: {event_name}\n".encode("utf-8"))
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()
+            self.close_connection = True
 
     return DemoHandler
 

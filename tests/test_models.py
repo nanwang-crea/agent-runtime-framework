@@ -160,7 +160,8 @@ def test_conversation_capability_uses_model_router_when_available(tmp_path: Path
 
     result = capability.runner("你好", SimpleNamespace(application_context=context), SimpleNamespace(turns=[]))
 
-    assert result == '{"capability_name":"conversation"}'
+    assert result["final_answer"] == '{"capability_name":"conversation"}'
+    assert "source=model" in str(result["execution_trace"][-1]["detail"])
 
 
 def test_openai_compatible_provider_uses_pure_python_http_client():
@@ -200,6 +201,55 @@ def test_openai_compatible_provider_uses_pure_python_http_client():
     assert result.choices[0].message.content == "hello from http"
 
 
+def test_openai_compatible_provider_keeps_stream_response_open_while_iterating():
+    store = InMemoryCredentialStore()
+    provider = OpenAICompatibleProvider(
+        provider_name="dashscope",
+        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    provider.authenticate(
+        {
+            "api_key": "sk-test",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        },
+        store,
+    )
+    client = provider.get_client(store)
+
+    class _StreamingHTTPResponse:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.closed = True
+            return False
+
+        def __iter__(self):
+            if self.closed:
+                raise RuntimeError("response closed before stream consumption")
+            return iter(
+                [
+                    b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
+                    b"data: [DONE]\n\n",
+                ]
+            )
+
+    with patch("urllib.request.urlopen", return_value=_StreamingHTTPResponse()):
+        response = client.chat.completions.create(
+            model="qwen3.5-plus",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.3,
+            max_tokens=100,
+            stream=True,
+        )
+        chunks = list(response)
+
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ["hello"]
+
+
 def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -214,4 +264,5 @@ def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: P
 
     result = capability.runner("你是谁？", SimpleNamespace(application_context=context), SimpleNamespace(turns=[]))
 
-    assert "我现在已经支持正常对话" in result
+    assert "我可以继续和你对话" in result["final_answer"]
+    assert "source=fallback" in str(result["execution_trace"][-1]["detail"])

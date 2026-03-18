@@ -19,6 +19,7 @@ from agent_runtime_framework.assistant import (
     create_conversation_capability,
     route_default_capability,
 )
+from agent_runtime_framework.assistant.conversation import _build_messages
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
@@ -120,7 +121,7 @@ def test_default_capability_router_prefers_conversation_for_normal_chat(tmp_path
     result = AgentLoop(context).run("你是谁？")
 
     assert result.capability_name == "conversation"
-    assert "我现在已经支持正常对话" in result.final_answer
+    assert "我可以继续和你对话" in result.final_answer
 
 
 def test_agent_loop_invokes_skill_capability_when_selected(tmp_path: Path):
@@ -195,6 +196,18 @@ def test_agent_loop_uses_llm_first_capability_selector_when_available(tmp_path: 
 
     assert result.final_answer == "skill:hello"
     assert result.capability_name == "skill:hello_skill"
+
+
+def test_conversation_message_builder_does_not_duplicate_current_user_turn():
+    session = AssistantSession(session_id="demo")
+    session.add_turn("assistant", "你好")
+    session.add_turn("user", "帮我看看 docs")
+
+    messages = _build_messages("帮我看看 docs", session)
+
+    user_messages = [message["content"] for message in messages if message["role"] == "user"]
+
+    assert user_messages.count("帮我看看 docs") == 1
 
 
 def test_agent_loop_falls_back_to_triggered_skill_when_llm_not_available(tmp_path: Path):

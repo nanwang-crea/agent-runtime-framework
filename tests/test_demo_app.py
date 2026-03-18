@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
@@ -32,7 +33,10 @@ def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
 
     assert payload["status"] == "completed"
     assert payload["capability_name"] == "conversation"
-    assert "我现在已经支持正常对话" in payload["final_answer"]
+    assert "我可以继续和你对话" in payload["final_answer"]
+    assert payload["execution_trace"]
+    assert payload["execution_trace"][-1]["name"] == "conversation"
+    assert "source=fallback" in str(payload["execution_trace"][-1]["detail"])
 
 
 def test_demo_assets_are_loadable():
@@ -112,3 +116,57 @@ def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
     assert any(event["type"] == "delta" for event in events)
     assert events[-1]["type"] == "final"
     assert events[-1]["payload"]["status"] == "completed"
+
+
+def test_demo_assistant_app_chunks_fallback_conversation_stream(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("你现在是跟我流式输出嘛？", chunk_size=6))
+    delta_events = [event for event in events if event["type"] == "delta"]
+
+    assert len(delta_events) > 1
+    assert "".join(event["delta"] for event in delta_events) == events[-1]["payload"]["final_answer"]
+
+
+class _StreamingCompletions:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter(
+                [
+                    SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="你好"))]),
+                    SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="，我是流式回复"))]),
+                ]
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="你好，我是非流式回复"))]
+        )
+
+
+class _StreamingLLM:
+    def __init__(self) -> None:
+        self.completions = _StreamingCompletions()
+        self.chat = SimpleNamespace(completions=self.completions)
+
+
+def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+    app.context.application_context.llm_client = _StreamingLLM()
+    app.context.application_context.llm_model = "test-model"
+
+    events = list(app.stream_chat("你好"))
+
+    delta_events = [event for event in events if event["type"] == "delta"]
+
+    assert delta_events
+    assert "".join(event["delta"] for event in delta_events) == "你好，我是流式回复"
+    assert events[-1]["payload"]["final_answer"] == "你好，我是流式回复"
+    assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
+    assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)
