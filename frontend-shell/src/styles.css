@@ -224,7 +224,7 @@ select {
 }
 
 .chat-layout {
-  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .history-layout {
@@ -244,12 +244,6 @@ select {
 .conversation-panel {
   display: flex;
   flex-direction: column;
-}
-
-.insight-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .panel-head {
@@ -288,8 +282,8 @@ select {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 380px;
-  max-height: 640px;
+  min-height: 320px;
+  max-height: calc(100dvh - 340px);
   overflow: auto;
   padding-right: 4px;
 }
@@ -304,7 +298,6 @@ select {
 .history-item,
 .settings-card,
 .route-card,
-.context-block,
 .config-summary,
 .empty-state {
   border-radius: 20px;
@@ -465,11 +458,6 @@ select {
   background: rgba(255, 255, 255, 0.62);
 }
 
-.context-block p {
-  margin: 8px 0 0;
-  line-height: 1.6;
-}
-
 .run-error-card {
   border-color: rgba(163, 40, 40, 0.2);
   background: rgba(163, 40, 40, 0.08);
@@ -581,7 +569,6 @@ textarea {
   margin-top: 12px;
 }
 
-.context-block,
 .settings-card,
 .route-card,
 .timeline-card,
@@ -591,14 +578,8 @@ textarea {
   padding: 16px;
 }
 
-.context-block span,
 .provider-meta {
   color: var(--muted);
-}
-
-.context-block strong {
-  display: block;
-  margin-top: 8px;
 }
 
 .error-meta {
@@ -708,16 +689,70 @@ select {
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
+    width: min(100vw, calc(100vw - 24px));
+    padding: 12px 0 16px;
   }
 
   .sidebar {
     position: static;
     height: auto;
+    border-radius: 22px;
+    padding: 16px;
+    gap: 14px;
+  }
+
+  .brand-copy {
+    display: none;
+  }
+
+  .nav {
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .nav-item {
+    flex: 0 0 auto;
+  }
+
+  .sidebar-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .chat-layout,
   .history-layout,
   .settings-layout {
     grid-template-columns: 1fr;
+  }
+
+  .messages,
+  .timeline,
+  .history-list {
+    min-height: 260px;
+    max-height: calc(100dvh - 380px);
+  }
+}
+
+@media (max-width: 768px) {
+  .topbar h2 {
+    font-size: 24px;
+  }
+
+  .panel {
+    border-radius: 18px;
+    padding: 14px;
+  }
+
+  .messages,
+  .timeline,
+  .history-list {
+    min-height: 220px;
+    max-height: calc(100dvh - 330px);
+  }
+
+  .composer-bar {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

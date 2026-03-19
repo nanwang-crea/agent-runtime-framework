@@ -14,7 +14,6 @@ import type {
   AssistantError,
   AssistantResponse,
   ConfigResponse,
-  MemoryPayload,
   ModelsResponse,
   PlanPayload,
   SessionPayload,
@@ -52,17 +51,10 @@ function App() {
   const [workspace, setWorkspace] = useState("");
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
-  const [memory, setMemory] = useState<MemoryPayload>({
-    focused_resource: null,
-    recent_resources: [],
-    last_summary: null,
-    active_capability: null,
-  });
   const [models, setModels] = useState<ModelsResponse>({ providers: [], routes: {} });
   const [config, setConfig] = useState<ConfigResponse>({ path: "", providers: [], routes: {} });
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
-  const [streamStatus, setStreamStatus] = useState("等待新请求");
   const [runCards, setRunCards] = useState<RunCardState[]>([]);
   const [streamingReply, setStreamingReply] = useState("");
   const [pendingTokenId, setPendingTokenId] = useState<string | null>(null);
@@ -85,7 +77,6 @@ function App() {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
-    setMemory(payload.memory);
   }
 
   async function loadModels() {
@@ -115,10 +106,8 @@ function App() {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
-    setMemory(payload.memory);
     setStatus(payload.status);
     setPendingTokenId(payload.resume_token_id);
-    setStreamStatus(payload.status === "error" ? "请求失败" : "请求完成");
     setApprovalText(
       payload.approval_request
         ? `${payload.approval_request.reason} | ${payload.approval_request.capability_name} | ${payload.approval_request.instruction}`
@@ -139,7 +128,6 @@ function App() {
       return;
     }
     setStatus("streaming");
-    setStreamStatus("请求已发送");
     const anchorUserTurnIndex = displayedTurns.filter((turn) => turn.role === "user").length;
     setPendingUserMessage(trimmed);
     setStreamingReply("");
@@ -151,7 +139,6 @@ function App() {
           setActiveView("chat");
         },
         onStatus: ({ label }) => {
-          setStreamStatus(label || "处理中");
           setRunCards((current) =>
             upsertRunCard(current, {
               id: runId,
@@ -191,12 +178,8 @@ function App() {
             })),
           );
         },
-        onMemory: ({ memory: nextMemory }) => {
-          setMemory(nextMemory);
-        },
         onError: ({ error }) => {
           setStatus("error");
-          setStreamStatus("请求失败");
           setRunCards((current) =>
             upsertRunCard(current, {
               id: runId,
@@ -223,7 +206,6 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
-      setStreamStatus("请求失败");
       setRunCards((current) =>
         upsertRunCard(current, {
           id: runId,
@@ -559,26 +541,6 @@ function App() {
                 </div>
               ) : null}
             </section>
-
-            <aside className="panel insight-panel">
-              <div className="panel-head">
-                <h3>Context</h3>
-              </div>
-              <div className="context-block">
-                <span>Focused Resource</span>
-                {memory.focused_resource ? (
-                  <p>
-                    {memory.focused_resource.title} · {memory.focused_resource.kind}
-                  </p>
-                ) : (
-                  <p>当前没有焦点资源。</p>
-                )}
-              </div>
-              <div className="context-block">
-                <span>Working Summary</span>
-                <p>{memory.last_summary || "当前还没有工作摘要。"}</p>
-              </div>
-            </aside>
           </section>
         ) : null}
 
