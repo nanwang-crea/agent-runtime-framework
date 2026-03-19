@@ -224,7 +224,7 @@ select {
 }
 
 .chat-layout {
-  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.55fr);
 }
 
 .history-layout {
@@ -239,6 +239,17 @@ select {
   padding: 20px;
   border-radius: 24px;
   min-height: 0;
+}
+
+.conversation-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.insight-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .panel-head {
@@ -283,7 +294,12 @@ select {
   padding-right: 4px;
 }
 
+.messages {
+  padding-bottom: 4px;
+}
+
 .message,
+.run-card,
 .timeline-card,
 .history-item,
 .settings-card,
@@ -310,7 +326,7 @@ select {
 
 .message.assistant {
   align-self: flex-start;
-  max-width: 88%;
+  max-width: min(88%, 840px);
 }
 
 .message.streaming {
@@ -333,6 +349,187 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--muted);
+}
+
+.run-card {
+  overflow: hidden;
+  align-self: flex-start;
+  width: min(92%, 900px);
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(20, 34, 29, 0.1);
+}
+
+.run-card-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.run-card-body {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.run-card.collapsed .run-card-header {
+  min-height: 56px;
+  padding-block: 10px;
+  background: rgba(21, 92, 73, 0.05);
+}
+
+.run-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-transform: uppercase;
+  background: rgba(20, 34, 29, 0.08);
+  color: var(--muted);
+}
+
+.run-status.running,
+.run-log-entry.status {
+  color: var(--accent-strong);
+}
+
+.run-status.completed {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.run-status.error {
+  background: rgba(163, 40, 40, 0.12);
+  color: #8c1f1f;
+}
+
+.run-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.run-header-copy strong {
+  font-size: 14px;
+}
+
+.run-summary {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-toggle {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.run-log {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-log-entry {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.run-log-entry.error {
+  color: #8c1f1f;
+}
+
+.run-error-card {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.context-block p {
+  margin: 8px 0 0;
+  line-height: 1.6;
+}
+
+.run-error-card {
+  border-color: rgba(163, 40, 40, 0.2);
+  background: rgba(163, 40, 40, 0.08);
+}
+
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content pre,
+.markdown-content blockquote,
+.markdown-content table,
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin: 0 0 12px;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 20px;
+}
+
+.markdown-content code {
+  font-family: "IBM Plex Mono", monospace;
+  background: rgba(20, 34, 29, 0.08);
+  padding: 1px 4px;
+  border-radius: 6px;
+}
+
+.markdown-content pre {
+  overflow: auto;
+  padding: 14px;
+  border-radius: 16px;
+  background: #14221d;
+  color: #f4ecdf;
+}
+
+.markdown-content pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.markdown-content blockquote {
+  padding-left: 14px;
+  border-left: 3px solid rgba(21, 92, 73, 0.28);
+  color: var(--muted);
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
 }
 
 .composer {

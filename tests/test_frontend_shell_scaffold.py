@@ -26,3 +26,18 @@ def test_frontend_shell_package_declares_vite_react_and_electron():
     assert "electron" in payload["devDependencies"]
     assert "wait-on" in payload["devDependencies"]
     assert "react" in payload["dependencies"]
+    assert "react-markdown" in payload["dependencies"]
+    assert "remark-gfm" in payload["dependencies"]
+
+
+def test_frontend_chat_streaming_keeps_run_card_separate_from_answer_body():
+    app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "streamingReply" in app_tsx
+    assert "run.reply" not in app_tsx
+    assert "run-draft" not in app_tsx
+    assert "messagesRef.current.scrollTop = messagesRef.current.scrollHeight" in app_tsx
+    assert "anchorUserTurnIndex" in app_tsx
+    assert "run.anchorUserTurnIndex === userIndex" in app_tsx
+    assert "upsertRunCard" in app_tsx
+    assert 'phaseLabel: "请求已发送"' not in app_tsx

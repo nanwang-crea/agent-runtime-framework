@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   authenticateProvider,
   fetchConfig,
@@ -9,11 +9,11 @@ import {
   sendMessageStream,
   updateConfig,
 } from "./api";
+import { MarkdownContent } from "./components/MarkdownContent";
 import type {
   AssistantError,
   AssistantResponse,
   ConfigResponse,
-  ExecutionTraceStep,
   MemoryPayload,
   ModelsResponse,
   PlanPayload,
@@ -30,6 +30,24 @@ const views = [
 
 type ViewId = (typeof views)[number]["id"];
 
+type RunLogEntry = {
+  id: string;
+  kind: "status" | "step" | "warning" | "error";
+  text: string;
+};
+
+type RunCardState = {
+  id: string;
+  anchorUserTurnIndex: number;
+  capabilityName: string;
+  phaseLabel: string;
+  status: "running" | "completed" | "error";
+  entries: RunLogEntry[];
+  collapsed: boolean;
+  summary: string;
+  error: AssistantError | null;
+};
+
 function App() {
   const [workspace, setWorkspace] = useState("");
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
@@ -45,14 +63,14 @@ function App() {
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
   const [streamStatus, setStreamStatus] = useState("等待新请求");
-  const [streamError, setStreamError] = useState<AssistantError | null>(null);
+  const [runCards, setRunCards] = useState<RunCardState[]>([]);
+  const [streamingReply, setStreamingReply] = useState("");
   const [pendingTokenId, setPendingTokenId] = useState<string | null>(null);
   const [approvalText, setApprovalText] = useState("");
   const [activeView, setActiveView] = useState<ViewId>("chat");
-  const [streamingReply, setStreamingReply] = useState("");
   const [pendingUserMessage, setPendingUserMessage] = useState("");
-  const [executionTrace, setExecutionTrace] = useState<ExecutionTraceStep[]>([]);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+  const messagesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void loadSession();
@@ -91,7 +109,7 @@ function App() {
     });
   }
 
-  function applyResponse(payload: AssistantResponse) {
+  function applyResponse(payload: AssistantResponse, runId?: string, anchorUserTurnIndex?: number) {
     setWorkspace(payload.workspace);
     setSession(payload.session);
     setPlans(payload.plan_history);
@@ -99,18 +117,17 @@ function App() {
     setStatus(payload.status);
     setPendingTokenId(payload.resume_token_id);
     setStreamStatus(payload.status === "error" ? "请求失败" : "请求完成");
-    setStreamError(payload.error || null);
-    setExecutionTrace((current) => {
-      if (payload.execution_trace && payload.execution_trace.length > 0) {
-        return payload.execution_trace;
-      }
-      return current;
-    });
     setApprovalText(
       payload.approval_request
         ? `${payload.approval_request.reason} | ${payload.approval_request.capability_name} | ${payload.approval_request.instruction}`
         : "",
     );
+    if (runId) {
+      setRunCards((current) =>
+        finalizeRunCard(current, runId, payload, anchorUserTurnIndex),
+      );
+    }
+    setStreamingReply("");
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -121,31 +138,56 @@ function App() {
     }
     setStatus("streaming");
     setStreamStatus("请求已发送");
-    setStreamError(null);
+    const anchorUserTurnIndex = displayedTurns.filter((turn) => turn.role === "user").length;
     setPendingUserMessage(trimmed);
     setStreamingReply("");
-    setExecutionTrace([]);
+    const runId = `run-${Date.now()}`;
     setMessage("");
     try {
       await sendMessageStream(trimmed, {
         onStart: () => {
           setActiveView("chat");
-          setExecutionTrace([
-            {
-              name: "stream",
-              status: "running",
-              detail: "waiting_first_delta",
-            },
-          ]);
         },
         onStatus: ({ label }) => {
           setStreamStatus(label || "处理中");
+          setRunCards((current) =>
+            upsertRunCard(current, {
+              id: runId,
+              anchorUserTurnIndex,
+              capabilityName: "routing",
+              phaseLabel: label || "处理中",
+              status: "running",
+              summary: "运行中",
+              error: null,
+            }, (run) => ({
+              ...run,
+              phaseLabel: label || run.phaseLabel,
+              entries: appendRunEntry(run.entries, "status", label || "处理中"),
+            })),
+          );
         },
         onDelta: ({ delta }) => {
           setStreamingReply((current) => current + delta);
         },
         onStep: ({ step }) => {
-          setExecutionTrace((current) => [...current, step]);
+          setRunCards((current) =>
+            upsertRunCard(current, {
+              id: runId,
+              anchorUserTurnIndex,
+              capabilityName: "routing",
+              phaseLabel: "处理中",
+              status: "running",
+              summary: "运行中",
+              error: null,
+            }, (run) => ({
+              ...run,
+              entries: appendRunEntry(
+                run.entries,
+                step.status === "error" ? "error" : "step",
+                formatStepLabel(step),
+              ),
+            })),
+          );
         },
         onMemory: ({ memory: nextMemory }) => {
           setMemory(nextMemory);
@@ -153,35 +195,67 @@ function App() {
         onError: ({ error }) => {
           setStatus("error");
           setStreamStatus("请求失败");
-          setStreamError(error);
-          setExecutionTrace((current) => [
-            ...current,
-            {
-              name: error.stage || "run",
+          setRunCards((current) =>
+            upsertRunCard(current, {
+              id: runId,
+              anchorUserTurnIndex,
+              capabilityName: "assistant",
+              phaseLabel: "请求失败",
               status: "error",
-              detail: `${error.code} · ${error.message}`,
-            },
-          ]);
+              summary: `${error.code} · ${error.message}`,
+              error,
+            }, (run) => ({
+              ...run,
+              status: "error",
+              collapsed: false,
+              error,
+              summary: `${error.code} · ${error.message}`,
+              entries: appendRunEntry(run.entries, "error", `${error.code} · ${error.message}`),
+            })),
+          );
         },
         onFinal: (finalPayload) => {
-          applyResponse(finalPayload);
+          applyResponse(finalPayload, runId, anchorUserTurnIndex);
         },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
       setStreamStatus("请求失败");
-      setStreamError({
-        code: "STREAM_BROKEN",
-        message,
-        detail: message,
-        stage: "stream",
-        retriable: true,
-        suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
-      });
+      setRunCards((current) =>
+        upsertRunCard(current, {
+          id: runId,
+          anchorUserTurnIndex,
+          capabilityName: "assistant",
+          phaseLabel: "请求失败",
+          status: "error",
+          summary: message,
+          error: {
+            code: "STREAM_BROKEN",
+            message,
+            detail: message,
+            stage: "stream",
+            retriable: true,
+            suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+          },
+        }, (run) => ({
+          ...run,
+          status: "error",
+          collapsed: false,
+          error: {
+            code: "STREAM_BROKEN",
+            message,
+            detail: message,
+            stage: "stream",
+            retriable: true,
+            suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+          },
+          summary: message,
+          entries: appendRunEntry(run.entries, "error", `STREAM_BROKEN · ${message}`),
+        })),
+      );
     }
     setPendingUserMessage("");
-    setStreamingReply("");
   }
 
   async function handleApproval(approved: boolean) {
@@ -260,7 +334,43 @@ function App() {
     return turns;
   }, [pendingUserMessage, session.turns, streamingReply]);
 
-  const latestPlan = plans.length > 0 ? plans[plans.length - 1] : null;
+  const chatItems = useMemo(() => {
+    const items: Array<
+      | { id: string; kind: "message"; role: string; content: string }
+      | { id: string; kind: "run"; run: RunCardState }
+    > = [];
+    let userIndex = 0;
+
+    for (let index = 0; index < displayedTurns.length; index += 1) {
+      const turn = displayedTurns[index];
+      items.push({
+        id: `message-${index}-${turn.role}`,
+        kind: "message",
+        role: turn.role,
+        content: turn.content,
+      });
+      if (turn.role === "user") {
+        const runsForTurn = runCards.filter((run) => run.anchorUserTurnIndex === userIndex);
+        for (const run of runsForTurn) {
+          items.push({
+            id: `run-${run.id}`,
+            kind: "run",
+            run,
+          });
+        }
+        userIndex += 1;
+      }
+    }
+
+    return items;
+  }, [displayedTurns, runCards]);
+
+  useEffect(() => {
+    if (activeView !== "chat" || !messagesRef.current) {
+      return;
+    }
+    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [activeView, chatItems, streamingReply]);
 
   return (
     <main className="app-shell">
@@ -329,33 +439,40 @@ function App() {
                 ))}
               </div>
 
-              <div className="messages">
-                {displayedTurns.length === 0 ? (
+              <div ref={messagesRef} className="messages">
+                {chatItems.length === 0 ? (
                   <div className="empty-state">
                     <strong>开始一段对话</strong>
                     <p>你可以直接闲聊，也可以让我读取、总结、列出当前工作区的内容。</p>
                   </div>
                 ) : (
-                  displayedTurns.map((turn, index) => (
-                    <div key={`${turn.role}-${index}`} className={`message ${turn.role} ${index === displayedTurns.length - 1 && streamingReply && turn.role === "assistant" ? "streaming" : ""}`}>
-                      <small>{turn.role === "user" ? "You" : "Assistant"}</small>
-                      <div>{turn.content}</div>
-                    </div>
+                  chatItems.map((item) => (
+                    <Fragment key={item.id}>
+                      {item.kind === "message" ? (
+                        <div className={`message ${item.role}`}>
+                          <small>{item.role === "user" ? "You" : "Assistant"}</small>
+                          {item.role === "assistant" ? <MarkdownContent content={item.content} /> : <div>{item.content}</div>}
+                        </div>
+                      ) : (
+                        <RunCard
+                          run={item.run}
+                          onToggle={() =>
+                            setRunCards((current) =>
+                              current.map((run) =>
+                                run.id !== item.run.id
+                                  ? run
+                                  : {
+                                      ...run,
+                                      collapsed: !run.collapsed,
+                                    },
+                              ),
+                            )
+                          }
+                        />
+                      )}
+                    </Fragment>
                   ))
                 )}
-                {streamError ? (
-                  <div className="message assistant error-message">
-                    <small>Assistant</small>
-                    <div>
-                      <strong>{streamError.message}</strong>
-                      {streamError.suggestion ? <p>{streamError.suggestion}</p> : null}
-                      <p className="error-meta">
-                        {streamError.code}
-                        {streamError.stage ? ` · ${streamError.stage}` : ""}
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
               </div>
 
               <form className="composer" onSubmit={handleSubmit}>
@@ -387,26 +504,7 @@ function App() {
 
             <aside className="panel insight-panel">
               <div className="panel-head">
-                <h3>Live Context</h3>
-              </div>
-              <div className="context-block">
-                <span>Current Activity</span>
-                <p>{streamStatus}</p>
-              </div>
-              <div className="context-block">
-                <span>Execution Steps</span>
-                {executionTrace.length > 0 ? (
-                  <ul className="flat-list">
-                    {executionTrace.map((step, index) => (
-                      <li key={`${step.name}-${index}`}>
-                        <strong>{step.name}</strong> · {step.status}
-                        {step.detail ? ` · ${step.detail}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p>当前还没有执行步骤。</p>
-                )}
+                <h3>Context</h3>
               </div>
               <div className="context-block">
                 <span>Focused Resource</span>
@@ -419,49 +517,8 @@ function App() {
                 )}
               </div>
               <div className="context-block">
-                <span>Recent Context</span>
-                {memory.recent_resources.length > 0 ? (
-                  <ul className="flat-list">
-                    {memory.recent_resources.map((resource) => (
-                      <li key={resource.resource_id}>
-                        <strong>{resource.title}</strong> · {resource.kind}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p>当前没有最近资源。</p>
-                )}
-              </div>
-              <div className="context-block">
                 <span>Working Summary</span>
                 <p>{memory.last_summary || "当前还没有工作摘要。"}</p>
-              </div>
-              <div className="context-block">
-                <span>Latest Plan</span>
-                {latestPlan ? (
-                  <>
-                    <strong>{latestPlan.goal}</strong>
-                    <ul className="flat-list">
-                      {latestPlan.steps.map((step, index) => (
-                        <li key={`${latestPlan.plan_id}-${index}`}>
-                          <strong>{step.capability_name}</strong> · {step.status}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : (
-                  <p>还没有计划。</p>
-                )}
-              </div>
-              <div className="context-block">
-                <span>Model Route</span>
-                <ul className="flat-list">
-                  {modelRoles.map((role) => (
-                    <li key={role}>
-                      <strong>{role}</strong> · {models.routes[role]?.provider || "未设置"} / {models.routes[role]?.model_name || "未设置"}
-                    </li>
-                  ))}
-                </ul>
               </div>
             </aside>
           </section>
@@ -639,6 +696,139 @@ function App() {
         ) : null}
       </section>
     </main>
+  );
+}
+
+function appendRunEntry(entries: RunLogEntry[], kind: RunLogEntry["kind"], text: string): RunLogEntry[] {
+  if (!text.trim()) {
+    return entries;
+  }
+  const previous = entries[entries.length - 1];
+  if (previous && previous.kind === kind && previous.text === text) {
+    return entries;
+  }
+  return [...entries, { id: `${kind}-${entries.length}-${text}`, kind, text }];
+}
+
+function upsertRunCard(
+  runs: RunCardState[],
+  base: Omit<RunCardState, "entries" | "collapsed">,
+  update: (run: RunCardState) => RunCardState,
+): RunCardState[] {
+  const existing = runs.find((run) => run.id === base.id);
+  if (existing) {
+    return runs.map((run) => (run.id === base.id ? update(run) : run));
+  }
+  const created: RunCardState = {
+    ...base,
+    entries: [],
+    collapsed: false,
+  };
+  return [...runs, update(created)];
+}
+
+function finalizeRunCard(
+  runs: RunCardState[],
+  runId: string,
+  payload: AssistantResponse,
+  anchorUserTurnIndex?: number,
+): RunCardState[] {
+  const summary = buildRunSummary(payload);
+  const error = payload.error || null;
+  const existing = runs.find((run) => run.id === runId);
+
+  if (!existing) {
+    if (!payload.execution_trace.length && !error) {
+      return runs;
+    }
+    return [
+      ...runs,
+      {
+        id: runId,
+        anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
+        capabilityName: payload.capability_name || "assistant",
+        phaseLabel: summary,
+        status: payload.status === "error" ? "error" : "completed",
+        entries: payload.execution_trace.map((step, index) => ({
+          id: `final-step-${index}-${step.name}`,
+          kind: step.status === "error" ? "error" : "step",
+          text: formatStepLabel(step),
+        })),
+        collapsed: payload.status !== "error",
+        summary,
+        error,
+      },
+    ];
+  }
+
+  return runs.map((run) =>
+    run.id !== runId
+      ? run
+      : {
+          ...run,
+          capabilityName: payload.capability_name || run.capabilityName,
+          phaseLabel: summary,
+          status: payload.status === "error" ? "error" : "completed",
+          collapsed: payload.status !== "error",
+          summary,
+          error,
+        },
+  );
+}
+
+function formatStepLabel(step: AssistantResponse["execution_trace"][number]): string {
+  return step.detail ? `${step.name} · ${step.status} · ${step.detail}` : `${step.name} · ${step.status}`;
+}
+
+function buildRunSummary(payload: AssistantResponse): string {
+  const lastTrace = payload.execution_trace[payload.execution_trace.length - 1];
+  if (payload.status === "error" && payload.error) {
+    return `${payload.error.code} · ${payload.error.message}`;
+  }
+  if (lastTrace?.detail) {
+    return lastTrace.detail;
+  }
+  if (payload.capability_name) {
+    return `已完成 ${payload.capability_name}`;
+  }
+  return "已完成";
+}
+
+function RunCard({ run, onToggle }: { run: RunCardState; onToggle: () => void }) {
+  const summaryText = (run.collapsed ? run.summary : run.phaseLabel).trim() || run.phaseLabel || run.summary || "运行中";
+
+  return (
+    <div className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
+      <button type="button" className="run-card-header" onClick={onToggle}>
+        <span className={`run-status ${run.status}`}>{run.status}</span>
+        <div className="run-header-copy">
+          <strong>{run.capabilityName || "assistant"}</strong>
+          <span className="run-summary">{summaryText}</span>
+        </div>
+        <span className="run-toggle">{run.collapsed ? "展开" : "收起"}</span>
+      </button>
+      {!run.collapsed ? (
+        <div className="run-card-body">
+          <ul className="run-log">
+            {run.entries.map((entry) => (
+              <li key={entry.id} className={`run-log-entry ${entry.kind}`}>
+                {entry.text}
+              </li>
+            ))}
+          </ul>
+          {run.error ? (
+            <div className="run-error-card">
+              <strong>{run.error.message}</strong>
+              {run.error.suggestion ? <p>{run.error.suggestion}</p> : null}
+              <p className="error-meta">
+                {run.error.code}
+                {run.error.stage ? ` · ${run.error.stage}` : ""}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
