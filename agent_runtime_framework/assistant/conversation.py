@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Iterable
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
@@ -80,6 +81,7 @@ def stream_conversation_reply(
     runtime = resolve_model_runtime(context.application_context, "conversation")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+    max_tokens = _conversation_max_tokens()
 
     if llm_client is None or not hasattr(llm_client, "chat"):
         reason = (
@@ -97,7 +99,7 @@ def stream_conversation_reply(
                 model=model_name,
                 messages=_build_messages(user_input, session),
                 temperature=0.3,
-                max_tokens=400,
+                max_tokens=max_tokens,
                 stream=True,
             )
             streamed = False
@@ -120,7 +122,7 @@ def stream_conversation_reply(
                 model=model_name,
                 messages=_build_messages(user_input, session),
                 temperature=0.3,
-                max_tokens=400,
+                max_tokens=max_tokens,
             )
             content = response.choices[0].message.content or ""
             if content.strip():
@@ -192,3 +194,14 @@ def _format_error_detail(exc: Exception) -> str:
     detail = f"{type(exc).__name__}: {exc}".strip()
     detail = " ".join(detail.split())
     return detail[:240]
+
+
+def _conversation_max_tokens() -> int:
+    raw = os.getenv("ARF_CONVERSATION_MAX_TOKENS", "").strip()
+    if not raw:
+        return 128000
+    try:
+        value = int(raw)
+    except ValueError:
+        return 128000
+    return min(256000, max(128000, value))
