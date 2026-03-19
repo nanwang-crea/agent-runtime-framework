@@ -69,8 +69,10 @@ function App() {
   const [approvalText, setApprovalText] = useState("");
   const [activeView, setActiveView] = useState<ViewId>("chat");
   const [pendingUserMessage, setPendingUserMessage] = useState("");
+  const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     void loadSession();
@@ -365,12 +367,57 @@ function App() {
     return items;
   }, [displayedTurns, runCards]);
 
+  const latestRunCardId = runCards.length > 0 ? runCards[runCards.length - 1].id : null;
+
+  function refreshLatestRunVisibility() {
+    if (activeView !== "chat") {
+      setShowJumpToLatestRun(false);
+      return;
+    }
+    if (!latestRunCardId) {
+      setShowJumpToLatestRun(false);
+      return;
+    }
+    const container = messagesRef.current;
+    const latestRunElement = runCardRefs.current[latestRunCardId];
+    if (!container || !latestRunElement) {
+      setShowJumpToLatestRun(false);
+      return;
+    }
+    const viewTop = container.scrollTop;
+    const viewBottom = viewTop + container.clientHeight;
+    const cardTop = latestRunElement.offsetTop;
+    const cardBottom = cardTop + latestRunElement.offsetHeight;
+    const isVisible = cardBottom > viewTop && cardTop < viewBottom;
+    setShowJumpToLatestRun(!isVisible);
+  }
+
+  function handleMessagesScroll() {
+    refreshLatestRunVisibility();
+  }
+
+  function handleJumpToLatestRun() {
+    if (!latestRunCardId) {
+      return;
+    }
+    const latestRunElement = runCardRefs.current[latestRunCardId];
+    if (!latestRunElement) {
+      return;
+    }
+    latestRunElement.scrollIntoView({ behavior: "smooth", block: "center" });
+    setShowJumpToLatestRun(false);
+  }
+
   useEffect(() => {
     if (activeView !== "chat" || !messagesRef.current) {
       return;
     }
     messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
   }, [activeView, chatItems, streamingReply]);
+
+  useEffect(() => {
+    refreshLatestRunVisibility();
+  }, [activeView, chatItems, latestRunCardId, streamingReply]);
 
   return (
     <main className="app-shell">
@@ -439,7 +486,7 @@ function App() {
                 ))}
               </div>
 
-              <div ref={messagesRef} className="messages">
+              <div ref={messagesRef} className="messages" onScroll={handleMessagesScroll}>
                 {chatItems.length === 0 ? (
                   <div className="empty-state">
                     <strong>开始一段对话</strong>
@@ -456,6 +503,9 @@ function App() {
                       ) : (
                         <RunCard
                           run={item.run}
+                          setContainerRef={(element) => {
+                            runCardRefs.current[item.run.id] = element;
+                          }}
                           onToggle={() =>
                             setRunCards((current) =>
                               current.map((run) =>
@@ -474,6 +524,14 @@ function App() {
                   ))
                 )}
               </div>
+
+              {showJumpToLatestRun ? (
+                <div className="run-jump-wrap">
+                  <button type="button" className="ghost" onClick={handleJumpToLatestRun}>
+                    跳到最新流程
+                  </button>
+                </div>
+              ) : null}
 
               <form className="composer" onSubmit={handleSubmit}>
                 <textarea
@@ -794,11 +852,19 @@ function buildRunSummary(payload: AssistantResponse): string {
   return "已完成";
 }
 
-function RunCard({ run, onToggle }: { run: RunCardState; onToggle: () => void }) {
+function RunCard({
+  run,
+  onToggle,
+  setContainerRef,
+}: {
+  run: RunCardState;
+  onToggle: () => void;
+  setContainerRef?: (element: HTMLDivElement | null) => void;
+}) {
   const summaryText = (run.collapsed ? run.summary : run.phaseLabel).trim() || run.phaseLabel || run.summary || "运行中";
 
   return (
-    <div className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
+    <div ref={setContainerRef} className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
       <button type="button" className="run-card-header" onClick={onToggle}>
         <span className={`run-status ${run.status}`}>{run.status}</span>
         <div className="run-header-copy">

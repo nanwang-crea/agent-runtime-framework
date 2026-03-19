@@ -316,6 +316,7 @@ select {
   padding: 14px 16px;
   line-height: 1.6;
   white-space: pre-wrap;
+  flex-shrink: 0;
 }
 
 .message.user {
@@ -357,6 +358,13 @@ select {
   width: min(92%, 900px);
   background: rgba(255, 255, 255, 0.82);
   border-color: rgba(20, 34, 29, 0.1);
+  flex-shrink: 0;
+}
+
+.run-jump-wrap {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-start;
 }
 
 .run-card-header {
