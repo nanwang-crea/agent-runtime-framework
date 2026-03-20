@@ -199,9 +199,9 @@ def _format_error_detail(exc: Exception) -> str:
 def _conversation_max_tokens() -> int:
     raw = os.getenv("ARF_CONVERSATION_MAX_TOKENS", "").strip()
     if not raw:
-        return 128000
+        return 10240
     try:
         value = int(raw)
     except ValueError:
-        return 128000
-    return min(256000, max(128000, value))
+        return 10240
+    return min(10240, max(1, value))
