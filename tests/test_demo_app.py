@@ -70,14 +70,14 @@ def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path
     selected = app.update_model_center(
         {
             "routes": {
-                "conversation": {"instance": "openai", "model": "gpt-4.1-mini"},
+                "conversation": {"instance": "openai", "model": "gpt-5.4"},
             }
         }
     )
 
     assert before["runtime"]["instances"]
     assert auth_payload["runtime"]["instances"]["openai"]["authenticated"] is True
-    assert selected["config"]["routes"]["conversation"]["model"] == "gpt-4.1-mini"
+    assert selected["config"]["routes"]["conversation"]["model"] == "gpt-5.4"
 
 
 def test_demo_assistant_app_exposes_minimax_and_codex_models(tmp_path: Path):

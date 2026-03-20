@@ -154,7 +154,7 @@ Proposed shape:
       },
       "catalog": {
         "mode": "static",
-        "models": ["gpt-4.1-mini", "gpt-4.1"]
+        "models": ["gpt-5.4"]
       }
     },
     "lab_gateway": {
@@ -168,14 +168,14 @@ Proposed shape:
       },
       "catalog": {
         "mode": "static",
-        "models": ["gpt-4.1-mini"]
+        "models": ["gpt-5.4"]
       }
     }
   },
   "routes": {
     "conversation": {
       "instance": "lab_gateway",
-      "model": "gpt-4.1-mini"
+      "model": "gpt-5.4"
     }
   }
 }
@@ -206,8 +206,8 @@ Proposed payload shape:
         "auth_error": "",
         "models": [
           {
-            "model_name": "gpt-4.1-mini",
-            "display_name": "GPT-4.1 Mini"
+            "model_name": "gpt-5.4",
+            "display_name": "GPT-5.4"
           }
         ]
       }
@@ -215,7 +215,7 @@ Proposed payload shape:
     "routes": {
       "conversation": {
         "instance": "lab_gateway",
-        "model": "gpt-4.1-mini"
+        "model": "gpt-5.4"
       }
     }
   }

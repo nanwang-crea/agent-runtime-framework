@@ -26,7 +26,7 @@ DEFAULT_V3_CONFIG: dict[str, Any] = {
             "enabled": True,
             "connection": {"base_url": "https://api.openai.com/v1"},
             "credentials": {"api_key": ""},
-            "catalog": {"mode": "static", "models": ["gpt-4.1-mini", "gpt-4.1"]},
+            "catalog": {"mode": "static", "models": ["gpt-5.4"]},
         },
         "dashscope": {
             "type": "openai_compatible",

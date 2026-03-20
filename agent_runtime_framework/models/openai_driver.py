@@ -173,8 +173,7 @@ def _profile_for_model(instance_id: str, model_name: str) -> ModelProfile:
         "qwen3.5-plus": ("Qwen 3.5 Plus", "medium", "medium", "high"),
         "qwen-plus": ("Qwen Plus", "low", "low", "medium"),
         "MiniMax-M2.1": ("MiniMax-M2.1", "medium", "medium", "high"),
-        "gpt-4.1-mini": ("GPT-4.1 Mini", "low", "low", "medium"),
-        "gpt-4.1": ("GPT-4.1", "medium", "medium", "high"),
+        "gpt-5.4": ("GPT-5.4", "high", "medium", "high"),
     }
     display_name, cost_level, latency_level, reasoning_level = known.get(
         model_name,

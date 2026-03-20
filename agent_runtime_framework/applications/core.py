@@ -60,7 +60,7 @@ class ApplicationContext:
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     config: dict[str, Any] = field(default_factory=dict)
     llm_client: Any = None
-    llm_model: str = "gpt-4.1-mini"
+    llm_model: str = "gpt-5.4"
     services: dict[str, Any] = field(default_factory=dict)
     resource_resolver: Any = field(default_factory=LocalResourceResolver)
     observer: RunObserver = field(default_factory=InMemoryRunObserver)
