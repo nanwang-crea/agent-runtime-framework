@@ -86,8 +86,8 @@ def stream_conversation_reply(
     if llm_client is None or not hasattr(llm_client, "chat"):
         reason = (
             "llm_unavailable: 未配置可用模型。请在前端「模型 / 配置」中："
-            "1) 为 dashscope 填写 API Key 并认证；"
-            "2) 为 conversation 选择模型（如 qwen3.5-plus）。"
+            "1) 配置一个可用的模型实例并完成认证；"
+            "2) 为 conversation 绑定实例和模型。"
         )
         meta["reason"] = reason
         logger.warning("conversation fallback: %s", reason)

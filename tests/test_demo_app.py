@@ -49,18 +49,99 @@ def test_demo_assets_are_loadable():
     assert ":root" in css
 
 
-def test_demo_assistant_app_exposes_model_state_and_selection(tmp_path: Path):
+def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    before = app.models_payload()
-    auth = app.authenticate_provider("openai", {"api_key": "test-key"})
-    selected = app.select_model("conversation", "openai", "gpt-4.1-mini")
+    before = app.model_center_payload()
+    app.update_model_center(
+        {
+            "provider_instances": {
+                "openai": {
+                    "type": "openai_compatible",
+                    "credentials": {"api_key": "test-key"},
+                    "connection": {"base_url": "https://api.openai.com/v1"},
+                }
+            }
+        }
+    )
+    auth_payload = app.run_model_center_action("authenticate_instance", {"instance": "openai"})
+    selected = app.update_model_center(
+        {
+            "routes": {
+                "conversation": {"instance": "openai", "model": "gpt-4.1-mini"},
+            }
+        }
+    )
 
-    assert before["providers"]
-    assert auth["auth_session"]["authenticated"] is True
-    assert selected["routes"]["conversation"]["model_name"] == "gpt-4.1-mini"
+    assert before["runtime"]["instances"]
+    assert auth_payload["runtime"]["instances"]["openai"]["authenticated"] is True
+    assert selected["config"]["routes"]["conversation"]["model"] == "gpt-4.1-mini"
+
+
+def test_demo_assistant_app_exposes_minimax_and_codex_models(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.model_center_payload()
+    by_provider = payload["runtime"]["instances"]
+
+    assert "minimax" in by_provider
+    assert "codex_local" in by_provider
+    assert any(model["model_name"] == "MiniMax-M2.1" for model in by_provider["minimax"]["models"])
+    assert any(model["model_name"] == "gpt-5.3-codex" for model in by_provider["codex_local"]["models"])
+
+
+def test_demo_assistant_app_exposes_model_center_payload(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.model_center_payload()
+
+    assert payload["config"]["schema_version"] == 3
+    assert "runtime" in payload
+    assert "dashscope" in payload["config"]["provider_instances"]
+    assert any(model["model_name"] == "qwen3.5-plus" for model in payload["runtime"]["instances"]["dashscope"]["models"])
+
+
+def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.update_model_center(
+        {
+            "routes": {
+                "conversation": {"instance": "dashscope", "model": "qwen-plus"},
+                "capability_selector": {"instance": "dashscope", "model": "qwen-plus"},
+                "planner": {"instance": "dashscope", "model": "qwen-plus"},
+            }
+        }
+    )
+
+    assert payload["config"]["routes"]["conversation"]["model"] == "qwen-plus"
+    persisted = json.loads((workspace / ".arf_demo_config.json").read_text(encoding="utf-8"))
+    assert persisted["routes"]["conversation"]["model"] == "qwen-plus"
+
+
+def test_demo_assistant_app_default_route_can_drive_other_roles(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.update_model_center(
+        {
+            "routes": {
+                "default": {"instance": "minimax", "model": "MiniMax-M2.1"},
+            }
+        }
+    )
+
+    assert payload["config"]["routes"]["default"] == {"instance": "minimax", "model": "MiniMax-M2.1"}
+    assert payload["runtime"]["routes"]["default"] == {"instance": "minimax", "model": "MiniMax-M2.1"}
 
 
 def test_demo_assistant_app_creates_default_config_center(tmp_path: Path):
@@ -68,10 +149,10 @@ def test_demo_assistant_app_creates_default_config_center(tmp_path: Path):
     workspace.mkdir()
 
     app = create_demo_assistant_app(workspace)
-    config = app.config_payload()
+    config = app.model_center_payload()["config"]
 
-    assert config["providers"][0]["provider"] == "dashscope"
-    assert config["routes"]["conversation"]["model_name"] == "qwen3.5-plus"
+    assert "dashscope" in config["provider_instances"]
+    assert config["routes"]["conversation"]["model"] == "qwen3.5-plus"
     assert (workspace / ".arf_demo_config.json").exists()
 
 
@@ -80,18 +161,19 @@ def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    result = app.update_config(
+    result = app.update_model_center(
         {
-            "providers": {
+            "provider_instances": {
                 "dashscope": {
-                    "api_key": "sk-test",
-                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "type": "openai_compatible",
+                    "credentials": {"api_key": "sk-test"},
+                    "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
                 }
             },
             "routes": {
                 "conversation": {
-                    "provider": "dashscope",
-                    "model_name": "qwen-plus",
+                    "instance": "dashscope",
+                    "model": "qwen-plus",
                 }
             },
         }
@@ -99,9 +181,9 @@ def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
 
     persisted = json.loads((workspace / ".arf_demo_config.json").read_text(encoding="utf-8"))
 
-    assert result["config"]["routes"]["conversation"]["model_name"] == "qwen-plus"
-    assert result["models"]["routes"]["conversation"]["model_name"] == "qwen-plus"
-    assert persisted["providers"]["dashscope"]["api_key"] == "sk-test"
+    assert result["config"]["routes"]["conversation"]["model"] == "qwen-plus"
+    assert persisted["schema_version"] == 3
+    assert persisted["provider_instances"]["dashscope"]["credentials"]["api_key"] == "sk-test"
 
 
 def test_demo_assistant_app_streams_chat_events(tmp_path: Path):

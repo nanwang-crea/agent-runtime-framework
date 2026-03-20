@@ -1,4 +1,11 @@
-import type { AssistantError, AssistantResponse, ConfigResponse, ExecutionTraceStep, MemoryPayload, ModelsResponse, SessionResponse } from "./types";
+import type {
+  AssistantError,
+  AssistantResponse,
+  ExecutionTraceStep,
+  MemoryPayload,
+  ModelCenterResponse,
+  SessionResponse,
+} from "./types";
 
 /**
  * 后端 API 根地址。
@@ -114,43 +121,23 @@ export function respondApproval(tokenId: string, approved: boolean): Promise<Ass
   });
 }
 
-export function fetchModels(): Promise<ModelsResponse> {
-  return request<ModelsResponse>("/api/models");
+export function fetchModelCenter(): Promise<ModelCenterResponse> {
+  return request<ModelCenterResponse>("/api/model-center");
 }
 
-export function authenticateProvider(provider: string, apiKey: string, baseUrl?: string): Promise<ModelsResponse> {
-  return request<ModelsResponse>("/api/providers/auth", {
+export function updateModelCenter(payload: {
+  provider_instances?: Record<string, Record<string, unknown>>;
+  routes?: Record<string, { instance: string; model: string }>;
+}): Promise<ModelCenterResponse> {
+  return request<ModelCenterResponse>("/api/model-center", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      provider,
-      api_key: apiKey,
-      base_url: baseUrl || "",
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
-export function selectModel(role: string, provider: string, modelName: string): Promise<ModelsResponse> {
-  return request<ModelsResponse>("/api/models/select", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      role,
-      provider,
-      model_name: modelName,
-    }),
-  });
-}
-
-export function fetchConfig(): Promise<ConfigResponse> {
-  return request<ConfigResponse>("/api/config");
-}
-
-export function updateConfig(payload: {
-  providers?: Record<string, { api_key?: string; base_url?: string }>;
-  routes?: Record<string, { provider: string; model_name: string }>;
-}): Promise<{ config: ConfigResponse; models: ModelsResponse }> {
-  return request<{ config: ConfigResponse; models: ModelsResponse }>("/api/config", {
+export function runModelCenterAction(payload: { action: string; instance?: string }): Promise<ModelCenterResponse> {
+  return request<ModelCenterResponse>("/api/model-center/actions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

@@ -61,11 +61,8 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     }
                 )
                 return
-            if self.path == "/api/models":
-                self._send_json(app.models_payload())
-                return
-            if self.path == "/api/config":
-                self._send_json(app.config_payload())
+            if self.path == "/api/model-center":
+                self._send_json(app.model_center_payload())
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -97,35 +94,17 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(app.approve(token_id, approved))
                 return
-            if self.path == "/api/providers/auth":
+            if self.path == "/api/model-center":
                 payload = self._read_json()
-                provider = str(payload.get("provider") or "").strip()
-                if not provider:
-                    self._send_json({"error": "provider is required"}, status=HTTPStatus.BAD_REQUEST)
-                    return
-                credentials = {
-                    key: value
-                    for key, value in payload.items()
-                    if key != "provider"
-                }
-                self._send_json(app.authenticate_provider(provider, credentials))
+                self._send_json(app.update_model_center(payload))
                 return
-            if self.path == "/api/models/select":
+            if self.path == "/api/model-center/actions":
                 payload = self._read_json()
-                role = str(payload.get("role") or "").strip()
-                provider = str(payload.get("provider") or "").strip()
-                model_name = str(payload.get("model_name") or "").strip()
-                if not role or not provider or not model_name:
-                    self._send_json(
-                        {"error": "role, provider, and model_name are required"},
-                        status=HTTPStatus.BAD_REQUEST,
-                    )
+                action = str(payload.get("action") or "").strip()
+                if not action:
+                    self._send_json({"error": "action is required"}, status=HTTPStatus.BAD_REQUEST)
                     return
-                self._send_json(app.select_model(role, provider, model_name))
-                return
-            if self.path == "/api/config":
-                payload = self._read_json()
-                self._send_json(app.update_config(payload))
+                self._send_json(app.run_model_center_action(action, payload))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

@@ -82,6 +82,11 @@ class ModelRegistry:
     def register_provider(self, provider: ModelProvider) -> None:
         self._providers[provider.provider_name] = provider
 
+    def reset(self) -> None:
+        self._providers.clear()
+        self._auth_sessions.clear()
+        self.credential_store = InMemoryCredentialStore()
+
     def provider(self, provider_name: str) -> ModelProvider:
         provider = self._providers.get(provider_name)
         if provider is None:
@@ -120,6 +125,9 @@ class ModelRouter:
     def set_route(self, role: str, *, provider: str, model_name: str) -> None:
         self._routes[role] = (provider, model_name)
 
+    def reset(self) -> None:
+        self._routes.clear()
+
     def get_route(self, role: str) -> dict[str, str] | None:
         route = self._routes.get(role)
         if route is None:
@@ -134,7 +142,7 @@ class ModelRouter:
         }
 
     def resolve(self, role: str) -> ModelRuntime | None:
-        route = self._routes.get(role)
+        route = self._routes.get(role) or self._routes.get("default")
         if route is None:
             return None
         provider_name, model_name = route

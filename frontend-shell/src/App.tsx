@@ -1,26 +1,25 @@
 import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  authenticateProvider,
-  fetchConfig,
-  fetchModels,
+  fetchModelCenter,
   fetchSession,
   respondApproval,
-  selectModel,
+  runModelCenterAction,
   sendMessageStream,
-  updateConfig,
+  updateModelCenter,
 } from "./api";
 import { MarkdownContent } from "./components/MarkdownContent";
 import type {
   AssistantError,
   AssistantResponse,
   ConfigResponse,
+  ModelCenterResponse,
   ModelsResponse,
   PlanPayload,
   SessionPayload,
 } from "./types";
 
 const examples = ["你好", "列出当前目录", "读取 README.md", "总结 README.md"];
-const modelRoles = ["conversation", "capability_selector", "planner"];
+const routedRoles = ["default", "conversation", "capability_selector", "planner", "interpreter", "resolver", "executor", "composer"];
 const views = [
   { id: "chat", label: "Chat" },
   { id: "history", label: "History" },
@@ -51,8 +50,7 @@ function App() {
   const [workspace, setWorkspace] = useState("");
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
-  const [models, setModels] = useState<ModelsResponse>({ providers: [], routes: {} });
-  const [config, setConfig] = useState<ConfigResponse>({ path: "", providers: [], routes: {} });
+  const [modelCenter, setModelCenter] = useState<ModelCenterResponse | null>(null);
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
   const [runCards, setRunCards] = useState<RunCardState[]>([]);
@@ -63,13 +61,13 @@ function App() {
   const [pendingUserMessage, setPendingUserMessage] = useState("");
   const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+  const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     void loadSession();
-    void loadModels();
-    void loadConfig();
+    void loadModelCenter();
   }, []);
 
   async function loadSession() {
@@ -79,28 +77,76 @@ function App() {
     setPlans(payload.plan_history);
   }
 
-  async function loadModels() {
-    setModels(await fetchModels());
-  }
-
-  async function loadConfig() {
-    const payload = await fetchConfig();
-    setConfig(payload);
+  async function loadModelCenter() {
+    const payload = await fetchModelCenter();
+    setModelCenter(payload);
     setProviderDrafts((current) => {
       const next = { ...current };
-      for (const provider of payload.providers) {
-        if (!next[provider.provider]) {
-          next[provider.provider] = { apiKey: "", baseUrl: provider.base_url || "" };
-        } else if (!next[provider.provider].baseUrl) {
-          next[provider.provider] = {
-            ...next[provider.provider],
-            baseUrl: provider.base_url || "",
+      for (const [providerName, providerCfg] of Object.entries(payload.config.provider_instances || {})) {
+        const baseUrl = String((providerCfg.connection || {})["base_url"] || "");
+        if (!next[providerName]) {
+          next[providerName] = { apiKey: "", baseUrl };
+        } else if (!next[providerName].baseUrl) {
+          next[providerName] = {
+            ...next[providerName],
+            baseUrl,
           };
         }
       }
       return next;
     });
   }
+
+  const models = useMemo<ModelsResponse>(() => {
+    if (!modelCenter) {
+      return { providers: [], routes: {} };
+    }
+    const providers = Object.entries(modelCenter.runtime.instances || {}).map(([provider, state]) => ({
+      instance: provider,
+      type: state.type,
+      authenticated: Boolean(state.authenticated),
+      auth_error: state.auth_error || "",
+      models: state.models || [],
+    }));
+    return {
+      providers,
+      routes: Object.fromEntries(
+        Object.entries(modelCenter.runtime.routes || {}).map(([role, route]) => [
+          role,
+          { instance: route.instance, model_name: route.model },
+        ]),
+      ),
+    };
+  }, [modelCenter]);
+
+  const config = useMemo<ConfigResponse>(() => {
+    if (!modelCenter) {
+      return { path: "", providers: [], routes: {} };
+    }
+    const providers = Object.entries(modelCenter.config.provider_instances || {}).map(([provider, providerCfg]) => {
+      const credentials = providerCfg.credentials || {};
+      const apiKey = String(credentials["api_key"] || "");
+      return {
+        instance: provider,
+        type: providerCfg.type,
+        enabled: Boolean(providerCfg.enabled),
+        api_key_set: Boolean(apiKey),
+        api_key_preview: maskApiKey(apiKey),
+        base_url: String((providerCfg.connection || {})["base_url"] || ""),
+      };
+    });
+    const routes = Object.fromEntries(
+      Object.entries(modelCenter.config.routes || {}).map(([role, route]) => [
+        role,
+        { instance: route.instance, model_name: route.model },
+      ]),
+    );
+    return {
+      path: String(modelCenter.runtime_checks?.config_path || ""),
+      providers,
+      routes,
+    };
+  }, [modelCenter]);
 
   function applyResponse(payload: AssistantResponse, runId?: string, anchorUserTurnIndex?: number) {
     setWorkspace(payload.workspace);
@@ -263,40 +309,84 @@ function App() {
 
   async function handleAuth(provider: string) {
     const draft = providerDrafts[provider] || { apiKey: "", baseUrl: "" };
-    const payload = await authenticateProvider(provider, draft.apiKey, draft.baseUrl);
-    setModels(payload);
-    await loadConfig();
+    const updated = await updateModelCenter({
+      provider_instances: {
+        [provider]: {
+          credentials: { api_key: draft.apiKey },
+          connection: { base_url: draft.baseUrl },
+        },
+      },
+    });
+    setModelCenter(updated);
+    const payload = await runModelCenterAction({ action: "authenticate_instance", instance: provider });
+    setModelCenter(payload);
     updateDraft(provider, "apiKey", "");
   }
 
-  async function handleModelSelect(role: string, provider: string, modelName: string) {
+  async function handleDefaultModelSelect(provider: string, modelName: string) {
     if (!provider || !modelName) {
       return;
     }
-    const payload = await selectModel(role, provider, modelName);
-    setModels(payload);
-    await loadConfig();
+    const routes = Object.fromEntries(
+      routedRoles.map((role) => [role, { instance: provider, model: modelName }]),
+    );
+    const payload = await updateModelCenter({ routes });
+    setModelCenter(payload);
   }
 
-  async function handleSaveConfig(provider: string, modelName: string) {
+  function preferredModelForProvider(provider: string): string {
+    const providerState = models.providers.find((item) => item.instance === provider);
+    if (!providerState) {
+      return "";
+    }
+    const routed = routedRoles
+      .map((role) => models.routes[role])
+      .find((route) => route?.instance === provider);
+    return routed?.model_name || providerState.models[0]?.model_name || "";
+  }
+
+  async function handleSaveConfig(provider: string) {
     const draft = providerDrafts[provider] || { apiKey: "", baseUrl: "" };
-    const payload = await updateConfig({
-      providers: {
-        [provider]: {
-          api_key: draft.apiKey,
-          base_url: draft.baseUrl,
+    const payload = await updateModelCenter(
+      {
+        provider_instances: {
+          [provider]: {
+            credentials: { api_key: draft.apiKey },
+            connection: { base_url: draft.baseUrl },
+          },
         },
       },
-      routes: {
-        conversation: { provider, model_name: modelName },
-        capability_selector: { provider, model_name: modelName },
-        planner: { provider, model_name: modelName },
-      },
-    });
-    setConfig(payload.config);
-    setModels(payload.models);
+    );
+    setModelCenter(payload);
     updateDraft(provider, "apiKey", "");
   }
+
+  const selectedGlobalProvider =
+    models.routes.default?.instance || models.routes.conversation?.instance || models.providers[0]?.instance || "";
+  const selectedGlobalProviderState = models.providers.find((item) => item.instance === selectedGlobalProvider) || models.providers[0];
+  const selectedGlobalModel =
+    models.routes.default?.model_name ||
+    models.routes.conversation?.model_name ||
+    selectedGlobalProviderState?.models[0]?.model_name ||
+    "";
+  const readyProviderCount = models.providers.filter((item) => item.authenticated).length;
+  const selectedGlobalBaseUrl =
+    config.providers.find((item) => item.instance === selectedGlobalProvider)?.base_url || "未配置";
+
+  useEffect(() => {
+    setGlobalModelDraft((current) => {
+      if (
+        current.instance === selectedGlobalProvider &&
+        current.model === selectedGlobalModel
+      ) {
+        return current;
+      }
+      return {
+        instance: selectedGlobalProvider,
+        model: selectedGlobalModel,
+      };
+    });
+  }, [selectedGlobalModel, selectedGlobalProvider]);
 
   const displayedTurns = useMemo(() => {
     const turns = [...session.turns];
@@ -601,112 +691,134 @@ function App() {
           <section className="settings-layout">
             <section className="panel settings-panel">
               <div className="panel-head">
-                <h3>Config Center</h3>
+                <h3>Model Console</h3>
               </div>
-              <div className="config-summary">
+              <div className="model-console-hero">
+                <div className="hero-copy">
+                  <span className="eyebrow">Global Runtime</span>
+                  <h3>{selectedGlobalModel || "未选择模型"}</h3>
+                  <p>当前界面只保留一个全局生效模型。被选中的实例和模型会统一驱动对话、规划和内部解析流程，其他实例只作为候选资源存在。</p>
+                </div>
+                <div className="hero-metrics">
+                  <div className="metric-tile">
+                    <span>Active Instance</span>
+                    <strong>{selectedGlobalProvider || "None"}</strong>
+                  </div>
+                  <div className="metric-tile">
+                    <span>Ready Instances</span>
+                    <strong>{readyProviderCount}/{models.providers.length}</strong>
+                  </div>
+                  <div className="metric-tile">
+                    <span>Routing Scope</span>
+                    <strong>Global</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-card featured-model-card">
+                <div className="provider-head">
+                  <strong>当前生效模型</strong>
+                  <span className="pill ready">single active model</span>
+                </div>
+                <p className="provider-meta">选择草稿后显式应用，避免误操作。当前 endpoint：{selectedGlobalBaseUrl}</p>
+                <div className="form-pair">
+                  <select
+                    value={globalModelDraft.instance}
+                    onChange={(event) => {
+                      const nextProvider = models.providers.find((item) => item.instance === event.target.value);
+                      setGlobalModelDraft({
+                        instance: event.target.value,
+                        model: nextProvider?.models[0]?.model_name || "",
+                      });
+                    }}
+                  >
+                    <option value="">选择实例</option>
+                    {models.providers.map((item) => (
+                      <option key={item.instance} value={item.instance}>
+                        {item.instance}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={globalModelDraft.model}
+                    onChange={(event) => setGlobalModelDraft((current) => ({ ...current, model: event.target.value }))}
+                  >
+                    <option value="">选择模型</option>
+                    {(models.providers.find((item) => item.instance === globalModelDraft.instance)?.models || []).map((model) => (
+                      <option key={`${globalModelDraft.instance}-${model.model_name}`} value={model.model_name}>
+                        {model.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="action-row">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void handleDefaultModelSelect(globalModelDraft.instance, globalModelDraft.model)}
+                  >
+                    应用为全局模型
+                  </button>
+                  <span className="inline-hint">
+                    当前已生效：{selectedGlobalProvider || "未选择实例"} / {selectedGlobalModel || "未选择模型"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="config-summary compact">
                 <span>Config Path</span>
                 <code>{config.path || "加载中..."}</code>
               </div>
+
               <div className="settings-grid">
                 {config.providers.map((provider) => {
-                  const draft = providerDrafts[provider.provider] || { apiKey: "", baseUrl: provider.base_url || "" };
+                  const draft = providerDrafts[provider.instance] || { apiKey: "", baseUrl: provider.base_url || "" };
+                  const runtimeProvider = models.providers.find((item) => item.instance === provider.instance);
                   return (
-                    <div key={`config-${provider.provider}`} className="settings-card">
+                    <div key={`config-${provider.instance}`} className="settings-card provider-instance-card">
                       <div className="provider-head">
-                        <strong>{provider.provider}</strong>
-                        <span className={`pill ${provider.api_key_set ? "ready" : "idle"}`}>
-                          {provider.api_key_set ? provider.api_key_preview : "not configured"}
-                        </span>
-                      </div>
-                      <p className="provider-meta">默认 base URL: {provider.base_url || "未配置"}</p>
-                      <input
-                        value={draft.apiKey}
-                        onChange={(event) => updateDraft(provider.provider, "apiKey", event.target.value)}
-                        placeholder={`${provider.provider} API key`}
-                      />
-                      <input
-                        value={draft.baseUrl}
-                        onChange={(event) => updateDraft(provider.provider, "baseUrl", event.target.value)}
-                        placeholder={provider.base_url || "base URL"}
-                      />
-                      <button type="button" className="primary" onClick={() => void handleSaveConfig(provider.provider, "qwen3.5-plus")}>
-                        保存为默认配置
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="panel settings-panel">
-              <div className="panel-head">
-                <h3>Provider Auth & Model Routing</h3>
-              </div>
-              <div className="settings-grid">
-                {models.providers.map((provider) => {
-                  const draft = providerDrafts[provider.provider] || { apiKey: "", baseUrl: "" };
-                  return (
-                    <div key={provider.provider} className="settings-card">
-                      <div className="provider-head">
-                        <strong>{provider.provider}</strong>
-                        <span className={`pill ${provider.authenticated ? "ready" : "idle"}`}>
-                          {provider.authenticated ? "authenticated" : "not ready"}
+                        <div>
+                          <strong>{provider.instance}</strong>
+                          <p className="instance-type">{provider.type}</p>
+                        </div>
+                        <span className={`pill ${runtimeProvider?.authenticated ? "ready" : "idle"}`}>
+                          {runtimeProvider?.authenticated ? "authenticated" : (provider.api_key_set ? provider.api_key_preview : "not configured")}
                         </span>
                       </div>
                       <p className="provider-meta">
-                        {provider.auth_session?.error_message || "通过 API key 完成 provider 登录。"}
+                        {provider.type} · {runtimeProvider?.auth_error || `base URL: ${provider.base_url || "未配置"}`}
                       </p>
-                      <input
-                        value={draft.apiKey}
-                        onChange={(event) => updateDraft(provider.provider, "apiKey", event.target.value)}
-                        placeholder={`${provider.provider} API key`}
-                      />
-                      <input
-                        value={draft.baseUrl}
-                        onChange={(event) => updateDraft(provider.provider, "baseUrl", event.target.value)}
-                        placeholder="可选 base URL"
-                      />
-                      <button type="button" className="primary" onClick={() => void handleAuth(provider.provider)}>
-                        登录 / 更新
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="route-grid">
-                {modelRoles.map((role) => {
-                  const selected = models.routes[role];
-                  const provider = models.providers.find((item) => item.provider === selected?.provider) || models.providers[0];
-                  return (
-                    <div key={role} className="route-card">
-                      <label>{role}</label>
-                      <select
-                        value={provider?.provider || ""}
-                        onChange={(event) => {
-                          const nextProvider = models.providers.find((item) => item.provider === event.target.value);
-                          const nextModel = nextProvider?.models[0]?.model_name || "";
-                          void handleModelSelect(role, event.target.value, nextModel);
-                        }}
-                      >
-                        <option value="">选择 provider</option>
-                        {models.providers.map((item) => (
-                          <option key={item.provider} value={item.provider}>
-                            {item.provider}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={selected?.model_name || provider?.models[0]?.model_name || ""}
-                        onChange={(event) => void handleModelSelect(role, provider?.provider || "", event.target.value)}
-                      >
-                        <option value="">选择模型</option>
-                        {(provider?.models || []).map((model) => (
-                          <option key={`${provider?.provider}-${model.model_name}`} value={model.model_name}>
-                            {model.display_name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="form-pair">
+                        <input
+                          value={draft.apiKey}
+                          onChange={(event) => updateDraft(provider.instance, "apiKey", event.target.value)}
+                          placeholder={`${provider.instance} API key`}
+                        />
+                        <input
+                          value={draft.baseUrl}
+                          onChange={(event) => updateDraft(provider.instance, "baseUrl", event.target.value)}
+                          placeholder={provider.base_url || "base URL"}
+                        />
+                      </div>
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="primary"
+                          onClick={() => void handleSaveConfig(provider.instance)}
+                        >
+                          保存实例
+                        </button>
+                        <button type="button" className="ghost" onClick={() => void handleAuth(provider.instance)}>
+                          认证
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => void handleDefaultModelSelect(provider.instance, preferredModelForProvider(provider.instance))}
+                        >
+                          设为当前模型
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -812,6 +924,16 @@ function buildRunSummary(payload: AssistantResponse): string {
     return `已完成 ${payload.capability_name}`;
   }
   return "已完成";
+}
+
+function maskApiKey(value: string): string {
+  if (!value) {
+    return "";
+  }
+  if (value.length <= 8) {
+    return "*".repeat(value.length);
+  }
+  return `${value.slice(0, 5)}...${value.slice(-4)}`;
 }
 
 function RunCard({

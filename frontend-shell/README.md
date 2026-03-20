@@ -9,8 +9,7 @@
 当前状态：
 
 - 已经接好现有 demo API 协议：`/api/session`、`/api/chat`、`/api/approve`
-- 已经接好模型层协议：`/api/models`、`/api/providers/auth`、`/api/models/select`
-- 已经接好配置中心协议：`/api/config`
+- 已经接好统一模型中心协议：`GET /api/model-center`、`POST /api/model-center`、`POST /api/model-center/actions`
 - 已经接好流式聊天协议：`/api/chat/stream`
 - 已经具备 Electron 主进程与 preload 骨架
 - 可以先作为 Web 壳开发，也可以直接作为 Electron 壳运行

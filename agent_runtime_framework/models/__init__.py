@@ -10,6 +10,7 @@ from agent_runtime_framework.models.core import (
     resolve_model_runtime,
 )
 from agent_runtime_framework.models.openai_provider import OpenAICompatibleProvider
+from agent_runtime_framework.models.codex_local_provider import CodexLocalProvider
 
 __all__ = [
     "AuthSession",
@@ -21,5 +22,6 @@ __all__ = [
     "ModelRouter",
     "ModelRuntime",
     "OpenAICompatibleProvider",
+    "CodexLocalProvider",
     "resolve_model_runtime",
 ]

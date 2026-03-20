@@ -232,7 +232,7 @@ select {
 }
 
 .settings-layout {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel {
@@ -578,6 +578,72 @@ textarea {
   padding: 16px;
 }
 
+.model-console-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(20, 34, 29, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(184, 130, 53, 0.14), transparent 30%),
+    linear-gradient(135deg, rgba(21, 92, 73, 0.1), rgba(255, 255, 255, 0.72));
+}
+
+.hero-copy h3 {
+  margin: 6px 0 10px;
+  font-size: 36px;
+}
+
+.hero-copy p {
+  max-width: 720px;
+  margin: 0;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.hero-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metric-tile {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(20, 34, 29, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.metric-tile span,
+.instance-type,
+.inline-hint {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.metric-tile strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.featured-model-card {
+  margin-bottom: 16px;
+  padding: 18px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.compact {
+  margin-bottom: 16px;
+}
+
 .provider-meta {
   color: var(--muted);
 }
@@ -640,7 +706,7 @@ textarea {
 }
 
 .settings-grid {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
 .route-grid {
@@ -650,7 +716,7 @@ textarea {
 
 .provider-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
@@ -658,6 +724,34 @@ textarea {
 .provider-meta {
   margin: 10px 0 0;
   line-height: 1.5;
+}
+
+.provider-instance-card {
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.instance-type {
+  margin-top: 6px;
+}
+
+.form-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.inline-hint {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 input,
@@ -668,11 +762,6 @@ select {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.76);
-}
-
-.settings-card .primary,
-.route-card .primary {
-  margin-top: 12px;
 }
 
 .empty-state strong {
@@ -726,6 +815,12 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .model-console-hero,
+  .hero-metrics,
+  .form-pair {
+    grid-template-columns: 1fr;
+  }
+
   .messages,
   .timeline,
   .history-list {
@@ -754,5 +849,9 @@ select {
   .composer-bar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .hero-copy h3 {
+    font-size: 28px;
   }
 }

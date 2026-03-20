@@ -101,19 +101,22 @@ export type ProviderAuthSession = {
 };
 
 export type ProviderState = {
-  provider: string;
+  instance: string;
+  type: string;
   authenticated: boolean;
-  auth_session: ProviderAuthSession | null;
+  auth_error: string;
   models: ModelProfile[];
 };
 
 export type ModelsResponse = {
   providers: ProviderState[];
-  routes: Record<string, { provider: string; model_name: string }>;
+  routes: Record<string, { instance: string; model_name: string }>;
 };
 
 export type ConfigProvider = {
-  provider: string;
+  instance: string;
+  type: string;
+  enabled: boolean;
   api_key_set: boolean;
   api_key_preview: string;
   base_url: string;
@@ -122,5 +125,42 @@ export type ConfigProvider = {
 export type ConfigResponse = {
   path: string;
   providers: ConfigProvider[];
-  routes: Record<string, { provider: string; model_name: string }>;
+  routes: Record<string, { instance: string; model_name: string }>;
+};
+
+export type ModelCenterProviderConfig = {
+  type: string;
+  enabled: boolean;
+  connection: Record<string, unknown>;
+  credentials: Record<string, unknown>;
+  auth: {
+    mode: string;
+    status: string;
+    last_error: string;
+  };
+};
+
+export type ModelCenterConfig = {
+  schema_version: number;
+  provider_instances: Record<string, ModelCenterProviderConfig>;
+  routes: Record<string, { instance: string; model: string }>;
+};
+
+export type ModelCenterCatalogProvider = {
+  type: string;
+  enabled: boolean;
+  authenticated: boolean;
+  auth_error: string;
+  models: ModelProfile[];
+};
+
+export type ModelCenterResponse = {
+  config: ModelCenterConfig;
+  runtime: {
+    instances: Record<string, ModelCenterCatalogProvider>;
+    routes: Record<string, { instance: string; model: string }>;
+  };
+  runtime_checks: {
+    config_path: string;
+  };
 };

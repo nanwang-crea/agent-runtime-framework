@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from agent_runtime_framework.assistant.conversation import create_conversation_c
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,
+    CodexLocalProvider,
     InMemoryCredentialStore,
     ModelProfile,
     ModelRegistry,
@@ -145,6 +147,24 @@ def test_resolve_model_runtime_prefers_router_selection(tmp_path: Path):
     assert runtime.profile.model_name == "fast-model"
 
 
+def test_resolve_model_runtime_falls_back_to_default_route(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _app_context(workspace)
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_provider(_FakeProvider())
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("default", provider="fake", model_name="fast-model")
+    context.services["model_registry"] = registry
+    context.services["model_router"] = router
+
+    runtime = resolve_model_runtime(context, "resolver")
+
+    assert runtime is not None
+    assert runtime.profile.model_name == "fast-model"
+
+
 def test_conversation_capability_uses_model_router_when_available(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -266,3 +286,70 @@ def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: P
 
     assert "我可以继续和你对话" in result["final_answer"]
     assert "source=fallback" in str(result["execution_trace"][-1]["detail"])
+
+
+def test_codex_local_provider_authenticates_with_local_auth_file(tmp_path: Path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "token", "refresh_token": "refresh"},
+                "last_refresh": "2026-03-19T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = InMemoryCredentialStore()
+    provider = CodexLocalProvider(auth_file=auth_file)
+
+    with patch("shutil.which", return_value="/usr/local/bin/codex"):
+        session = provider.authenticate({}, store)
+
+    assert session.authenticated is True
+    assert session.provider == "codex_local"
+    assert store.get("codex_local") is not None
+
+
+def test_codex_local_provider_streaming_converts_json_events_into_chunks(tmp_path: Path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "token", "refresh_token": "refresh"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = InMemoryCredentialStore()
+    provider = CodexLocalProvider(auth_file=auth_file)
+
+    with patch("shutil.which", return_value="/usr/local/bin/codex"):
+        provider.authenticate({}, store)
+    client = provider.get_client(store)
+
+    class _FakePopen:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.stdout = iter(
+                [
+                    '{"type":"response.output_text.delta","delta":"你好"}\n',
+                    '{"type":"response.output_text.delta","delta":"，世界"}\n',
+                    '{"type":"turn.completed"}\n',
+                ]
+            )
+            self.returncode = 0
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            return 0
+
+    with patch("subprocess.Popen", return_value=_FakePopen()):
+        chunks = list(
+            client.chat.completions.create(
+                model="gpt-5.3-codex",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+            )
+        )
+
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ["你好", "，世界"]
