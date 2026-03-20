@@ -205,7 +205,7 @@ def test_conversation_message_builder_does_not_duplicate_current_user_turn():
 
     messages = _build_messages("帮我看看 docs", session)
 
-    user_messages = [message["content"] for message in messages if message["role"] == "user"]
+    user_messages = [message.content for message in messages if message.role == "user"]
 
     assert user_messages.count("帮我看看 docs") == 1
 

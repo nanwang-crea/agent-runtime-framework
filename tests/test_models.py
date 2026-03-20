@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,14 +11,18 @@ from agent_runtime_framework.assistant.conversation import create_conversation_c
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,
-    CodexLocalProvider,
+    ChatMessage,
+    ChatRequest,
+    CodexCliDriver,
+    DriverCapabilities,
     InMemoryCredentialStore,
     ModelProfile,
     ModelRegistry,
     ModelRouter,
     ModelRuntime,
-    OpenAICompatibleProvider,
-    ModelProvider,
+    OpenAICompatibleDriver,
+    chat_once,
+    chat_stream,
     resolve_model_runtime,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -45,13 +49,13 @@ class _FakeLLMClient:
 
 
 @dataclass
-class _FakeProvider:
-    provider_name: str = "fake"
+class _FakeInstance:
+    instance_id: str = "fake"
 
     def __post_init__(self) -> None:
         self._profiles = [
             ModelProfile(
-                provider=self.provider_name,
+                instance=self.instance_id,
                 model_name="fast-model",
                 display_name="Fast Model",
                 supports_chat=True,
@@ -61,7 +65,7 @@ class _FakeProvider:
                 recommended_roles=["conversation", "capability_selector"],
             ),
             ModelProfile(
-                provider=self.provider_name,
+                instance=self.instance_id,
                 model_name="planner-model",
                 display_name="Planner Model",
                 supports_chat=True,
@@ -79,19 +83,32 @@ class _FakeProvider:
         api_key = credentials.get("api_key", "")
         authenticated = bool(api_key)
         if authenticated:
-            store.set(self.provider_name, {"api_key": api_key})
+            store.set(self.instance_id, {"api_key": api_key})
         return AuthSession(
-            provider=self.provider_name,
+            instance=self.instance_id,
             authenticated=authenticated,
             auth_type="api_key",
             error_message=None if authenticated else "missing api_key",
         )
 
     def get_client(self, store: InMemoryCredentialStore):
-        stored = store.get(self.provider_name) or {}
+        stored = store.get(self.instance_id) or {}
         if not stored.get("api_key"):
             return None
         return _FakeLLMClient('{"capability_name":"conversation"}')
+
+
+@dataclass
+class _FakeDriver:
+    driver_type: str = "fake"
+    capabilities: DriverCapabilities = field(default_factory=DriverCapabilities)
+
+    def create_instance(self, instance_id: str, config: dict[str, str]):
+        instance = _FakeInstance(instance_id=instance_id)
+        if config.get("api_key"):
+            store = InMemoryCredentialStore()
+            instance.authenticate(config, store)
+        return instance
 
 
 def _app_context(workspace: Path) -> ApplicationContext:
@@ -105,9 +122,9 @@ def _app_context(workspace: Path) -> ApplicationContext:
     )
 
 
-def test_model_registry_authenticates_provider_and_lists_models():
+def test_model_registry_authenticates_instance_and_lists_models():
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_provider(_FakeProvider())
+    registry.register_instance(_FakeInstance())
 
     auth = registry.authenticate("fake", {"api_key": "secret"})
 
@@ -117,10 +134,10 @@ def test_model_registry_authenticates_provider_and_lists_models():
 
 def test_model_router_returns_runtime_for_selected_role():
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_provider(_FakeProvider())
+    registry.register_instance(_FakeInstance())
     registry.authenticate("fake", {"api_key": "secret"})
     router = ModelRouter(registry)
-    router.set_route("conversation", provider="fake", model_name="fast-model")
+    router.set_route("conversation", instance_id="fake", model_name="fast-model")
 
     runtime = router.resolve("conversation")
 
@@ -134,10 +151,10 @@ def test_resolve_model_runtime_prefers_router_selection(tmp_path: Path):
     workspace.mkdir()
     context = _app_context(workspace)
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_provider(_FakeProvider())
+    registry.register_instance(_FakeInstance())
     registry.authenticate("fake", {"api_key": "secret"})
     router = ModelRouter(registry)
-    router.set_route("conversation", provider="fake", model_name="fast-model")
+    router.set_route("conversation", instance_id="fake", model_name="fast-model")
     context.services["model_registry"] = registry
     context.services["model_router"] = router
 
@@ -152,10 +169,10 @@ def test_resolve_model_runtime_falls_back_to_default_route(tmp_path: Path):
     workspace.mkdir()
     context = _app_context(workspace)
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_provider(_FakeProvider())
+    registry.register_instance(_FakeInstance())
     registry.authenticate("fake", {"api_key": "secret"})
     router = ModelRouter(registry)
-    router.set_route("default", provider="fake", model_name="fast-model")
+    router.set_route("default", instance_id="fake", model_name="fast-model")
     context.services["model_registry"] = registry
     context.services["model_router"] = router
 
@@ -170,10 +187,10 @@ def test_conversation_capability_uses_model_router_when_available(tmp_path: Path
     workspace.mkdir()
     context = _app_context(workspace)
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_provider(_FakeProvider())
+    registry.register_instance(_FakeInstance())
     registry.authenticate("fake", {"api_key": "secret"})
     router = ModelRouter(registry)
-    router.set_route("conversation", provider="fake", model_name="fast-model")
+    router.set_route("conversation", instance_id="fake", model_name="fast-model")
     context.services["model_registry"] = registry
     context.services["model_router"] = router
     capability = create_conversation_capability()
@@ -184,20 +201,24 @@ def test_conversation_capability_uses_model_router_when_available(tmp_path: Path
     assert "source=model" in str(result["execution_trace"][-1]["detail"])
 
 
-def test_openai_compatible_provider_uses_pure_python_http_client():
+def test_openai_compatible_driver_builds_instance_with_pure_python_http_client():
     store = InMemoryCredentialStore()
-    provider = OpenAICompatibleProvider(
-        provider_name="dashscope",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "dashscope",
+        {
+            "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            "catalog": {"models": ["qwen3.5-plus"]},
+        },
     )
-    provider.authenticate(
+    instance.authenticate(
         {
             "api_key": "sk-test",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         },
         store,
     )
-    client = provider.get_client(store)
+    client = instance.get_client(store)
 
     class _FakeHTTPResponse:
         def __enter__(self):
@@ -221,20 +242,39 @@ def test_openai_compatible_provider_uses_pure_python_http_client():
     assert result.choices[0].message.content == "hello from http"
 
 
-def test_openai_compatible_provider_keeps_stream_response_open_while_iterating():
-    store = InMemoryCredentialStore()
-    provider = OpenAICompatibleProvider(
-        provider_name="dashscope",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+def test_chat_once_uses_standardized_response_contract():
+    class _Client:
+        def create_chat_completion(self, request: ChatRequest):
+            assert request.model == "demo-model"
+            assert request.messages[0].content == "hi"
+            return type("Resp", (), {"content": "ok"})()
+
+    response = chat_once(
+        _Client(),
+        ChatRequest(model="demo-model", messages=[ChatMessage(role="user", content="hi")]),
     )
-    provider.authenticate(
+
+    assert response.content == "ok"
+
+
+def test_openai_compatible_driver_instance_keeps_stream_response_open_while_iterating():
+    store = InMemoryCredentialStore()
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "dashscope",
+        {
+            "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            "catalog": {"models": ["qwen3.5-plus"]},
+        },
+    )
+    instance.authenticate(
         {
             "api_key": "sk-test",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         },
         store,
     )
-    client = provider.get_client(store)
+    client = instance.get_client(store)
 
     class _StreamingHTTPResponse:
         def __init__(self) -> None:
@@ -270,6 +310,23 @@ def test_openai_compatible_provider_keeps_stream_response_open_while_iterating()
     assert [chunk.choices[0].delta.content for chunk in chunks] == ["hello"]
 
 
+def test_chat_stream_uses_standardized_chunk_contract():
+    class _Client:
+        def stream_chat_completion(self, request: ChatRequest):
+            assert request.model == "demo-model"
+            yield type("Chunk", (), {"content": "a"})()
+            yield type("Chunk", (), {"content": "b"})()
+
+    chunks = list(
+        chat_stream(
+            _Client(),
+            ChatRequest(model="demo-model", messages=[ChatMessage(role="user", content="hi")]),
+        )
+    )
+
+    assert [chunk.content for chunk in chunks] == ["a", "b"]
+
+
 def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -288,7 +345,7 @@ def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: P
     assert "source=fallback" in str(result["execution_trace"][-1]["detail"])
 
 
-def test_codex_local_provider_authenticates_with_local_auth_file(tmp_path: Path):
+def test_codex_cli_driver_instance_authenticates_with_local_auth_file(tmp_path: Path):
     auth_file = tmp_path / "auth.json"
     auth_file.write_text(
         json.dumps(
@@ -301,17 +358,24 @@ def test_codex_local_provider_authenticates_with_local_auth_file(tmp_path: Path)
         encoding="utf-8",
     )
     store = InMemoryCredentialStore()
-    provider = CodexLocalProvider(auth_file=auth_file)
+    driver = CodexCliDriver()
+    instance = driver.create_instance(
+        "codex_local",
+        {
+            "connection": {"auth_file": str(auth_file), "codex_binary": "codex"},
+            "catalog": {"models": ["gpt-5.3-codex"]},
+        },
+    )
 
     with patch("shutil.which", return_value="/usr/local/bin/codex"):
-        session = provider.authenticate({}, store)
+        session = instance.authenticate({}, store)
 
     assert session.authenticated is True
-    assert session.provider == "codex_local"
+    assert session.instance == "codex_local"
     assert store.get("codex_local") is not None
 
 
-def test_codex_local_provider_streaming_converts_json_events_into_chunks(tmp_path: Path):
+def test_codex_cli_driver_instance_streaming_converts_json_events_into_chunks(tmp_path: Path):
     auth_file = tmp_path / "auth.json"
     auth_file.write_text(
         json.dumps(
@@ -323,11 +387,18 @@ def test_codex_local_provider_streaming_converts_json_events_into_chunks(tmp_pat
         encoding="utf-8",
     )
     store = InMemoryCredentialStore()
-    provider = CodexLocalProvider(auth_file=auth_file)
+    driver = CodexCliDriver()
+    instance = driver.create_instance(
+        "codex_local",
+        {
+            "connection": {"auth_file": str(auth_file), "codex_binary": "codex"},
+            "catalog": {"models": ["gpt-5.3-codex"]},
+        },
+    )
 
     with patch("shutil.which", return_value="/usr/local/bin/codex"):
-        provider.authenticate({}, store)
-    client = provider.get_client(store)
+        instance.authenticate({}, store)
+    client = instance.get_client(store)
 
     class _FakePopen:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -353,3 +424,15 @@ def test_codex_local_provider_streaming_converts_json_events_into_chunks(tmp_pat
         )
 
     assert [chunk.choices[0].delta.content for chunk in chunks] == ["你好", "，世界"]
+
+
+def test_model_registry_can_build_and_register_instance_from_driver():
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_driver(_FakeDriver())
+
+    instance = registry.create_instance("fake", "worker", {"api_key": "secret"})
+    registry.register_instance(instance)
+    auth = registry.authenticate("worker", {"api_key": "secret"})
+
+    assert auth.authenticated is True
+    assert any(profile.model_name == "fast-model" for profile in registry.list_models("worker"))

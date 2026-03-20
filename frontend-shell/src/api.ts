@@ -126,7 +126,7 @@ export function fetchModelCenter(): Promise<ModelCenterResponse> {
 }
 
 export function updateModelCenter(payload: {
-  provider_instances?: Record<string, Record<string, unknown>>;
+  instances?: Record<string, Record<string, unknown>>;
   routes?: Record<string, { instance: string; model: string }>;
 }): Promise<ModelCenterResponse> {
   return request<ModelCenterResponse>("/api/model-center", {

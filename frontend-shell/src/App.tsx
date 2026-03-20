@@ -60,7 +60,7 @@ function App() {
   const [activeView, setActiveView] = useState<ViewId>("chat");
   const [pendingUserMessage, setPendingUserMessage] = useState("");
   const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
-  const [providerDrafts, setProviderDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+  const [instanceDrafts, setInstanceDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
   const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -80,15 +80,15 @@ function App() {
   async function loadModelCenter() {
     const payload = await fetchModelCenter();
     setModelCenter(payload);
-    setProviderDrafts((current) => {
+    setInstanceDrafts((current) => {
       const next = { ...current };
-      for (const [providerName, providerCfg] of Object.entries(payload.config.provider_instances || {})) {
-        const baseUrl = String((providerCfg.connection || {})["base_url"] || "");
-        if (!next[providerName]) {
-          next[providerName] = { apiKey: "", baseUrl };
-        } else if (!next[providerName].baseUrl) {
-          next[providerName] = {
-            ...next[providerName],
+      for (const [instanceName, instanceCfg] of Object.entries(payload.config.instances || {})) {
+        const baseUrl = String((instanceCfg.connection || {})["base_url"] || "");
+        if (!next[instanceName]) {
+          next[instanceName] = { apiKey: "", baseUrl };
+        } else if (!next[instanceName].baseUrl) {
+          next[instanceName] = {
+            ...next[instanceName],
             baseUrl,
           };
         }
@@ -99,17 +99,24 @@ function App() {
 
   const models = useMemo<ModelsResponse>(() => {
     if (!modelCenter) {
-      return { providers: [], routes: {} };
+      return { instances: [], routes: {}, default_instance: "", active_model: { instance: "", model_name: "" } };
     }
-    const providers = Object.entries(modelCenter.runtime.instances || {}).map(([provider, state]) => ({
-      instance: provider,
+    const instances = Object.entries(modelCenter.runtime.instances || {}).map(([instanceId, state]) => ({
+      instance: instanceId,
       type: state.type,
+      catalog_mode: state.catalog_mode,
       authenticated: Boolean(state.authenticated),
       auth_error: state.auth_error || "",
+      capabilities: state.capabilities,
       models: state.models || [],
     }));
     return {
-      providers,
+      instances,
+      default_instance: String(modelCenter.runtime.default_instance || ""),
+      active_model: {
+        instance: String(modelCenter.runtime.active_model?.instance || ""),
+        model_name: String(modelCenter.runtime.active_model?.model || ""),
+      },
       routes: Object.fromEntries(
         Object.entries(modelCenter.runtime.routes || {}).map(([role, route]) => [
           role,
@@ -121,18 +128,18 @@ function App() {
 
   const config = useMemo<ConfigResponse>(() => {
     if (!modelCenter) {
-      return { path: "", providers: [], routes: {} };
+      return { path: "", instances: [], routes: {} };
     }
-    const providers = Object.entries(modelCenter.config.provider_instances || {}).map(([provider, providerCfg]) => {
-      const credentials = providerCfg.credentials || {};
+    const instances = Object.entries(modelCenter.config.instances || {}).map(([instanceId, instanceCfg]) => {
+      const credentials = instanceCfg.credentials || {};
       const apiKey = String(credentials["api_key"] || "");
       return {
-        instance: provider,
-        type: providerCfg.type,
-        enabled: Boolean(providerCfg.enabled),
+        instance: instanceId,
+        type: instanceCfg.type,
+        enabled: Boolean(instanceCfg.enabled),
         api_key_set: Boolean(apiKey),
         api_key_preview: maskApiKey(apiKey),
-        base_url: String((providerCfg.connection || {})["base_url"] || ""),
+        base_url: String((instanceCfg.connection || {})["base_url"] || ""),
       };
     });
     const routes = Object.fromEntries(
@@ -143,7 +150,7 @@ function App() {
     );
     return {
       path: String(modelCenter.runtime_checks?.config_path || ""),
-      providers,
+      instances,
       routes,
     };
   }, [modelCenter]);
@@ -296,61 +303,61 @@ function App() {
     applyResponse(await respondApproval(pendingTokenId, approved));
   }
 
-  function updateDraft(provider: string, key: "apiKey" | "baseUrl", value: string) {
-    setProviderDrafts((current) => ({
+  function updateDraft(instanceId: string, key: "apiKey" | "baseUrl", value: string) {
+    setInstanceDrafts((current) => ({
       ...current,
-      [provider]: {
-        apiKey: current[provider]?.apiKey || "",
-        baseUrl: current[provider]?.baseUrl || "",
+      [instanceId]: {
+        apiKey: current[instanceId]?.apiKey || "",
+        baseUrl: current[instanceId]?.baseUrl || "",
         [key]: value,
       },
     }));
   }
 
-  async function handleAuth(provider: string) {
-    const draft = providerDrafts[provider] || { apiKey: "", baseUrl: "" };
+  async function handleAuth(instanceId: string) {
+    const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
     const updated = await updateModelCenter({
-      provider_instances: {
-        [provider]: {
+      instances: {
+        [instanceId]: {
           credentials: { api_key: draft.apiKey },
           connection: { base_url: draft.baseUrl },
         },
       },
     });
     setModelCenter(updated);
-    const payload = await runModelCenterAction({ action: "authenticate_instance", instance: provider });
+    const payload = await runModelCenterAction({ action: "authenticate_instance", instance: instanceId });
     setModelCenter(payload);
-    updateDraft(provider, "apiKey", "");
+    updateDraft(instanceId, "apiKey", "");
   }
 
-  async function handleDefaultModelSelect(provider: string, modelName: string) {
-    if (!provider || !modelName) {
+  async function handleDefaultModelSelect(instanceId: string, modelName: string) {
+    if (!instanceId || !modelName) {
       return;
     }
     const routes = Object.fromEntries(
-      routedRoles.map((role) => [role, { instance: provider, model: modelName }]),
+      routedRoles.map((role) => [role, { instance: instanceId, model: modelName }]),
     );
     const payload = await updateModelCenter({ routes });
     setModelCenter(payload);
   }
 
-  function preferredModelForProvider(provider: string): string {
-    const providerState = models.providers.find((item) => item.instance === provider);
-    if (!providerState) {
+  function preferredModelForInstance(instanceId: string): string {
+    const instanceState = models.instances.find((item) => item.instance === instanceId);
+    if (!instanceState) {
       return "";
     }
     const routed = routedRoles
       .map((role) => models.routes[role])
-      .find((route) => route?.instance === provider);
-    return routed?.model_name || providerState.models[0]?.model_name || "";
+      .find((route) => route?.instance === instanceId);
+    return routed?.model_name || instanceState.models[0]?.model_name || "";
   }
 
-  async function handleSaveConfig(provider: string) {
-    const draft = providerDrafts[provider] || { apiKey: "", baseUrl: "" };
+  async function handleSaveConfig(instanceId: string) {
+    const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
     const payload = await updateModelCenter(
       {
-        provider_instances: {
-          [provider]: {
+        instances: {
+          [instanceId]: {
             credentials: { api_key: draft.apiKey },
             connection: { base_url: draft.baseUrl },
           },
@@ -358,35 +365,30 @@ function App() {
       },
     );
     setModelCenter(payload);
-    updateDraft(provider, "apiKey", "");
+    updateDraft(instanceId, "apiKey", "");
   }
 
-  const selectedGlobalProvider =
-    models.routes.default?.instance || models.routes.conversation?.instance || models.providers[0]?.instance || "";
-  const selectedGlobalProviderState = models.providers.find((item) => item.instance === selectedGlobalProvider) || models.providers[0];
-  const selectedGlobalModel =
-    models.routes.default?.model_name ||
-    models.routes.conversation?.model_name ||
-    selectedGlobalProviderState?.models[0]?.model_name ||
-    "";
-  const readyProviderCount = models.providers.filter((item) => item.authenticated).length;
+  const selectedGlobalInstance = models.active_model.instance || models.default_instance || models.instances[0]?.instance || "";
+  const selectedGlobalInstanceState = models.instances.find((item) => item.instance === selectedGlobalInstance) || models.instances[0];
+  const selectedGlobalModel = models.active_model.model_name || selectedGlobalInstanceState?.models[0]?.model_name || "";
+  const readyInstanceCount = models.instances.filter((item) => item.authenticated).length;
   const selectedGlobalBaseUrl =
-    config.providers.find((item) => item.instance === selectedGlobalProvider)?.base_url || "未配置";
+    config.instances.find((item) => item.instance === selectedGlobalInstance)?.base_url || "未配置";
 
   useEffect(() => {
     setGlobalModelDraft((current) => {
       if (
-        current.instance === selectedGlobalProvider &&
+        current.instance === selectedGlobalInstance &&
         current.model === selectedGlobalModel
       ) {
         return current;
       }
       return {
-        instance: selectedGlobalProvider,
+        instance: selectedGlobalInstance,
         model: selectedGlobalModel,
       };
     });
-  }, [selectedGlobalModel, selectedGlobalProvider]);
+  }, [selectedGlobalInstance, selectedGlobalModel]);
 
   const displayedTurns = useMemo(() => {
     const turns = [...session.turns];
@@ -702,11 +704,11 @@ function App() {
                 <div className="hero-metrics">
                   <div className="metric-tile">
                     <span>Active Instance</span>
-                    <strong>{selectedGlobalProvider || "None"}</strong>
+                    <strong>{selectedGlobalInstance || "None"}</strong>
                   </div>
                   <div className="metric-tile">
                     <span>Ready Instances</span>
-                    <strong>{readyProviderCount}/{models.providers.length}</strong>
+                    <strong>{readyInstanceCount}/{models.instances.length}</strong>
                   </div>
                   <div className="metric-tile">
                     <span>Routing Scope</span>
@@ -716,24 +718,24 @@ function App() {
               </div>
 
               <div className="settings-card featured-model-card">
-                <div className="provider-head">
+                <div className="instance-head">
                   <strong>当前生效模型</strong>
                   <span className="pill ready">single active model</span>
                 </div>
-                <p className="provider-meta">选择草稿后显式应用，避免误操作。当前 endpoint：{selectedGlobalBaseUrl}</p>
+                <p className="instance-meta">选择草稿后显式应用，避免误操作。当前 endpoint：{selectedGlobalBaseUrl}</p>
                 <div className="form-pair">
                   <select
                     value={globalModelDraft.instance}
                     onChange={(event) => {
-                      const nextProvider = models.providers.find((item) => item.instance === event.target.value);
+                      const nextInstance = models.instances.find((item) => item.instance === event.target.value);
                       setGlobalModelDraft({
                         instance: event.target.value,
-                        model: nextProvider?.models[0]?.model_name || "",
+                        model: nextInstance?.models[0]?.model_name || "",
                       });
                     }}
                   >
                     <option value="">选择实例</option>
-                    {models.providers.map((item) => (
+                    {models.instances.map((item) => (
                       <option key={item.instance} value={item.instance}>
                         {item.instance}
                       </option>
@@ -744,7 +746,7 @@ function App() {
                     onChange={(event) => setGlobalModelDraft((current) => ({ ...current, model: event.target.value }))}
                   >
                     <option value="">选择模型</option>
-                    {(models.providers.find((item) => item.instance === globalModelDraft.instance)?.models || []).map((model) => (
+                    {(models.instances.find((item) => item.instance === globalModelDraft.instance)?.models || []).map((model) => (
                       <option key={`${globalModelDraft.instance}-${model.model_name}`} value={model.model_name}>
                         {model.display_name}
                       </option>
@@ -760,7 +762,7 @@ function App() {
                     应用为全局模型
                   </button>
                   <span className="inline-hint">
-                    当前已生效：{selectedGlobalProvider || "未选择实例"} / {selectedGlobalModel || "未选择模型"}
+                    当前已生效：{selectedGlobalInstance || "未选择实例"} / {selectedGlobalModel || "未选择模型"}
                   </span>
                 </div>
               </div>
@@ -771,50 +773,56 @@ function App() {
               </div>
 
               <div className="settings-grid">
-                {config.providers.map((provider) => {
-                  const draft = providerDrafts[provider.instance] || { apiKey: "", baseUrl: provider.base_url || "" };
-                  const runtimeProvider = models.providers.find((item) => item.instance === provider.instance);
+                {config.instances.map((instanceConfig) => {
+                  const draft = instanceDrafts[instanceConfig.instance] || { apiKey: "", baseUrl: instanceConfig.base_url || "" };
+                  const runtimeInstance = models.instances.find((item) => item.instance === instanceConfig.instance);
                   return (
-                    <div key={`config-${provider.instance}`} className="settings-card provider-instance-card">
-                      <div className="provider-head">
+                    <div key={`config-${instanceConfig.instance}`} className="settings-card instance-card">
+                      <div className="instance-head">
                         <div>
-                          <strong>{provider.instance}</strong>
-                          <p className="instance-type">{provider.type}</p>
+                          <strong>{instanceConfig.instance}</strong>
+                          <p className="instance-type">{instanceConfig.type}</p>
                         </div>
-                        <span className={`pill ${runtimeProvider?.authenticated ? "ready" : "idle"}`}>
-                          {runtimeProvider?.authenticated ? "authenticated" : (provider.api_key_set ? provider.api_key_preview : "not configured")}
+                        <span className={`pill ${runtimeInstance?.authenticated ? "ready" : "idle"}`}>
+                          {runtimeInstance?.authenticated ? "authenticated" : (instanceConfig.api_key_set ? instanceConfig.api_key_preview : "not configured")}
                         </span>
                       </div>
-                      <p className="provider-meta">
-                        {provider.type} · {runtimeProvider?.auth_error || `base URL: ${provider.base_url || "未配置"}`}
+                      <p className="instance-meta">
+                        {instanceConfig.type} · catalog: {runtimeInstance?.catalog_mode || "static"} · {runtimeInstance?.auth_error || `base URL: ${instanceConfig.base_url || "未配置"}`}
                       </p>
+                      <div className="instance-capabilities">
+                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_stream ? "on" : ""}`}>stream</span>
+                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_tools ? "on" : ""}`}>tools</span>
+                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_vision ? "on" : ""}`}>vision</span>
+                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_json_mode ? "on" : ""}`}>json</span>
+                      </div>
                       <div className="form-pair">
                         <input
                           value={draft.apiKey}
-                          onChange={(event) => updateDraft(provider.instance, "apiKey", event.target.value)}
-                          placeholder={`${provider.instance} API key`}
+                          onChange={(event) => updateDraft(instanceConfig.instance, "apiKey", event.target.value)}
+                          placeholder={`${instanceConfig.instance} API key`}
                         />
                         <input
                           value={draft.baseUrl}
-                          onChange={(event) => updateDraft(provider.instance, "baseUrl", event.target.value)}
-                          placeholder={provider.base_url || "base URL"}
+                          onChange={(event) => updateDraft(instanceConfig.instance, "baseUrl", event.target.value)}
+                          placeholder={instanceConfig.base_url || "base URL"}
                         />
                       </div>
                       <div className="action-row">
                         <button
                           type="button"
                           className="primary"
-                          onClick={() => void handleSaveConfig(provider.instance)}
+                          onClick={() => void handleSaveConfig(instanceConfig.instance)}
                         >
                           保存实例
                         </button>
-                        <button type="button" className="ghost" onClick={() => void handleAuth(provider.instance)}>
+                        <button type="button" className="ghost" onClick={() => void handleAuth(instanceConfig.instance)}>
                           认证
                         </button>
                         <button
                           type="button"
                           className="ghost"
-                          onClick={() => void handleDefaultModelSelect(provider.instance, preferredModelForProvider(provider.instance))}
+                          onClick={() => void handleDefaultModelSelect(instanceConfig.instance, preferredModelForInstance(instanceConfig.instance))}
                         >
                           设为当前模型
                         </button>

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from agent_runtime_framework.graph.runtime import ExecutionContext
 from agent_runtime_framework.graph.types import ResolverFunc, RouteDecision
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once
 
 
 def _default_state_snapshot(state: Any) -> dict[str, Any]:
@@ -76,15 +77,18 @@ class JsonLLMRouter:
 }}
 """.strip()
 
-        response = context.llm_client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=self.temperature,
+        response = chat_once(
+            context.llm_client,
+            ChatRequest(
+                model=self.model,
+                messages=[
+                    ChatMessage(role="system", content=self.system_prompt),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                temperature=self.temperature,
+            ),
         )
-        content = (response.choices[0].message.content or "").strip()
+        content = (response.content or "").strip()
         data = json.loads(content)
         decision = RouteDecision.model_validate(data)
         if decision.next_node not in available_actions:

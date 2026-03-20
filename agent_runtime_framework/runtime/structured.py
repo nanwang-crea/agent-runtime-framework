@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any, Callable
 
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once
+
 
 def _extract_json_block(text: str) -> str:
     stripped = text.strip()
@@ -23,22 +25,25 @@ def parse_structured_output(
     temperature: float = 0.0,
     max_tokens: int = 400,
 ) -> Any | None:
-    if llm_client is None or not hasattr(llm_client, "chat"):
+    if llm_client is None:
         return None
 
     try:
-        response = llm_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
+        response = chat_once(
+            llm_client,
+            ChatRequest(
+                model=model,
+                messages=[
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content=user_prompt),
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
         )
     except Exception:
         return None
-    raw_content = response.choices[0].message.content or ""
+    raw_content = response.content or ""
     try:
         parsed = json.loads(_extract_json_block(raw_content))
     except Exception:

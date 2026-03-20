@@ -5,7 +5,7 @@ import os
 from typing import Any, Iterable
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
-from agent_runtime_framework.models import resolve_model_runtime
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def stream_conversation_reply(
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
     max_tokens = _conversation_max_tokens()
 
-    if llm_client is None or not hasattr(llm_client, "chat"):
+    if llm_client is None:
         reason = (
             "llm_unavailable: 未配置可用模型。请在前端「模型 / 配置」中："
             "1) 配置一个可用的模型实例并完成认证；"
@@ -92,21 +92,23 @@ def stream_conversation_reply(
         meta["reason"] = reason
         logger.warning("conversation fallback: %s", reason)
 
-    if llm_client is not None and hasattr(llm_client, "chat"):
+    if llm_client is not None:
         # 优先使用流式请求；成功则逐 chunk yield，并标记 source=model, reason=stream
         try:
-            response = llm_client.chat.completions.create(
-                model=model_name,
-                messages=_build_messages(user_input, session),
-                temperature=0.3,
-                max_tokens=max_tokens,
-                stream=True,
+            response = chat_stream(
+                llm_client,
+                ChatRequest(
+                    model=model_name,
+                    messages=_build_messages(user_input, session),
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                ),
             )
             streamed = False
-            for chunk in _iter_stream_text(response):
+            for chunk in response:
                 streamed = True
-                if chunk:
-                    yield chunk
+                if chunk.content:
+                    yield chunk.content
             if streamed:
                 meta["source"] = "model"
                 meta["reason"] = "stream"
@@ -118,13 +120,16 @@ def stream_conversation_reply(
             meta["reason"] = f"stream_error:{error_detail}"
             logger.exception("conversation stream request failed: %s", error_detail)
         try:
-            response = llm_client.chat.completions.create(
-                model=model_name,
-                messages=_build_messages(user_input, session),
-                temperature=0.3,
-                max_tokens=max_tokens,
+            response = chat_once(
+                llm_client,
+                ChatRequest(
+                    model=model_name,
+                    messages=_build_messages(user_input, session),
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                ),
             )
-            content = response.choices[0].message.content or ""
+            content = response.content or ""
             if content.strip():
                 meta["source"] = "model"
                 meta["reason"] = "non_stream_fallback"
@@ -137,16 +142,16 @@ def stream_conversation_reply(
     yield _fallback_conversation_reply(user_input)
 
 
-def _build_messages(user_input: str, session: Any) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": (
+def _build_messages(user_input: str, session: Any) -> list[ChatMessage]:
+    messages: list[ChatMessage] = [
+        ChatMessage(
+            role="system",
+            content=(
                 "你是一个桌面 AI 助手。"
                 "当用户是在正常聊天、提问或讨论方案时，直接自然回答。"
                 "当用户明确要求操作本地文件时，应由其他 capability 处理。"
             ),
-        }
+        )
     ]
     recent_turns = list(getattr(session, "turns", [])[-6:])
     if recent_turns:
@@ -154,26 +159,9 @@ def _build_messages(user_input: str, session: Any) -> list[dict[str, str]]:
         if getattr(last_turn, "role", None) == "user" and getattr(last_turn, "content", "") == user_input:
             recent_turns = recent_turns[:-1]
     for turn in recent_turns:
-        messages.append({"role": turn.role, "content": turn.content})
-    messages.append({"role": "user", "content": user_input})
+        messages.append(ChatMessage(role=turn.role, content=turn.content))
+    messages.append(ChatMessage(role="user", content=user_input))
     return messages
-
-
-def _iter_stream_text(response: Any) -> Iterable[str]:
-    if not hasattr(response, "__iter__"):
-        return []
-
-    def _generator() -> Iterable[str]:
-        for chunk in response:
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            delta = getattr(choices[0], "delta", None)
-            content = getattr(delta, "content", None) if delta is not None else None
-            if content:
-                yield str(content)
-
-    return _generator()
 
 
 def _fallback_conversation_reply(user_input: str) -> str:

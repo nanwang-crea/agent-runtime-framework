@@ -18,12 +18,11 @@ from agent_runtime_framework.assistant.conversation import stream_conversation_r
 from agent_runtime_framework.assistant.session import ExecutionPlan, PlannedAction
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
-    CodexLocalProvider,
+    CodexCliDriver,
     InMemoryCredentialStore,
-    ModelProfile,
     ModelRegistry,
     ModelRouter,
-    OpenAICompatibleProvider,
+    OpenAICompatibleDriver,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
@@ -314,8 +313,9 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         store=model_center_store,
         registry=model_registry,
         router=model_router,
-        driver_factories=_driver_factories(),
     )
+    model_registry.register_driver(OpenAICompatibleDriver())
+    model_registry.register_driver(CodexCliDriver())
     model_center.store.load_or_create(seed=seed_config)
     app_context = ApplicationContext(
         resource_repository=LocalFileResourceRepository([workspace_path]),
@@ -348,61 +348,3 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     )
     app.model_center.load()
     return app
-
-
-def _driver_factories():
-    return {
-        "openai_compatible": _build_openai_compatible_instance,
-        "codex_cli": _build_codex_local_instance,
-    }
-
-
-def _build_openai_compatible_instance(instance_id: str, instance_cfg: dict[str, Any]) -> OpenAICompatibleProvider:
-    connection = dict(instance_cfg.get("connection") or {})
-    catalog = dict(instance_cfg.get("catalog") or {})
-    models = [str(item).strip() for item in list(catalog.get("models") or []) if str(item).strip()]
-    available_models = [_profile_for_model(instance_id, model_name) for model_name in models]
-    return OpenAICompatibleProvider(
-        provider_name=instance_id,
-        default_base_url=str(connection.get("base_url") or "").strip() or None,
-        available_models=available_models,
-    )
-
-
-def _build_codex_local_instance(instance_id: str, instance_cfg: dict[str, Any]) -> CodexLocalProvider:
-    connection = dict(instance_cfg.get("connection") or {})
-    catalog = dict(instance_cfg.get("catalog") or {})
-    models = [str(item).strip() for item in list(catalog.get("models") or []) if str(item).strip()]
-    available_models = [_profile_for_model(instance_id, model_name) for model_name in models]
-    return CodexLocalProvider(
-        provider_name=instance_id,
-        codex_binary=str(connection.get("codex_binary") or "codex"),
-        auth_file=Path(str(connection.get("auth_file") or "~/.codex/auth.json")).expanduser(),
-        available_models=available_models,
-    )
-
-
-def _profile_for_model(provider: str, model_name: str) -> ModelProfile:
-    known = {
-        "qwen3.5-plus": ("Qwen 3.5 Plus", "medium", "medium", "high"),
-        "qwen-plus": ("Qwen Plus", "low", "low", "medium"),
-        "MiniMax-M2.1": ("MiniMax-M2.1", "medium", "medium", "high"),
-        "gpt-4.1-mini": ("GPT-4.1 Mini", "low", "low", "medium"),
-        "gpt-4.1": ("GPT-4.1", "medium", "medium", "high"),
-        "gpt-5.3-codex": ("GPT-5.3 Codex", "medium", "medium", "high"),
-        "gpt-5.4": ("GPT-5.4", "high", "medium", "high"),
-        "gpt-5.4-mini": ("GPT-5.4 Mini", "low", "low", "medium"),
-    }
-    display_name, cost_level, latency_level, reasoning_level = known.get(
-        model_name,
-        (model_name, "medium", "medium", "medium"),
-    )
-    return ModelProfile(
-        provider=provider,
-        model_name=model_name,
-        display_name=display_name,
-        cost_level=cost_level,
-        latency_level=latency_level,
-        reasoning_level=reasoning_level,
-        recommended_roles=["conversation", "capability_selector", "planner"],
-    )

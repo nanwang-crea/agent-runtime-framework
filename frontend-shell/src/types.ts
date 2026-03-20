@@ -79,7 +79,7 @@ export type SessionResponse = {
 };
 
 export type ModelProfile = {
-  provider: string;
+  instance: string;
   model_name: string;
   display_name: string;
   supports_chat: boolean;
@@ -92,28 +92,29 @@ export type ModelProfile = {
   recommended_roles: string[];
 };
 
-export type ProviderAuthSession = {
-  provider: string;
-  authenticated: boolean;
-  auth_type: string;
-  error_message: string | null;
-  metadata: Record<string, unknown>;
-};
-
-export type ProviderState = {
+export type InstanceState = {
   instance: string;
   type: string;
+  catalog_mode: string;
   authenticated: boolean;
   auth_error: string;
+  capabilities: {
+    supports_stream: boolean;
+    supports_tools: boolean;
+    supports_vision: boolean;
+    supports_json_mode: boolean;
+  };
   models: ModelProfile[];
 };
 
 export type ModelsResponse = {
-  providers: ProviderState[];
+  instances: InstanceState[];
   routes: Record<string, { instance: string; model_name: string }>;
+  default_instance: string;
+  active_model: { instance: string; model_name: string };
 };
 
-export type ConfigProvider = {
+export type ConfigInstance = {
   instance: string;
   type: string;
   enabled: boolean;
@@ -124,41 +125,49 @@ export type ConfigProvider = {
 
 export type ConfigResponse = {
   path: string;
-  providers: ConfigProvider[];
+  instances: ConfigInstance[];
   routes: Record<string, { instance: string; model_name: string }>;
 };
 
-export type ModelCenterProviderConfig = {
+export type ModelCenterInstanceConfig = {
   type: string;
   enabled: boolean;
   connection: Record<string, unknown>;
   credentials: Record<string, unknown>;
-  auth: {
+  catalog: {
     mode: string;
-    status: string;
-    last_error: string;
+    models: string[];
   };
 };
 
 export type ModelCenterConfig = {
   schema_version: number;
-  provider_instances: Record<string, ModelCenterProviderConfig>;
+  instances: Record<string, ModelCenterInstanceConfig>;
   routes: Record<string, { instance: string; model: string }>;
 };
 
-export type ModelCenterCatalogProvider = {
+export type ModelCenterCatalogInstance = {
   type: string;
   enabled: boolean;
+  catalog_mode: string;
   authenticated: boolean;
   auth_error: string;
+  capabilities: {
+    supports_stream: boolean;
+    supports_tools: boolean;
+    supports_vision: boolean;
+    supports_json_mode: boolean;
+  };
   models: ModelProfile[];
 };
 
 export type ModelCenterResponse = {
   config: ModelCenterConfig;
   runtime: {
-    instances: Record<string, ModelCenterCatalogProvider>;
+    instances: Record<string, ModelCenterCatalogInstance>;
     routes: Record<string, { instance: string; model: string }>;
+    default_instance: string;
+    active_model: { instance: string; model: string };
   };
   runtime_checks: {
     config_path: string;

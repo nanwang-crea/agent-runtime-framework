@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from agent_runtime_framework.models import ModelRegistry, ModelRouter
 
@@ -20,7 +20,7 @@ MODEL_ROLES = (
 
 DEFAULT_V3_CONFIG: dict[str, Any] = {
     "schema_version": 3,
-    "provider_instances": {
+    "instances": {
         "openai": {
             "type": "openai_compatible",
             "enabled": True,
@@ -62,10 +62,6 @@ DEFAULT_V3_CONFIG: dict[str, Any] = {
     },
 }
 
-
-DriverFactory = Callable[[str, dict[str, Any]], Any]
-
-
 class ModelCenterStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -73,10 +69,10 @@ class ModelCenterStore:
     def load_or_create(self, seed: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.path.exists():
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            normalized = migrate_config_to_v3(payload)
+            normalized = normalize_config_v3(payload)
             self.save(normalized)
             return normalized
-        created = migrate_config_to_v3(seed or DEFAULT_V3_CONFIG)
+        created = normalize_config_v3(seed or DEFAULT_V3_CONFIG)
         self.save(created)
         return created
 
@@ -85,23 +81,23 @@ class ModelCenterStore:
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
         current = self.load_or_create()
-        merged = migrate_config_to_v3(current)
+        merged = normalize_config_v3(current)
 
-        incoming_instances = patch.get("provider_instances") or patch.get("providers")
+        incoming_instances = patch.get("instances") or patch.get("provider_instances")
         if isinstance(incoming_instances, dict):
             for instance_id, instance_patch in incoming_instances.items():
                 if not isinstance(instance_patch, dict):
                     continue
-                current_instance = dict(merged["provider_instances"].get(instance_id, {}))
+                current_instance = dict(merged["instances"].get(instance_id, {}))
                 current_instance = _deep_merge(current_instance, instance_patch)
-                merged["provider_instances"][instance_id] = current_instance
+                merged["instances"][instance_id] = current_instance
 
         incoming_routes = patch.get("routes")
         if isinstance(incoming_routes, dict):
             for role, route_patch in incoming_routes.items():
                 if not isinstance(route_patch, dict):
                     continue
-                instance_id = str(route_patch.get("instance") or route_patch.get("provider") or "").strip()
+                instance_id = str(route_patch.get("instance") or "").strip()
                 model = str(route_patch.get("model") or route_patch.get("model_name") or "").strip()
                 if instance_id and model:
                     merged["routes"][role] = {"instance": instance_id, "model": model}
@@ -117,12 +113,10 @@ class ModelCenterService:
         store: ModelCenterStore,
         registry: ModelRegistry,
         router: ModelRouter,
-        driver_factories: dict[str, DriverFactory],
     ) -> None:
         self.store = store
         self.registry = registry
         self.router = router
-        self.driver_factories = driver_factories
 
     def load(self) -> dict[str, Any]:
         config = self.store.load_or_create()
@@ -139,17 +133,17 @@ class ModelCenterService:
     def run_action(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = payload or {}
         normalized_action = action.strip()
-        if normalized_action not in {"authenticate_instance", "authenticate_provider", "refresh_catalog"}:
+        if normalized_action not in {"authenticate_instance", "refresh_catalog"}:
             raise ValueError(f"unknown model center action: {action}")
         config = self.store.load_or_create()
-        if normalized_action in {"authenticate_instance", "authenticate_provider"}:
-            target = str(body.get("instance") or body.get("provider") or "").strip()
+        if normalized_action == "authenticate_instance":
+            target = str(body.get("instance") or "").strip()
             if target:
                 runtime = self._runtime_state(config)
                 if target in runtime["instances"]:
                     runtime["instances"][target] = self._runtime_state_for_instance(
                         target,
-                        dict(config["provider_instances"].get(target) or {}),
+                        dict(config["instances"].get(target) or {}),
                     )
                     return {
                         "config": config,
@@ -159,17 +153,19 @@ class ModelCenterService:
         return self._apply_and_project(config)
 
     def _apply_and_project(self, config: dict[str, Any]) -> dict[str, Any]:
-        normalized = migrate_config_to_v3(config)
+        normalized = normalize_config_v3(config)
         self.registry.reset()
         self.router.reset()
 
-        for instance_id, instance_cfg in (normalized.get("provider_instances") or {}).items():
+        for instance_id, instance_cfg in (normalized.get("instances") or {}).items():
             if not bool(instance_cfg.get("enabled", True)):
                 continue
-            provider = self._provider_for_instance(instance_id, instance_cfg)
-            if provider is None:
+            driver_type = str(instance_cfg.get("type") or "").strip()
+            try:
+                instance = self.registry.create_instance(driver_type, instance_id, instance_cfg)
+            except KeyError:
                 continue
-            self.registry.register_provider(provider)
+            self.registry.register_instance(instance)
             self._authenticate_instance(instance_id, instance_cfg)
 
         for role in MODEL_ROLES:
@@ -177,7 +173,7 @@ class ModelCenterService:
             instance_id = str(route_cfg.get("instance") or "").strip()
             model = str(route_cfg.get("model") or "").strip()
             if instance_id and model:
-                self.router.set_route(role, provider=instance_id, model_name=model)
+                self.router.set_route(role, instance_id=instance_id, model_name=model)
 
         return {
             "config": normalized,
@@ -187,13 +183,18 @@ class ModelCenterService:
 
     def _runtime_state(self, config: dict[str, Any]) -> dict[str, Any]:
         instances: dict[str, Any] = {}
-        for instance_id, instance_cfg in (config.get("provider_instances") or {}).items():
+        for instance_id, instance_cfg in (config.get("instances") or {}).items():
             instances[instance_id] = self._runtime_state_for_instance(instance_id, dict(instance_cfg or {}))
         return {
             "instances": instances,
             "routes": {
-                role: {"instance": route["provider"], "model": route["model_name"]}
+                role: {"instance": route["instance"], "model": route["model_name"]}
                 for role, route in self.router.routes_payload().items()
+            },
+            "default_instance": str((config.get("routes") or {}).get("default", {}).get("instance") or ""),
+            "active_model": {
+                "instance": str((config.get("routes") or {}).get("default", {}).get("instance") or ""),
+                "model": str((config.get("routes") or {}).get("default", {}).get("model") or ""),
             },
         }
 
@@ -207,17 +208,26 @@ class ModelCenterService:
         return {
             "type": str(instance_cfg.get("type") or ""),
             "enabled": bool(instance_cfg.get("enabled", True)),
+            "catalog_mode": str((instance_cfg.get("catalog") or {}).get("mode") or "static"),
             "authenticated": bool(session and session.authenticated),
             "auth_error": str(session.error_message or "") if session else "",
+            "capabilities": self._driver_capabilities(str(instance_cfg.get("type") or "").strip()),
             "models": models,
         }
 
-    def _provider_for_instance(self, instance_id: str, instance_cfg: dict[str, Any]) -> Any:
-        driver_type = str(instance_cfg.get("type") or "").strip()
-        factory = self.driver_factories.get(driver_type)
-        if factory is None:
-            return None
-        return factory(instance_id, instance_cfg)
+    def _driver_capabilities(self, driver_type: str) -> dict[str, Any]:
+        capabilities = self.registry.driver_capabilities(driver_type)
+        return capabilities.as_dict() if hasattr(capabilities, "as_dict") else {
+            "supports_stream": bool(getattr(capabilities, "supports_stream", False)),
+            "supports_tools": bool(getattr(capabilities, "supports_tools", False)),
+            "supports_vision": bool(getattr(capabilities, "supports_vision", False)),
+            "supports_json_mode": bool(getattr(capabilities, "supports_json_mode", False)),
+        } if capabilities is not None else {
+            "supports_stream": False,
+            "supports_tools": False,
+            "supports_vision": False,
+            "supports_json_mode": False,
+        }
 
     def _authenticate_instance(self, instance_id: str, instance_cfg: dict[str, Any]) -> None:
         connection = dict(instance_cfg.get("connection") or {})
@@ -226,57 +236,22 @@ class ModelCenterService:
         self.registry.authenticate(instance_id, payload)
 
 
-def migrate_config_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    schema_version = int(payload.get("schema_version") or 0)
-    if schema_version >= 3:
-        normalized = _deep_merge(json.loads(json.dumps(DEFAULT_V3_CONFIG)), payload)
-        normalized["schema_version"] = 3
-        normalized["provider_instances"] = _normalize_provider_instances(normalized.get("provider_instances") or {})
-        normalized["routes"] = _normalize_routes(normalized.get("routes") or {})
-        normalized.pop("providers", None)
-        normalized.pop("models", None)
-        return normalized
-
-    if schema_version == 2:
-        return _migrate_v2_to_v3(payload)
-    return _migrate_v1_to_v3(payload)
+def normalize_config_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _deep_merge(json.loads(json.dumps(DEFAULT_V3_CONFIG)), payload)
+    normalized["schema_version"] = 3
+    legacy_instances = normalized.pop("provider_instances", None)
+    merged_instances = dict(normalized.get("instances") or {})
+    if isinstance(legacy_instances, dict):
+        merged_instances = _deep_merge(merged_instances, legacy_instances)
+    normalized["instances"] = _normalize_instances(merged_instances)
+    normalized["routes"] = _normalize_routes(normalized.get("routes") or {})
+    normalized.pop("providers", None)
+    normalized.pop("models", None)
+    return normalized
 
 
-def _migrate_v1_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    merged = json.loads(json.dumps(DEFAULT_V3_CONFIG))
-    providers = payload.get("providers") or {}
-    routes = payload.get("routes") or {}
-    for instance_id, provider_payload in providers.items():
-        provider_obj = _default_instance(instance_id)
-        provider_obj["credentials"]["api_key"] = str((provider_payload or {}).get("api_key") or "")
-        if "base_url" in (provider_payload or {}):
-            provider_obj["connection"]["base_url"] = str((provider_payload or {}).get("base_url") or "")
-        merged["provider_instances"][instance_id] = provider_obj
-    merged["routes"] = _normalize_routes(routes)
-    return merged
-
-
-def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    merged = json.loads(json.dumps(DEFAULT_V3_CONFIG))
-    providers = payload.get("providers") or {}
-    models = payload.get("models") or {}
-    routes = payload.get("routes") or {}
-    for instance_id, provider_payload in providers.items():
-        provider_obj = _default_instance(instance_id)
-        provider_payload = dict(provider_payload or {})
-        provider_obj["type"] = str(provider_payload.get("type") or provider_obj["type"])
-        provider_obj["enabled"] = bool(provider_payload.get("enabled", True))
-        provider_obj["connection"] = _deep_merge(provider_obj["connection"], dict(provider_payload.get("connection") or {}))
-        provider_obj["credentials"] = _deep_merge(provider_obj["credentials"], dict(provider_payload.get("credentials") or {}))
-        catalog_models = list(models.get(instance_id) or provider_obj["catalog"]["models"])
-        provider_obj["catalog"] = {"mode": "static", "models": catalog_models}
-        merged["provider_instances"][instance_id] = provider_obj
-    merged["routes"] = _normalize_routes(routes)
-    return merged
-
-
-def _normalize_provider_instances(instances: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    normalized = {name: _default_instance(name) for name in DEFAULT_V3_CONFIG["provider_instances"]}
+def _normalize_instances(instances: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    normalized = {name: _default_instance(name) for name in DEFAULT_V3_CONFIG["instances"]}
     for instance_id, instance_cfg in instances.items():
         normalized[instance_id] = _deep_merge(_default_instance(instance_id), dict(instance_cfg or {}))
         normalized[instance_id].pop("auth", None)
@@ -288,7 +263,7 @@ def _normalize_routes(routes: dict[str, Any]) -> dict[str, dict[str, str]]:
     for role, route in routes.items():
         if not isinstance(route, dict):
             continue
-        instance_id = str(route.get("instance") or route.get("provider") or "").strip()
+        instance_id = str(route.get("instance") or "").strip()
         model = str(route.get("model") or route.get("model_name") or "").strip()
         if instance_id and model:
             normalized[role] = {"instance": instance_id, "model": model}
@@ -299,7 +274,7 @@ def _normalize_routes(routes: dict[str, Any]) -> dict[str, dict[str, str]]:
 
 
 def _default_instance(instance_id: str) -> dict[str, Any]:
-    defaults = dict((DEFAULT_V3_CONFIG["provider_instances"] or {}).get(instance_id) or {})
+    defaults = dict((DEFAULT_V3_CONFIG["instances"] or {}).get(instance_id) or {})
     if defaults:
         return json.loads(json.dumps(defaults))
     if instance_id == "codex_local":

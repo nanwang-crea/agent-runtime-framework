@@ -644,7 +644,7 @@ textarea {
   margin-bottom: 16px;
 }
 
-.provider-meta {
+.instance-meta {
   color: var(--muted);
 }
 
@@ -714,19 +714,41 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-.provider-head {
+.instance-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
 
-.provider-meta {
+.instance-meta {
   margin: 10px 0 0;
   line-height: 1.5;
 }
 
-.provider-instance-card {
+.instance-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mini-pill {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(20, 34, 29, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mini-pill.on {
+  background: rgba(21, 92, 73, 0.1);
+  color: var(--accent-strong);
+}
+
+.instance-card {
   padding: 18px;
   background: rgba(255, 255, 255, 0.82);
 }
