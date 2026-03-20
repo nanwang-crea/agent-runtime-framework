@@ -133,16 +133,16 @@ Responsibilities:
 
 Drivers do not own user-facing instance ids such as `openai`, `dashscope`, or `openApi`.
 
-### 2. Provider Instance Config Layer
+### 2. Instance Config Layer
 
-Config file stores provider instances by stable id.
+Config file stores instances by stable id.
 
 Proposed shape:
 
 ```json
 {
   "schema_version": 3,
-  "provider_instances": {
+  "instances": {
     "default_openai": {
       "type": "openai_compatible",
       "enabled": true,
@@ -183,7 +183,7 @@ Proposed shape:
 
 Notes:
 
-- `provider_instances` replaces `providers`
+- `instances` replaces `providers`
 - `type` maps to a runtime driver
 - config does not persist `auth.status`
 - config-owned model list exists only as the instance catalog declaration, not as a second top-level shadow map
@@ -301,7 +301,7 @@ class RuntimeInstanceState:
 
 ### Change
 
-- `config.providers` becomes `config.provider_instances`
+- `config.providers` becomes `config.instances`
 - `catalog` becomes `runtime`
 - route payload uses `instance` instead of `provider`
 
@@ -313,11 +313,11 @@ Keep `authenticate_provider` temporarily, but rename it to `authenticate_instanc
 
 ### V2 to V3 migration rules
 
-1. Move `providers` to `provider_instances`.
+1. Move `providers` to `instances`.
 2. Treat each old provider key as both the new instance id and the legacy display id.
 3. Preserve `type`, `enabled`, `connection`, and `credentials`.
 4. Drop persisted `auth` blocks.
-5. Convert top-level `models[provider]` into `provider_instances[provider].catalog.models` when no instance catalog exists.
+5. Convert top-level `models[provider]` into `instances[provider].catalog.models` when no instance catalog exists.
 6. Convert `routes[role] = {provider, model}` into `{instance, model}`.
 7. Add `default` route if all routed roles currently point to the same instance and model.
 
@@ -326,7 +326,7 @@ Keep `authenticate_provider` temporarily, but rename it to `authenticate_instanc
 For one schema version, server reads both:
 
 - V2: `providers` and `{provider, model}`
-- V3: `provider_instances` and `{instance, model}`
+- V3: `instances` and `{instance, model}`
 
 Server always writes V3 after migration.
 
