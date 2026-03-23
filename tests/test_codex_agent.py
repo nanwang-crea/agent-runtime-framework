@@ -310,7 +310,11 @@ def test_codex_loop_uses_llm_next_action_planner_with_tool_context(tmp_path: Pat
     assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
     assert len(llm.completions.calls) == 1
     first_prompt = llm.completions.calls[0]["messages"][-1]["content"]
+    system_prompt = llm.completions.calls[0]["messages"][0]["content"]
     assert "read_workspace_text" in first_prompt
+    assert "kind 只能是" in system_prompt
+    assert "run_shell_command" in first_prompt
+    assert '"kind":"call_tool"' in first_prompt
 
 
 def test_codex_loop_creates_workspace_file_via_default_tooling(tmp_path: Path):
@@ -402,3 +406,5 @@ def test_codex_loop_surfaces_planner_normalization_failed(tmp_path: Path):
         CodexAgentLoop(context).run("读取 note.md")
 
     assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
+    assert "tool_name 'missing_tool' is not in available tools" in exc_info.value.detail
+    assert '"tool_name": "missing_tool"' in exc_info.value.detail

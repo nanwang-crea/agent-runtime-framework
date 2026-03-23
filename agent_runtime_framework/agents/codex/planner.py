@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+
+logger = logging.getLogger(__name__)
 
 
 def plan_codex_actions(user_input: str) -> list[CodexAction]:
@@ -199,6 +202,8 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
         "你是 Codex 风格 agent 的 next-action planner。"
         "请根据任务目标、最近 observation 和可用工具，选择唯一的下一步动作。"
         "只输出合法 JSON，字段允许为 kind、instruction、tool_name、arguments、risk_class、direct_output。"
+        "kind 只能是 call_tool、apply_patch、move_path、delete_path、run_verification、respond。"
+        "不要输出 action、tool、task、conversation 等其他 kind。"
     )
     user_prompt = (
         f"任务目标：{task.goal}\n"
@@ -211,6 +216,10 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
         "- destructive_write 对应 destructive\n"
         "- safe_write 对应 high\n"
         "- content_read / metadata_read 对应 low\n"
+        "示例：\n"
+        '- 如果要运行 shell 命令 pwd，输出 {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'
+        '- 如果要读取 README.md，输出 {"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"README.md"},"risk_class":"low"}\n'
+        '- 如果只是直接回复用户，输出 {"kind":"respond","instruction":"..."}\n'
     )
     try:
         response = chat_once(
@@ -239,6 +248,7 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
     try:
         parsed = json.loads(_extract_json_block(raw_content))
     except Exception as exc:
+        logger.warning("planner invalid json: raw=%s", raw_content[:400])
         raise AppError(
             code="PLANNER_INVALID_JSON",
             message="planner 模型已返回结果，但不是合法 JSON。",
@@ -248,12 +258,15 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
             suggestion="请检查 planner prompt 或切换到更稳定的模型。",
         ) from exc
 
-    planned = _normalize_llm_action(parsed, tool_names=set(tool_names))
+    invalid_reason = _invalid_action_reason(parsed, tool_names=set(tool_names))
+    planned = None if invalid_reason else _normalize_llm_action(parsed, tool_names=set(tool_names))
     if planned is None:
+        detail = f"reason={invalid_reason or 'unknown'}; parsed={json.dumps(parsed, ensure_ascii=False)[:400]}"
+        logger.warning("planner normalization failed: %s", detail)
         raise AppError(
             code="PLANNER_NORMALIZATION_FAILED",
             message="planner 模型返回了 JSON，但内容不符合动作约束。",
-            detail=json.dumps(parsed, ensure_ascii=False)[:400],
+            detail=detail,
             stage="planner",
             retriable=True,
             suggestion="请检查 tool_name、kind 和 arguments 是否满足约束。",
@@ -270,11 +283,9 @@ def _extract_json_block(text: str) -> str:
 
 
 def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> CodexAction | None:
-    if not isinstance(parsed, dict):
+    if _invalid_action_reason(parsed, tool_names=tool_names) is not None:
         return None
     kind = str(parsed.get("kind") or "").strip()
-    if kind not in {"call_tool", "apply_patch", "move_path", "delete_path", "run_verification", "respond"}:
-        return None
     instruction = str(parsed.get("instruction") or "").strip()
     metadata = {
         "tool_name": str(parsed.get("tool_name") or "").strip(),
@@ -308,6 +319,32 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         risk_class=risk_class,
         metadata=metadata,
     )
+
+
+def _invalid_action_reason(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> str | None:
+    if not isinstance(parsed, dict):
+        return "parsed payload is not an object"
+    kind = str(parsed.get("kind") or "").strip()
+    if kind not in {"call_tool", "apply_patch", "move_path", "delete_path", "run_verification", "respond"}:
+        return f"unsupported kind '{kind or '<empty>'}'"
+    tool_name = str(parsed.get("tool_name") or "").strip()
+    if kind == "apply_patch" and not tool_name:
+        tool_name = "apply_text_patch"
+    if kind == "move_path" and not tool_name:
+        tool_name = "move_workspace_path"
+    if kind == "delete_path" and not tool_name:
+        tool_name = "delete_workspace_path"
+    if tool_names is not None and tool_name and tool_name not in tool_names:
+        return f"tool_name '{tool_name}' is not in available tools"
+    if kind != "respond" and not tool_name and kind != "run_verification":
+        return "non-respond action is missing tool_name"
+    instruction = str(parsed.get("instruction") or "").strip()
+    arguments = dict(parsed.get("arguments") or {})
+    if kind == "respond" and not instruction:
+        return "respond action is missing instruction"
+    if kind == "run_verification" and not instruction and not str(arguments.get("command") or "").strip():
+        return "run_verification action is missing command"
+    return None
 
 
 def _risk_hint_for_permission(permission_level: str) -> str:

@@ -54,6 +54,7 @@ class _FakeLLMClient:
 class _FakeInstance:
     instance_id: str = "fake"
     client_content: str = '{"capability_name":"conversation"}'
+    last_client: _FakeLLMClient | None = None
 
     def __post_init__(self) -> None:
         self._profiles = [
@@ -108,7 +109,8 @@ class _FakeInstance:
         stored = store.get(self.instance_id) or {}
         if not stored.get("api_key"):
             return None
-        return _FakeLLMClient(self.client_content)
+        self.last_client = _FakeLLMClient(self.client_content)
+        return self.last_client
 
 
 @dataclass
@@ -219,7 +221,8 @@ def test_should_route_to_conversation_prefers_router_model_when_available(tmp_pa
     workspace.mkdir()
     context = _app_context(workspace)
     registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_instance(_FakeInstance(client_content='{"route":"conversation","reason":"ask before acting"}'))
+    instance = _FakeInstance(client_content='{"route":"conversation"}')
+    registry.register_instance(instance)
     registry.authenticate("fake", {"api_key": "secret"})
     router = ModelRouter(registry)
     router.set_route("router", instance_id="fake", model_name="router-model")
@@ -229,6 +232,10 @@ def test_should_route_to_conversation_prefers_router_model_when_available(tmp_pa
     routed = should_route_to_conversation("读取 README.md", SimpleNamespace(application_context=context))
 
     assert routed is True
+    prompt = "\n".join(message["content"] for message in instance.last_client.completions.last_kwargs["messages"])
+    assert '{"route":"conversation"}' in prompt
+    assert '{"route":"codex"}' in prompt
+    assert "不要输出原因" in prompt
 
 
 def test_should_route_to_conversation_falls_back_when_router_output_is_invalid(tmp_path: Path):
