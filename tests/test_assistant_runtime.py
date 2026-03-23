@@ -12,6 +12,7 @@ from agent_runtime_framework.assistant import (
     ApprovalRequest,
     CapabilityRegistry,
     CapabilitySpec,
+    ExecutionPlan,
     PlannedAction,
     ResumeToken,
     SkillRegistry,
@@ -19,6 +20,8 @@ from agent_runtime_framework.assistant import (
     create_conversation_capability,
     route_default_capability,
 )
+from agent_runtime_framework.assistant.approval import InMemoryApprovalStore
+from agent_runtime_framework.assistant.checkpoints import InMemoryCheckpointStore
 from agent_runtime_framework.assistant.conversation import _build_messages
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -433,3 +436,75 @@ def test_skill_and_mcp_capabilities_fill_extended_metadata(tmp_path: Path):
     assert mcp_capability.risk_class == "high"
     assert mcp_capability.latency_hint == "slow"
     assert mcp_capability.output_type == "search_results"
+
+
+def test_agent_loop_graph_run_persists_checkpoints(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    checkpoint_store = InMemoryCheckpointStore()
+    context.services["checkpoint_store"] = checkpoint_store
+    context.capabilities.register(
+        CapabilitySpec(
+            name="echo",
+            runner=lambda user_input, context, session: "ok",
+            source="custom",
+            description="echo",
+        )
+    )
+    context.services["capability_selector"] = lambda user_input, session, registry, _context: "echo"
+
+    result = AgentLoop(context).run("hello")
+
+    assert result.status == "completed"
+    assert result.run_id
+    records = checkpoint_store.list_for_run(result.run_id)
+    assert [record.node_name for record in records] == ["plan", "execute", "review", "finish"]
+    assert records[-1].status == "completed"
+
+
+def test_agent_loop_records_failed_step_state_when_capability_raises(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register(
+        CapabilitySpec(
+            name="broken",
+            runner=lambda user_input, context, session: (_ for _ in ()).throw(RuntimeError("boom")),
+            source="custom",
+            description="broken",
+        )
+    )
+    context.services["capability_selector"] = lambda user_input, session, registry, _context: "broken"
+
+    result = AgentLoop(context).run("hello")
+
+    assert result.status == "failed"
+    assert result.failed_step_index == 0
+    assert "boom" in result.final_answer
+
+
+def test_approval_manager_supports_external_pending_store():
+    store = InMemoryApprovalStore()
+    manager = ApprovalManager(store=store)
+    session = AssistantSession(session_id="s1")
+    plan = ExecutionPlan(goal="rename files", steps=[PlannedAction(capability_name="rename", instruction="rename")])
+    capability = CapabilitySpec(
+        name="rename",
+        runner=lambda user_input, context, session: "ok",
+        source="custom",
+        risk_class="high",
+        description="rename",
+    )
+
+    requested = manager.request_for(session, plan, 0, plan.steps[0], capability)
+
+    assert requested is not None
+    request, token = requested
+    assert store.get(token.token_id) is not None
+    assert request.capability_name == "rename"
+
+    resolved = manager.resolve(token, approved=True)
+
+    assert resolved is not None
+    assert store.get(token.token_id) is None

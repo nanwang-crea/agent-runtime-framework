@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -33,9 +33,31 @@ class PendingApproval:
     request: ApprovalRequest
 
 
-class ApprovalManager:
+class PendingApprovalStore(Protocol):
+    def put(self, token_id: str, pending: PendingApproval) -> None: ...
+
+    def get(self, token_id: str) -> PendingApproval | None: ...
+
+    def pop(self, token_id: str) -> PendingApproval | None: ...
+
+
+class InMemoryApprovalStore:
     def __init__(self) -> None:
         self._pending: dict[str, PendingApproval] = {}
+
+    def put(self, token_id: str, pending: PendingApproval) -> None:
+        self._pending[token_id] = pending
+
+    def get(self, token_id: str) -> PendingApproval | None:
+        return self._pending.get(token_id)
+
+    def pop(self, token_id: str) -> PendingApproval | None:
+        return self._pending.pop(token_id, None)
+
+
+class ApprovalManager:
+    def __init__(self, *, store: PendingApprovalStore | None = None) -> None:
+        self._store = store or InMemoryApprovalStore()
 
     def request_for(
         self,
@@ -59,16 +81,19 @@ class ApprovalManager:
             plan_id=plan.plan_id,
             step_index=step_index,
         )
-        self._pending[token.token_id] = PendingApproval(
-            session=session,
-            plan=plan,
-            step_index=step_index,
-            request=request,
+        self._store.put(
+            token.token_id,
+            PendingApproval(
+                session=session,
+                plan=plan,
+                step_index=step_index,
+                request=request,
+            ),
         )
         return request, token
 
     def resolve(self, token: ResumeToken, approved: bool) -> PendingApproval | None:
-        pending = self._pending.pop(token.token_id, None)
+        pending = self._store.pop(token.token_id)
         if pending is None or not approved:
             return None
         return pending

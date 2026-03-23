@@ -6,10 +6,13 @@ from uuid import uuid4
 
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.approval import ApprovalManager, ApprovalRequest, ResumeToken
+from agent_runtime_framework.assistant.checkpoints import CheckpointRecord, CheckpointStore
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry
 from agent_runtime_framework.assistant.conversation import route_default_capability
 from agent_runtime_framework.assistant.session import AssistantSession, ExecutionPlan, PlannedAction
 from agent_runtime_framework.assistant.skills import SkillRegistry
+from agent_runtime_framework.core.errors import AppError
+from agent_runtime_framework.graph import ExecutionContext, FunctionNode, RuleRouter, StateGraph
 from agent_runtime_framework.models import resolve_model_runtime
 from agent_runtime_framework.runtime import parse_structured_output
 
@@ -31,11 +34,54 @@ class AgentLoopResult:
     execution_trace: list[dict[str, Any]] = field(default_factory=list)
     approval_request: ApprovalRequest | None = None
     resume_token: ResumeToken | None = None
+    run_id: str = ""
+    plan_id: str | None = None
+    failed_step_index: int | None = None
+
+
+@dataclass(slots=True)
+class _LoopRunState:
+    run_id: str
+    session: AssistantSession
+    user_input: str
+    loop_input: str
+    current_node: str | None = None
+    step_count: int = 0
+    execution_trace: list[str] = field(default_factory=list)
+    routing_history: list[dict[str, str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    status: str = "running"
+    done: bool = False
+    last_node: str | None = None
+    last_observation: str | None = None
+    termination_reason: str | None = None
+    plan: ExecutionPlan | None = None
+    plan_start_index: int = 0
+    skip_approval_for: set[int] = field(default_factory=set)
+    review_decision: str = "stop"
+    last_result: AgentLoopResult | None = None
+
+    def add_trace(self, node_name: str) -> None:
+        self.execution_trace.append(node_name)
+
+    def add_note(self, message: str) -> None:
+        if message not in self.notes:
+            self.notes.append(message)
+
+    def record_route(self, source: str, next_node: str, reason: str) -> None:
+        self.routing_history.append(
+            {
+                "source": source,
+                "next_node": next_node,
+                "reason": reason,
+            }
+        )
 
 
 class AgentLoop:
     def __init__(self, context: AssistantContext) -> None:
         self.context = context
+        self._compiled_graph = self._build_graph().compile()
 
     def run(self, user_input: str) -> AgentLoopResult:
         session = self.context.session
@@ -43,7 +89,13 @@ class AgentLoop:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         session.add_turn("user", user_input)
-        return self._run_for_session(user_input, session)
+        return self._run_with_graph(
+            user_input,
+            session,
+            plan=None,
+            plan_start_index=0,
+            skip_approval_for=set(),
+        )
 
     def resume(self, token: ResumeToken, *, approved: bool) -> AgentLoopResult:
         approval_manager = self._approval_manager()
@@ -55,28 +107,176 @@ class AgentLoop:
                 status="cancelled",
                 final_answer="approval was rejected or expired",
                 capability_name="",
+                run_id=str(uuid4()),
+                plan_id=token.plan_id,
             )
         self.context.session = pending.session
-        return self._execute_plan(
-            pending.plan,
+        return self._run_with_graph(
+            pending.plan.goal,
             pending.session,
-            start_index=pending.step_index,
+            plan=pending.plan,
+            plan_start_index=pending.step_index,
             skip_approval_for={pending.step_index},
         )
 
-    def _run_for_session(self, user_input: str, session: AssistantSession) -> AgentLoopResult:
-        loop_input = user_input
-        while True:
-            plan = self._build_plan(loop_input, session)
-            session.plan_history.append(plan)
-            result = self._execute_plan(plan, session)
-            if result.status != "completed":
-                return result
-            review = self._review_plan(plan, session)
-            if review.get("decision") != "continue":
-                session.add_turn("assistant", result.final_answer)
-                return result
-            loop_input = str(review.get("next_input") or result.final_answer)
+    def _build_graph(self) -> StateGraph[_LoopRunState]:
+        graph = StateGraph[_LoopRunState]()
+        graph.add_node("plan", FunctionNode(self._node_plan))
+        graph.add_node("execute", FunctionNode(self._node_execute))
+        graph.add_node("review", FunctionNode(self._node_review))
+        graph.add_node("finish", FunctionNode(self._node_finish))
+        graph.add_edge("plan", "execute")
+        graph.add_conditional_edges(
+            "execute",
+            RuleRouter(self._route_after_execute),
+            {"review": "review", "finish": "finish"},
+        )
+        graph.add_conditional_edges(
+            "review",
+            RuleRouter(self._route_after_review),
+            {"plan": "plan", "finish": "finish"},
+        )
+        graph.set_entry_point("plan")
+        graph.set_finish_point("finish")
+        return graph
+
+    def _run_with_graph(
+        self,
+        user_input: str,
+        session: AssistantSession,
+        *,
+        plan: ExecutionPlan | None,
+        plan_start_index: int,
+        skip_approval_for: set[int],
+    ) -> AgentLoopResult:
+        run_id = str(uuid4())
+        state = _LoopRunState(
+            run_id=run_id,
+            session=session,
+            user_input=user_input,
+            loop_input=user_input,
+            plan=plan,
+            plan_start_index=plan_start_index,
+            skip_approval_for=set(skip_approval_for),
+        )
+        self._compiled_graph.run(state, ExecutionContext(services={"agent_loop": self}))
+        result = state.last_result or AgentLoopResult(
+            status=state.status if state.status != "running" else "cancelled",
+            final_answer=state.last_observation or "",
+            capability_name="",
+            run_id=run_id,
+            plan_id=state.plan.plan_id if state.plan is not None else None,
+        )
+        result.run_id = run_id
+        if result.status == "completed":
+            session.add_turn("assistant", result.final_answer)
+        return result
+
+    def _node_plan(self, state: _LoopRunState, _context: ExecutionContext) -> _LoopRunState:
+        if state.plan is None:
+            state.plan = self._build_plan(state.loop_input, state.session)
+            state.session.plan_history.append(state.plan)
+            state.plan_start_index = 0
+            state.skip_approval_for = set()
+        state.review_decision = "stop"
+        self._checkpoint(
+            state,
+            node_name="plan",
+            status="planned",
+            detail=f"steps={len(state.plan.steps)}",
+            payload={"plan_id": state.plan.plan_id},
+        )
+        return state
+
+    def _node_execute(self, state: _LoopRunState, _context: ExecutionContext) -> _LoopRunState:
+        if state.plan is None:
+            state.status = "failed"
+            state.last_result = AgentLoopResult(
+                status="failed",
+                final_answer="missing plan",
+                capability_name="",
+                run_id=state.run_id,
+            )
+            self._checkpoint(state, node_name="execute", status="failed", detail="missing plan")
+            return state
+        result = self._execute_plan(
+            state.plan,
+            state.session,
+            start_index=state.plan_start_index,
+            skip_approval_for=state.skip_approval_for,
+        )
+        result.run_id = state.run_id
+        result.plan_id = state.plan.plan_id
+        state.last_result = result
+        state.status = "running" if result.status == "completed" else result.status
+        state.last_observation = result.final_answer
+        self._checkpoint(
+            state,
+            node_name="execute",
+            status=result.status,
+            detail=result.capability_name,
+            payload={"plan_id": state.plan.plan_id, "failed_step_index": result.failed_step_index},
+        )
+        return state
+
+    def _node_review(self, state: _LoopRunState, _context: ExecutionContext) -> _LoopRunState:
+        if state.plan is None or state.last_result is None or state.last_result.status != "completed":
+            state.review_decision = "stop"
+            self._checkpoint(state, node_name="review", status="skipped", detail="no completed result")
+            return state
+        review = self._review_plan(state.plan, state.session)
+        decision = str(review.get("decision") or "stop")
+        state.review_decision = "continue" if decision == "continue" else "stop"
+        if state.review_decision == "continue":
+            state.loop_input = str(review.get("next_input") or state.last_result.final_answer)
+            state.plan = None
+            state.plan_start_index = 0
+            state.skip_approval_for = set()
+            detail = "continue"
+        else:
+            detail = "stop"
+        self._checkpoint(state, node_name="review", status=state.review_decision, detail=detail)
+        return state
+
+    def _node_finish(self, state: _LoopRunState, _context: ExecutionContext) -> _LoopRunState:
+        if state.last_result is None:
+            state.last_result = AgentLoopResult(
+                status="cancelled",
+                final_answer=state.last_observation or "",
+                capability_name="",
+                run_id=state.run_id,
+                plan_id=state.plan.plan_id if state.plan is not None else None,
+            )
+        self._checkpoint(
+            state,
+            node_name="finish",
+            status=state.last_result.status,
+            detail=state.last_result.capability_name,
+            payload={"plan_id": state.last_result.plan_id, "status": state.last_result.status},
+        )
+        return state
+
+    def _route_after_execute(
+        self,
+        state: _LoopRunState,
+        _context: ExecutionContext,
+        _available_actions: list[str],
+    ) -> str:
+        if state.last_result is None:
+            return "finish"
+        if state.last_result.status == "completed":
+            return "review"
+        return "finish"
+
+    def _route_after_review(
+        self,
+        state: _LoopRunState,
+        _context: ExecutionContext,
+        _available_actions: list[str],
+    ) -> str:
+        if state.review_decision == "continue":
+            return "plan"
+        return "finish"
 
     def _build_plan(self, user_input: str, session: AssistantSession) -> ExecutionPlan:
         planner = self.context.services.get("planner")
@@ -101,6 +301,11 @@ class AgentLoop:
     ) -> AgentLoopResult:
         last_answer = ""
         last_capability = ""
+        normalized: dict[str, Any] = {
+            "final_answer": "",
+            "execution_trace": [],
+            "observations": [],
+        }
         for step_index in range(start_index, len(plan.steps)):
             step = plan.steps[step_index]
             capability = self.context.capabilities.require(step.capability_name)
@@ -117,20 +322,61 @@ class AgentLoop:
                     execution_trace=_plan_trace(plan),
                     approval_request=request,
                     resume_token=token,
+                    plan_id=plan.plan_id,
+                    failed_step_index=step_index,
                 )
-            runner_output = capability.runner(step.instruction, self.context, session)
-            normalized = _normalize_runner_output(runner_output)
-            last_answer = normalized["final_answer"]
-            last_capability = capability.name
-            step.status = "completed"
-            step.observation = last_answer
-            session.focused_capability = capability.name
+            try:
+                runner_output = capability.runner(step.instruction, self.context, session)
+                normalized = _normalize_runner_output(runner_output)
+                last_answer = normalized["final_answer"]
+                last_capability = capability.name
+                step.status = "completed"
+                step.observation = last_answer
+                session.focused_capability = capability.name
+            except AppError:
+                raise
+            except Exception as exc:
+                step.status = "failed"
+                step.observation = str(exc)
+                return AgentLoopResult(
+                    status="failed",
+                    final_answer=f"{capability.name} failed: {exc}",
+                    capability_name=capability.name,
+                    execution_trace=_plan_trace(plan),
+                    plan_id=plan.plan_id,
+                    failed_step_index=step_index,
+                )
         return AgentLoopResult(
             status="completed",
             final_answer=last_answer,
             capability_name=last_capability,
             execution_trace=_plan_trace(plan) + list(normalized.get("execution_trace", [])),
+            plan_id=plan.plan_id,
         )
+
+    def _checkpoint(
+        self,
+        state: _LoopRunState,
+        *,
+        node_name: str,
+        status: str,
+        detail: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        store = self.context.services.get("checkpoint_store")
+        if store is None or not all(hasattr(store, method) for method in ("save", "latest", "list_for_run")):
+            return
+        record = CheckpointRecord(
+            run_id=state.run_id,
+            session_id=state.session.session_id,
+            node_name=node_name,
+            status=status,
+            step_count=state.step_count,
+            detail=detail,
+            payload=payload or {},
+        )
+        cast_store: CheckpointStore = store
+        cast_store.save(record)
 
     def _review_plan(self, plan: ExecutionPlan, session: AssistantSession) -> dict[str, Any]:
         reviewer = self.context.services.get("reviewer")
