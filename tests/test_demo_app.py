@@ -44,7 +44,7 @@ def test_demo_assets_are_loadable():
     script = _load_asset("app.js")
     css = _load_asset("styles.css")
 
-    assert "Desktop Assistant Demo" in html
+    assert "桌面端 AI 工具" in html
     assert "fetchSession" in script
     assert ":root" in css
 

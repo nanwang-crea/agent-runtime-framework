@@ -19,7 +19,7 @@ logging.getLogger("agent_runtime_framework.assistant").setLevel(logging.WARNING)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the desktop assistant demo server.")
+    parser = argparse.ArgumentParser(description="Run the desktop AI tool demo server.")
     parser.add_argument("--workspace", default=".", help="Workspace root that the assistant can access.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
@@ -27,7 +27,7 @@ def main() -> None:
 
     app = create_demo_assistant_app(Path(args.workspace))
     server = ThreadingHTTPServer((args.host, args.port), _build_handler(app))
-    print(f"Desktop assistant demo running at http://{args.host}:{args.port}")
+    print(f"Desktop AI tool running at http://{args.host}:{args.port}")
     print(f"Workspace: {app.workspace}")
     try:
         server.serve_forever()

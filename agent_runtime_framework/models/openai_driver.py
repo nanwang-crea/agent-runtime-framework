@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import ssl
+import time
 from typing import Any, Iterable
+from urllib.error import URLError
 from urllib import request as urllib_request
 
 from agent_runtime_framework.models.chat import ChatChunk, ChatMessage, ChatRequest, ChatResponse
@@ -22,7 +25,7 @@ class _OpenAICompatibleClient:
 
     def stream_chat_completion(self, request: ChatRequest) -> Iterable[ChatChunk]:
         req = self._request(request, stream=True)
-        with urllib_request.urlopen(req, timeout=60) as response:
+        with self._open_with_retry(req, timeout=60) as response:
             for raw_line in response:
                 line = raw_line.decode("utf-8").strip()
                 if not line or not line.startswith("data:"):
@@ -37,8 +40,18 @@ class _OpenAICompatibleClient:
 
     def _send(self, request: ChatRequest, *, stream: bool) -> dict[str, Any]:
         req = self._request(request, stream=stream)
-        with urllib_request.urlopen(req, timeout=60) as response:
+        with self._open_with_retry(req, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _open_with_retry(self, req: Any, *, timeout: int):
+        retries = 1
+        for attempt in range(retries + 1):
+            try:
+                return urllib_request.urlopen(req, timeout=timeout)
+            except Exception as exc:
+                if attempt >= retries or not _is_transient_ssl_eof(exc):
+                    raise
+                time.sleep(0.2)
 
     def _request(self, request: ChatRequest, *, stream: bool) -> Any:
         payload = json.dumps(
@@ -59,6 +72,21 @@ class _OpenAICompatibleClient:
             },
             method="POST",
         )
+
+
+def _is_transient_ssl_eof(exc: Exception) -> bool:
+    if isinstance(exc, URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLEOFError):
+            return True
+        if isinstance(reason, ssl.SSLError) and "EOF" in str(reason).upper():
+            return True
+        return "EOF OCCURRED IN VIOLATION OF PROTOCOL" in str(reason).upper()
+    if isinstance(exc, ssl.SSLEOFError):
+        return True
+    if isinstance(exc, ssl.SSLError):
+        return "EOF" in str(exc).upper()
+    return False
 
 
 class _OpenAICompatChatCompletions:

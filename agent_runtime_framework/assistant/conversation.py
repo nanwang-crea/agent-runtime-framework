@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 from typing import Any, Iterable
+from urllib.error import URLError
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
@@ -118,7 +120,10 @@ def stream_conversation_reply(
             # 流式请求失败（如网络/代理/接口不支持）时，再试一次非流式，尽量仍返回模型结果
             error_detail = _format_error_detail(exc)
             meta["reason"] = f"stream_error:{error_detail}"
-            logger.exception("conversation stream request failed: %s", error_detail)
+            if _is_transient_network_error(exc):
+                logger.warning("conversation stream transient failure: %s", error_detail)
+            else:
+                logger.exception("conversation stream request failed: %s", error_detail)
         try:
             response = chat_once(
                 llm_client,
@@ -138,7 +143,10 @@ def stream_conversation_reply(
         except Exception as exc2:
             error_detail = _format_error_detail(exc2)
             meta["reason"] = f"model_error:{error_detail}"
-            logger.exception("conversation non-stream request failed: %s", error_detail)
+            if _is_transient_network_error(exc2):
+                logger.warning("conversation non-stream transient failure: %s", error_detail)
+            else:
+                logger.exception("conversation non-stream request failed: %s", error_detail)
     yield _fallback_conversation_reply(user_input)
 
 
@@ -193,3 +201,18 @@ def _conversation_max_tokens() -> int:
     except ValueError:
         return 10240
     return min(10240, max(1, value))
+
+
+def _is_transient_network_error(exc: Exception) -> bool:
+    if isinstance(exc, URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLEOFError):
+            return True
+        if isinstance(reason, ssl.SSLError):
+            return "EOF" in str(reason).upper()
+        return "EOF OCCURRED IN VIOLATION OF PROTOCOL" in str(reason).upper()
+    if isinstance(exc, ssl.SSLEOFError):
+        return True
+    if isinstance(exc, ssl.SSLError):
+        return "EOF" in str(exc).upper()
+    return False

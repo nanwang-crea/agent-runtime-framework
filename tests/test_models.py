@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import ssl
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import URLError
 
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import create_conversation_capability
@@ -240,6 +242,45 @@ def test_openai_compatible_driver_builds_instance_with_pure_python_http_client()
 
     assert mocked.called
     assert result.choices[0].message.content == "hello from http"
+
+
+def test_openai_compatible_driver_retries_transient_ssl_eof_once():
+    store = InMemoryCredentialStore()
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "openai",
+        {
+            "connection": {"base_url": "https://api.openai.com/v1"},
+            "catalog": {"models": ["gpt-5.4"]},
+        },
+    )
+    instance.authenticate(
+        {
+            "api_key": "sk-test",
+            "base_url": "https://api.openai.com/v1",
+        },
+        store,
+    )
+    client = instance.get_client(store)
+
+    class _FakeHTTPResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"retry-ok"}}]}'
+
+    error = URLError(ssl.SSLEOFError(8, "EOF occurred in violation of protocol"))
+    with patch("urllib.request.urlopen", side_effect=[error, _FakeHTTPResponse()]) as mocked:
+        response = client.create_chat_completion(
+            ChatRequest(model="gpt-5.4", messages=[ChatMessage(role="user", content="hi")])
+        )
+
+    assert mocked.call_count == 2
+    assert response.content == "retry-ok"
 
 
 def test_chat_once_uses_standardized_response_contract():
