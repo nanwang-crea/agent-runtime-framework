@@ -24,6 +24,19 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
 
 
+def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    first = app.chat("读取 README.md")
+    replayed = app.replay(first["run_id"])
+
+    assert replayed["status"] == "completed"
+    assert replayed["final_answer"] == "line one\nline two\nline three"
+
+
 def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

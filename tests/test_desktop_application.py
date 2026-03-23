@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from agent_runtime_framework.applications import (
     ApplicationContext,
     ApplicationRunner,
     create_desktop_content_application,
 )
+from agent_runtime_framework.artifacts import FileArtifactStore, InMemoryArtifactStore
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
@@ -19,6 +23,7 @@ def _build_context(workspace: Path) -> ApplicationContext:
         resource_repository=LocalFileResourceRepository([workspace]),
         session_memory=InMemorySessionMemory(),
         index_memory=InMemoryIndexMemory(),
+        artifact_store=InMemoryArtifactStore(),
         policy=SimpleDesktopPolicy(),
         tools=ToolRegistry(),
         config={"default_directory": str(workspace)},
@@ -301,3 +306,139 @@ def test_desktop_application_falls_back_to_rule_interpretation_without_llm(tmp_p
 
     assert result.status == "completed"
     assert "a.md" in result.final_answer
+
+
+def test_desktop_application_create_file_requires_confirmation_then_executes(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    runner = ApplicationRunner(app, context)
+
+    pending = runner.run("创建 note.txt 内容 hello")
+
+    assert pending.status == "requires_confirmation"
+    assert "note.txt" in pending.final_answer
+    assert "+hello" in pending.final_answer
+    assert not (workspace / "note.txt").exists()
+
+    completed = runner.run("创建 note.txt 内容 hello", confirmed=True)
+
+    assert completed.status == "completed"
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_desktop_application_create_directory_requires_confirmation_then_executes(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    runner = ApplicationRunner(app, context)
+
+    pending = runner.run("创建文件夹 docs")
+
+    assert pending.status == "requires_confirmation"
+    assert "mkdir" in pending.final_answer
+
+    completed = runner.run("创建文件夹 docs", confirmed=True)
+
+    assert completed.status == "completed"
+    assert (workspace / "docs").is_dir()
+
+
+def test_desktop_application_edit_move_delete_with_confirmation_and_artifacts(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    file_path = workspace / "note.txt"
+    file_path.write_text("old", encoding="utf-8")
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    runner = ApplicationRunner(app, context)
+
+    preview = runner.run("编辑 note.txt 内容 new")
+    assert preview.status == "requires_confirmation"
+    assert "-old" in preview.final_answer
+    assert "+new" in preview.final_answer
+
+    edited = runner.run("编辑 note.txt 内容 new", confirmed=True)
+    assert edited.status == "completed"
+    assert file_path.read_text(encoding="utf-8") == "new"
+
+    moved_preview = runner.run("移动 note.txt 到 archive.txt")
+    assert moved_preview.status == "requires_confirmation"
+    moved = runner.run("移动 note.txt 到 archive.txt", confirmed=True)
+    assert moved.status == "completed"
+    assert not (workspace / "note.txt").exists()
+    assert (workspace / "archive.txt").exists()
+
+    delete_preview = runner.run("删除 archive.txt")
+    assert delete_preview.status == "requires_confirmation"
+    deleted = runner.run("删除 archive.txt", confirmed=True)
+    assert deleted.status == "completed"
+    assert not (workspace / "archive.txt").exists()
+
+    artifacts = context.artifact_store.list_recent(limit=10)
+    assert any(item.artifact_type == "change_summary" for item in artifacts)
+
+
+def test_desktop_application_rolls_back_edit_when_post_apply_fails(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    file_path = workspace / "note.txt"
+    file_path.write_text("old", encoding="utf-8")
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    context.services["mutation_fail_after_apply"] = "edit"
+    runner = ApplicationRunner(app, context)
+
+    runner.run("编辑 note.txt 内容 new")
+
+    with pytest.raises(AppError) as exc_info:
+        runner.run("编辑 note.txt 内容 new", confirmed=True)
+
+    assert exc_info.value.code == "MUTATION_EXECUTION_FAILED"
+    assert file_path.read_text(encoding="utf-8") == "old"
+    artifacts = context.artifact_store.list_recent(limit=10)
+    assert any(item.artifact_type == "rollback_checkpoint" for item in artifacts)
+
+
+def test_desktop_application_rolls_back_completed_actions_when_later_action_fails(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_desktop_content_application()
+    context = _build_context(workspace)
+    context.services["planner_parser"] = lambda intent, resources, _context: {"actions": ["create", "move"]}
+    context.services["mutation_fail_after_apply"] = "move"
+    runner = ApplicationRunner(app, context)
+
+    with pytest.raises(AppError) as exc_info:
+        runner.run("移动 note.txt 到 archive.txt", confirmed=True)
+
+    assert exc_info.value.code == "MUTATION_EXECUTION_FAILED"
+    assert not (workspace / "note.txt").exists()
+    artifacts = context.artifact_store.list_recent(limit=10)
+    assert any(item.artifact_type == "rollback_summary" for item in artifacts)
+
+
+def test_file_artifact_store_persists_change_summary_to_disk(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact_dir = workspace / ".arf" / "artifacts"
+    app = create_desktop_content_application()
+    context = ApplicationContext(
+        resource_repository=LocalFileResourceRepository([workspace]),
+        session_memory=InMemorySessionMemory(),
+        index_memory=InMemoryIndexMemory(),
+        artifact_store=FileArtifactStore(artifact_dir),
+        policy=SimpleDesktopPolicy(),
+        tools=ToolRegistry(),
+        config={"default_directory": str(workspace)},
+    )
+    runner = ApplicationRunner(app, context)
+
+    runner.run("创建 note.txt 内容 hello")
+    runner.run("创建 note.txt 内容 hello", confirmed=True)
+
+    reloaded_store = FileArtifactStore(artifact_dir)
+    artifacts = reloaded_store.list_recent(limit=20)
+    assert any(item.artifact_type == "change_summary" for item in artifacts)

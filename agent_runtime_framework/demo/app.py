@@ -8,12 +8,14 @@ from uuid import uuid4
 from agent_runtime_framework.applications import ApplicationContext, create_desktop_content_application
 from agent_runtime_framework.assistant import (
     AgentLoop,
+    ApprovalManager,
     AssistantContext,
     AssistantSession,
     CapabilityRegistry,
     SkillRegistry,
     create_conversation_capability,
 )
+from agent_runtime_framework.assistant.checkpoints import InMemoryCheckpointStore
 from agent_runtime_framework.assistant.conversation import stream_conversation_reply
 from agent_runtime_framework.assistant.session import ExecutionPlan, PlannedAction
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
@@ -146,6 +148,10 @@ class DemoAssistantApp:
         result = AgentLoop(self.context).resume(token, approved=approved)
         return self._result_payload(result)
 
+    def replay(self, run_id: str) -> dict[str, Any]:
+        result = AgentLoop(self.context).replay(run_id)
+        return self._result_payload(result)
+
     def session_payload(self) -> dict[str, Any]:
         session = self.context.session
         if session is None:
@@ -212,6 +218,8 @@ class DemoAssistantApp:
             resume_token_id = result.resume_token.token_id
         return {
             "status": result.status,
+            "run_id": result.run_id,
+            "plan_id": result.plan_id,
             "final_answer": result.final_answer,
             "capability_name": result.capability_name,
             "execution_trace": list(result.execution_trace),
@@ -333,9 +341,10 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         application_context=app_context,
         capabilities=CapabilityRegistry(),
         skills=SkillRegistry(),
-        services={},
+        services={"approval_manager": ApprovalManager()},
         session=AssistantSession(session_id=str(uuid4())),
     )
+    context.services["checkpoint_store"] = InMemoryCheckpointStore()
     context.capabilities.register(create_conversation_capability())
     context.capabilities.register_application("desktop_content", create_desktop_content_application())
     app = DemoAssistantApp(

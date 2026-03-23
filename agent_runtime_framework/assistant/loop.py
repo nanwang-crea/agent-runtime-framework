@@ -111,6 +111,7 @@ class AgentLoop:
                 plan_id=token.plan_id,
             )
         self.context.session = pending.session
+        pending.session.mark_step_confirmed(pending.plan.plan_id, pending.step_index)
         return self._run_with_graph(
             pending.plan.goal,
             pending.session,
@@ -118,6 +119,15 @@ class AgentLoop:
             plan_start_index=pending.step_index,
             skip_approval_for={pending.step_index},
         )
+
+    def replay(self, run_id: str) -> AgentLoopResult:
+        store = self.context.services.get("checkpoint_store")
+        if store is None or not hasattr(store, "replay_input"):
+            raise RuntimeError("checkpoint store with replay support is not configured")
+        goal = str(store.replay_input(run_id) or "").strip()
+        if not goal:
+            raise RuntimeError(f"run '{run_id}' does not have replayable input")
+        return self.run(goal)
 
     def _build_graph(self) -> StateGraph[_LoopRunState]:
         graph = StateGraph[_LoopRunState]()
@@ -184,7 +194,7 @@ class AgentLoop:
             node_name="plan",
             status="planned",
             detail=f"steps={len(state.plan.steps)}",
-            payload={"plan_id": state.plan.plan_id},
+            payload={"plan_id": state.plan.plan_id, "goal": state.loop_input},
         )
         return state
 
@@ -204,6 +214,7 @@ class AgentLoop:
             state.session,
             start_index=state.plan_start_index,
             skip_approval_for=state.skip_approval_for,
+            run_id=state.run_id,
         )
         result.run_id = state.run_id
         result.plan_id = state.plan.plan_id
@@ -298,6 +309,7 @@ class AgentLoop:
         *,
         start_index: int = 0,
         skip_approval_for: set[int] | None = None,
+        run_id: str = "",
     ) -> AgentLoopResult:
         last_answer = ""
         last_capability = ""
@@ -325,9 +337,53 @@ class AgentLoop:
                     plan_id=plan.plan_id,
                     failed_step_index=step_index,
                 )
+            confirmed = session.consume_step_confirmation(plan.plan_id, step_index)
             try:
+                self.context.services["step_confirmed"] = confirmed
+                task_id = f"{plan.plan_id}:{step_index}"
+                self.context.services["run_context"] = {
+                    "run_id": run_id,
+                    "plan_id": plan.plan_id,
+                    "task_id": task_id,
+                    "step_index": step_index,
+                }
                 runner_output = capability.runner(step.instruction, self.context, session)
                 normalized = _normalize_runner_output(runner_output)
+                self._link_artifacts(run_id, task_id, list(normalized.get("artifact_ids", [])))
+                if normalized.get("needs_approval"):
+                    manager = self._approval_manager()
+                    if manager is None:
+                        step.status = "failed"
+                        step.observation = "approval manager is not configured"
+                        return AgentLoopResult(
+                            status="failed",
+                            final_answer="approval manager is not configured",
+                            capability_name=capability.name,
+                            execution_trace=_plan_trace(plan),
+                            plan_id=plan.plan_id,
+                            failed_step_index=step_index,
+                        )
+                    request, token = manager.create_request(
+                        session=session,
+                        plan=plan,
+                        step_index=step_index,
+                        capability_name=capability.name,
+                        instruction=step.instruction,
+                        reason=str(normalized.get("approval_reason") or f"{capability.name} requires confirmation"),
+                        risk_class=str(normalized.get("risk_class") or capability.risk_class or "high"),
+                    )
+                    step.status = "awaiting_approval"
+                    step.observation = str(normalized.get("final_answer") or request.reason)
+                    return AgentLoopResult(
+                        status="needs_approval",
+                        final_answer=str(normalized.get("final_answer") or request.reason),
+                        capability_name=capability.name,
+                        execution_trace=_plan_trace(plan) + list(normalized.get("execution_trace", [])),
+                        approval_request=request,
+                        resume_token=token,
+                        plan_id=plan.plan_id,
+                        failed_step_index=step_index,
+                    )
                 last_answer = normalized["final_answer"]
                 last_capability = capability.name
                 step.status = "completed"
@@ -346,6 +402,9 @@ class AgentLoop:
                     plan_id=plan.plan_id,
                     failed_step_index=step_index,
                 )
+            finally:
+                self.context.services.pop("step_confirmed", None)
+                self.context.services.pop("run_context", None)
         return AgentLoopResult(
             status="completed",
             final_answer=last_answer,
@@ -377,6 +436,14 @@ class AgentLoop:
         )
         cast_store: CheckpointStore = store
         cast_store.save(record)
+
+    def _link_artifacts(self, run_id: str, task_id: str, artifact_ids: list[str]) -> None:
+        if not run_id or not task_id or not artifact_ids:
+            return
+        store = self.context.services.get("checkpoint_store")
+        if store is None or not hasattr(store, "link_artifacts"):
+            return
+        store.link_artifacts(run_id, task_id, artifact_ids)
 
     def _review_plan(self, plan: ExecutionPlan, session: AssistantSession) -> dict[str, Any]:
         reviewer = self.context.services.get("reviewer")
@@ -506,11 +573,19 @@ def _normalize_runner_output(output: Any) -> dict[str, Any]:
             "final_answer": str(output.get("final_answer") or output.get("text") or ""),
             "execution_trace": list(output.get("execution_trace") or []),
             "observations": list(output.get("observations") or []),
+            "artifact_ids": list(output.get("artifact_ids") or []),
+            "needs_approval": bool(output.get("needs_approval")),
+            "approval_reason": str(output.get("approval_reason") or ""),
+            "risk_class": str(output.get("risk_class") or ""),
         }
     return {
         "final_answer": str(output or ""),
         "execution_trace": [],
         "observations": [],
+        "artifact_ids": [],
+        "needs_approval": False,
+        "approval_reason": "",
+        "risk_class": "",
     }
 
 

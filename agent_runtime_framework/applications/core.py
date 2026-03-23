@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from agent_runtime_framework.artifacts import InMemoryArtifactStore
 from agent_runtime_framework.core.models import Observation, RunResult, StepRecord
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory, WorkingMemory
 from agent_runtime_framework.observability import InMemoryRunObserver, RunEvent, RunObserver
@@ -39,6 +40,17 @@ class Rememberer(Protocol):
     def __call__(self, outcome: Any, context: "ApplicationContext") -> None: ...
 
 
+class Rollbacker(Protocol):
+    def __call__(
+        self,
+        completed_outcomes: list[Any],
+        context: "ApplicationContext",
+        working_memory: WorkingMemory,
+        *,
+        cause: Exception,
+    ) -> dict[str, Any] | None: ...
+
+
 @dataclass(slots=True)
 class ApplicationSpec:
     name: str
@@ -49,6 +61,7 @@ class ApplicationSpec:
     executor: Executor
     composer: Composer
     rememberer: Rememberer
+    rollbacker: Rollbacker | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +69,7 @@ class ApplicationContext:
     resource_repository: Any
     session_memory: Any = field(default_factory=InMemorySessionMemory)
     index_memory: Any = field(default_factory=InMemoryIndexMemory)
+    artifact_store: Any = field(default_factory=InMemoryArtifactStore)
     policy: Any = None
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     config: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +90,7 @@ class ApplicationRunner:
         working_memory = self.context.working_memory_factory()
         steps: list[StepRecord] = []
         outcome = None
+        completed_outcomes: list[Any] = []
 
         intent = self.spec.interpreter(user_input, self.context)
         self._record("interpret", user_input)
@@ -111,9 +126,25 @@ class ApplicationRunner:
                     steps=steps,
                     termination_reason=decision.reason,
                 )
-            outcome = self.spec.executor(action, self.context, working_memory)
-            self._record("execute", getattr(action, "name", "action"))
-            steps.append(StepRecord(name="execute", status="completed"))
+            try:
+                outcome = self.spec.executor(action, self.context, working_memory)
+                completed_outcomes.append(outcome)
+                self._record("execute", getattr(action, "name", "action"))
+                steps.append(StepRecord(name="execute", status="completed"))
+            except Exception as exc:
+                rollback_summary: dict[str, Any] = {}
+                if callable(self.spec.rollbacker) and completed_outcomes:
+                    rollback_summary = dict(
+                        self.spec.rollbacker(completed_outcomes, self.context, working_memory, cause=exc) or {}
+                    )
+                self._record(
+                    "rollback",
+                    "rolled back completed actions after failure",
+                    {"cause": f"{type(exc).__name__}: {exc}", **rollback_summary},
+                )
+                steps.append(StepRecord(name="rollback", status="completed"))
+                working_memory.clear()
+                raise
 
         if outcome is None:
             outcome = {"text": "没有可执行动作。", "focused_resources": []}

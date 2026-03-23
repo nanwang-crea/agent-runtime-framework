@@ -24,9 +24,22 @@ class SimpleDesktopPolicy:
                 reason="safe_write_requires_confirmation",
                 safe_alternative="preview_only",
             )
+        if permission_level == PermissionLevel.DESTRUCTIVE_WRITE:
+            if confirmed:
+                return PolicyDecision(
+                    allowed=True,
+                    requires_confirmation=False,
+                    reason="destructive_write_confirmed",
+                )
+            return PolicyDecision(
+                allowed=True,
+                requires_confirmation=True,
+                reason="destructive_write_requires_confirmation",
+                safe_alternative="preview_only",
+            )
         return PolicyDecision(
             allowed=False,
             requires_confirmation=False,
-            reason="destructive_write_disabled",
-            safe_alternative="safe_write",
+            reason="permission_not_supported",
+            safe_alternative=None,
         )

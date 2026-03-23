@@ -58,10 +58,11 @@ def test_simple_desktop_policy_requires_confirmation_for_safe_write():
     )
 
 
-def test_simple_desktop_policy_denies_destructive_write_by_default():
+def test_simple_desktop_policy_requires_confirmation_for_destructive_write():
     policy = SimpleDesktopPolicy()
 
-    decision = policy.authorize(PermissionLevel.DESTRUCTIVE_WRITE, confirmed=True)
+    decision = policy.authorize(PermissionLevel.DESTRUCTIVE_WRITE, confirmed=False)
 
-    assert decision.allowed is False
-    assert decision.reason == "destructive_write_disabled"
+    assert decision.allowed is True
+    assert decision.requires_confirmation is True
+    assert decision.reason == "destructive_write_requires_confirmation"

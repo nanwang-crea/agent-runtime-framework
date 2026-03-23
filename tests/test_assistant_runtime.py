@@ -461,6 +461,7 @@ def test_agent_loop_graph_run_persists_checkpoints(tmp_path: Path):
     records = checkpoint_store.list_for_run(result.run_id)
     assert [record.node_name for record in records] == ["plan", "execute", "review", "finish"]
     assert records[-1].status == "completed"
+    assert checkpoint_store.replay_input(result.run_id) == "hello"
 
 
 def test_agent_loop_records_failed_step_state_when_capability_raises(tmp_path: Path):
@@ -508,3 +509,51 @@ def test_approval_manager_supports_external_pending_store():
 
     assert resolved is not None
     assert store.get(token.token_id) is None
+
+
+def test_agent_loop_handles_application_requires_confirmation_with_resume(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register_application("desktop_content", create_desktop_content_application())
+    context.services["capability_selector"] = lambda user_input, session, registry, _context: "desktop_content"
+    context.services["approval_manager"] = ApprovalManager()
+
+    pending = AgentLoop(context).run("创建 note.txt 内容 hello")
+
+    assert pending.status == "needs_approval"
+    assert pending.approval_request is not None
+    assert pending.resume_token is not None
+    assert "+hello" in pending.final_answer
+
+    resumed = AgentLoop(context).resume(pending.resume_token, approved=True)
+
+    assert resumed.status == "completed"
+    assert (workspace / "note.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_agent_loop_links_artifacts_into_checkpoint_index(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    checkpoint_store = InMemoryCheckpointStore()
+    context.services["checkpoint_store"] = checkpoint_store
+    context.capabilities.register(
+        CapabilitySpec(
+            name="artifact_worker",
+            runner=lambda user_input, context, session: {
+                "final_answer": "ok",
+                "artifact_ids": ["a1", "a2"],
+            },
+            source="custom",
+        )
+    )
+    context.services["capability_selector"] = lambda user_input, session, registry, _context: "artifact_worker"
+
+    result = AgentLoop(context).run("build artifacts")
+
+    assert result.status == "completed"
+    linked = checkpoint_store.artifacts_for_run(result.run_id)
+    assert linked
+    first_task_artifacts = list(linked.values())[0]
+    assert first_task_artifacts == ["a1", "a2"]

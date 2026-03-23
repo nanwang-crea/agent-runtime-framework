@@ -33,8 +33,16 @@ class CapabilityRegistry:
 
     def register_application(self, name: str, spec: ApplicationSpec) -> None:
         def _runner(user_input: str, context: Any, session: Any) -> dict[str, Any]:
-            result = ApplicationRunner(spec, context.application_context).run(user_input)
-            return {
+            confirmed = bool(context.services.get("step_confirmed"))
+            run_context = dict(context.services.get("run_context") or {})
+            context.application_context.services["run_context"] = run_context
+            context.application_context.services["recent_artifact_ids"] = []
+            try:
+                result = ApplicationRunner(spec, context.application_context).run(user_input, confirmed=confirmed)
+                artifact_ids = list(context.application_context.services.pop("recent_artifact_ids", []))
+            finally:
+                context.application_context.services.pop("run_context", None)
+            payload = {
                 "final_answer": result.final_answer,
                 "execution_trace": [
                     {
@@ -51,7 +59,13 @@ class CapabilityRegistry:
                     }
                     for observation in result.observations
                 ],
+                "artifact_ids": artifact_ids,
             }
+            if result.status == "requires_confirmation":
+                payload["needs_approval"] = True
+                payload["approval_reason"] = result.termination_reason or "action requires confirmation"
+                payload["risk_class"] = "high"
+            return payload
 
         self.register(
             CapabilitySpec(

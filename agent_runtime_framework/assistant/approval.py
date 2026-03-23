@@ -69,11 +69,32 @@ class ApprovalManager:
     ) -> tuple[ApprovalRequest, ResumeToken] | None:
         if capability.risk_class not in {"high", "destructive"}:
             return None
-        request = ApprovalRequest(
+        return self.create_request(
+            session=session,
+            plan=plan,
+            step_index=step_index,
             capability_name=capability.name,
             instruction=step.instruction,
             reason=f"capability '{capability.name}' requires confirmation",
             risk_class=capability.risk_class,
+        )
+
+    def create_request(
+        self,
+        *,
+        session: AssistantSession,
+        plan: ExecutionPlan,
+        step_index: int,
+        capability_name: str,
+        instruction: str,
+        reason: str,
+        risk_class: str,
+    ) -> tuple[ApprovalRequest, ResumeToken]:
+        request = ApprovalRequest(
+            capability_name=capability_name,
+            instruction=instruction,
+            reason=reason,
+            risk_class=risk_class,
         )
         token = ResumeToken(
             token_id=str(uuid4()),

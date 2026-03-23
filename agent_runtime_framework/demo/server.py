@@ -94,6 +94,14 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(app.approve(token_id, approved))
                 return
+            if self.path == "/api/replay":
+                payload = self._read_json()
+                run_id = str(payload.get("run_id") or "").strip()
+                if not run_id:
+                    self._send_json({"error": "run_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._send_json(app.replay(run_id))
+                return
             if self.path == "/api/model-center":
                 payload = self._read_json()
                 self._send_json(app.update_model_center(payload))

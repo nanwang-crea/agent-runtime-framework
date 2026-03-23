@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.applications.core import ApplicationContext
@@ -41,6 +42,10 @@ class DesktopActionHandlerRegistry:
         registry.register("list", _handle_list)
         registry.register("read", _handle_read)
         registry.register("summarize", _handle_summarize)
+        registry.register("create", _handle_create)
+        registry.register("edit", _handle_edit)
+        registry.register("move", _handle_move)
+        registry.register("delete", _handle_delete)
         return registry
 
 
@@ -113,6 +118,192 @@ def _handle_summarize(resources: list[ResourceRef], context: ApplicationContext,
         "focused_resources": [target],
         "text": summary,
     }
+
+
+def _handle_create(_resources: list[ResourceRef], context: ApplicationContext, execution_mode: str) -> dict[str, Any]:
+    plan = _require_mutation_plan(context, action="create")
+    target = Path(plan["target_path"])
+    target_kind = str(plan.get("target_kind") or "file")
+    _assert_within_roots(target, context)
+    if execution_mode == "preview":
+        return {"kind": "create", "focused_resources": [], "text": str(plan.get("preview") or "")}
+    if target.exists():
+        raise FileExistsError(str(target))
+    _record_rollback_checkpoint(context, action="create", plan=plan)
+    try:
+        if target_kind == "directory":
+            target.mkdir(parents=True, exist_ok=False)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(plan.get("after_text") or ""), encoding="utf-8")
+        _maybe_fail_after_apply(context, action="create")
+    except Exception as exc:
+        if target.exists():
+            if target.is_dir():
+                target.rmdir()
+            else:
+                target.unlink()
+        raise _mutation_failure_error("create", target, exc)
+    ref = ResourceRef.for_path(target)
+    return {
+        "kind": "create",
+        "focused_resources": [ref],
+        "target_path": str(target),
+        "destination_path": "",
+        "rollback": {"kind": "delete_path", "path": str(target), "target_kind": target_kind},
+        "text": f"{plan.get('summary')}\n\n{plan.get('diff')}",
+    }
+
+
+def _handle_edit(resources: list[ResourceRef], context: ApplicationContext, execution_mode: str) -> dict[str, Any]:
+    plan = _require_mutation_plan(context, action="edit")
+    target = Path(plan["target_path"])
+    _assert_within_roots(target, context)
+    if execution_mode == "preview":
+        return {"kind": "edit", "focused_resources": resources, "text": str(plan.get("preview") or "")}
+    if not target.exists():
+        raise FileNotFoundError(str(target))
+    _record_rollback_checkpoint(context, action="edit", plan=plan)
+    original = str(plan.get("before_text") or "")
+    try:
+        target.write_text(str(plan.get("after_text") or ""), encoding="utf-8")
+        _maybe_fail_after_apply(context, action="edit")
+    except Exception as exc:
+        target.write_text(original, encoding="utf-8")
+        raise _mutation_failure_error("edit", target, exc)
+    ref = ResourceRef.for_path(target)
+    return {
+        "kind": "edit",
+        "focused_resources": [ref],
+        "target_path": str(target),
+        "destination_path": "",
+        "rollback": {"kind": "restore_text", "path": str(target), "content": original},
+        "text": f"{plan.get('summary')}\n\n{plan.get('diff')}",
+    }
+
+
+def _handle_move(resources: list[ResourceRef], context: ApplicationContext, execution_mode: str) -> dict[str, Any]:
+    plan = _require_mutation_plan(context, action="move")
+    source = Path(plan["target_path"])
+    destination = Path(plan["destination_path"])
+    _assert_within_roots(source, context)
+    _assert_within_roots(destination, context)
+    if execution_mode == "preview":
+        return {"kind": "move", "focused_resources": resources, "text": str(plan.get("preview") or "")}
+    if not source.exists():
+        raise FileNotFoundError(str(source))
+    _record_rollback_checkpoint(context, action="move", plan=plan)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        _maybe_fail_after_apply(context, action="move")
+    except Exception as exc:
+        if destination.exists() and not source.exists():
+            destination.rename(source)
+        raise _mutation_failure_error("move", source, exc)
+    ref = ResourceRef.for_path(destination)
+    return {
+        "kind": "move",
+        "focused_resources": [ref],
+        "target_path": str(source),
+        "destination_path": str(destination),
+        "rollback": {"kind": "move_path", "from_path": str(destination), "to_path": str(source)},
+        "text": f"{plan.get('summary')}\n\n{plan.get('diff')}",
+    }
+
+
+def _handle_delete(resources: list[ResourceRef], context: ApplicationContext, execution_mode: str) -> dict[str, Any]:
+    plan = _require_mutation_plan(context, action="delete")
+    target = Path(plan["target_path"])
+    _assert_within_roots(target, context)
+    if execution_mode == "preview":
+        return {"kind": "delete", "focused_resources": resources, "text": str(plan.get("preview") or "")}
+    _record_rollback_checkpoint(context, action="delete", plan=plan)
+    original = str(plan.get("before_text") or "")
+    if target.exists():
+        if target.is_dir():
+            raise IsADirectoryError(str(target))
+        try:
+            target.unlink()
+            _maybe_fail_after_apply(context, action="delete")
+        except Exception as exc:
+            target.write_text(original, encoding="utf-8")
+            raise _mutation_failure_error("delete", target, exc)
+    return {
+        "kind": "delete",
+        "focused_resources": [],
+        "target_path": str(target),
+        "destination_path": "",
+        "rollback": {"kind": "restore_text", "path": str(target), "content": original},
+        "text": f"{plan.get('summary')}\n\n{plan.get('diff')}",
+    }
+
+
+def _require_mutation_plan(context: ApplicationContext, *, action: str) -> dict[str, Any]:
+    plan = context.services.get("_current_mutation_plan")
+    if not isinstance(plan, dict):
+        raise AppError(
+            code="MUTATION_PLAN_MISSING",
+            message="缺少文件变更计划，无法执行写操作。",
+            stage="plan",
+            retriable=True,
+            suggestion="请重试一次，让助手先生成变更预览。",
+        )
+    if str(plan.get("action") or "") != action:
+        raise AppError(
+            code="MUTATION_PLAN_MISMATCH",
+            message="变更计划与当前动作不一致。",
+            stage="plan",
+            retriable=True,
+            suggestion="请重新发起这次写操作。",
+        )
+    return plan
+
+
+def _assert_within_roots(path: Path, context: ApplicationContext) -> None:
+    resolved = path.expanduser().resolve()
+    roots = [Path(root).expanduser().resolve() for root in context.resource_repository.allowed_roots]
+    if any(resolved == root or root in resolved.parents for root in roots):
+        return
+    raise ValueError(f"path is outside allowed roots: {resolved}")
+
+
+def _record_rollback_checkpoint(context: ApplicationContext, *, action: str, plan: dict[str, Any]) -> None:
+    store = getattr(context, "artifact_store", None)
+    if store is None or not hasattr(store, "add"):
+        return
+    target = str(plan.get("target_path") or "")
+    destination = str(plan.get("destination_path") or "")
+    summary = f"rollback checkpoint for {action}: {target}"
+    if destination:
+        summary = f"{summary} -> {destination}"
+    store.add(
+        "rollback_checkpoint",
+        title=f"{action}_checkpoint",
+        content=summary,
+        metadata={
+            "action": action,
+            "target_path": target,
+            "destination_path": destination,
+        },
+    )
+
+
+def _maybe_fail_after_apply(context: ApplicationContext, *, action: str) -> None:
+    marker = context.services.get("mutation_fail_after_apply")
+    if marker in {action, "*"}:
+        raise RuntimeError(f"forced post-apply failure for {action}")
+
+
+def _mutation_failure_error(action: str, target: Path, exc: Exception) -> AppError:
+    return AppError(
+        code="MUTATION_EXECUTION_FAILED",
+        message=f"{action} 执行失败，已尝试回滚。",
+        detail=f"{target}: {type(exc).__name__}: {exc}",
+        stage="execute",
+        retriable=True,
+        suggestion="请检查路径和文件状态后重试。",
+    )
 
 
 def _format_list_result(
