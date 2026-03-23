@@ -28,5 +28,6 @@ def execute_tool_call(
                     tool_name=tool.name,
                     success=False,
                     error=str(exc),
+                    exception=exc,
                     attempt_count=attempts,
                 )

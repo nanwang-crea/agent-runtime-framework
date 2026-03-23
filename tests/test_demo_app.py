@@ -22,6 +22,7 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["plan_history"]
     assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
+    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "call_tool"
 
 
 def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
@@ -48,8 +49,7 @@ def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     assert payload["capability_name"] == "conversation"
     assert "我可以继续和你对话" in payload["final_answer"]
     assert payload["execution_trace"]
-    assert payload["execution_trace"][-1]["name"] == "conversation"
-    assert "source=fallback" in str(payload["execution_trace"][-1]["detail"])
+    assert payload["execution_trace"][-1]["name"] == "respond"
 
 
 def test_demo_assets_are_loadable():
@@ -270,6 +270,47 @@ def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(t
     assert memory_events
     assert memory_events[-1]["memory"]["focused_resource"]["title"] == "README.md"
     assert "line one" in str(memory_events[-1]["memory"]["last_summary"])
+
+
+def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    assert payload["execution_trace"][0]["name"] == "call_tool"
+    assert payload["execution_trace"][-1]["name"] == "respond"
+
+
+def test_demo_assistant_app_can_switch_agent_profile_within_session(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.switch_context(agent_profile="qa_only")
+
+    assert payload["context"]["active_agent"] == "qa_only"
+    assert any(profile["id"] == "codex" for profile in payload["context"]["available_agents"])
+    assert any(profile["id"] == "qa_only" for profile in payload["context"]["available_agents"])
+
+
+def test_demo_assistant_app_can_switch_workspace_within_session(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    other = tmp_path / "other"
+    workspace.mkdir()
+    other.mkdir()
+    (other / "README.md").write_text("from other workspace", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.switch_context(workspace=str(other))
+    chat = app.chat("读取 README.md")
+
+    assert payload["context"]["active_workspace"] == str(other)
+    assert str(other) in payload["context"]["available_workspaces"]
+    assert chat["final_answer"] == "from other workspace"
 
 
 class _StreamingCompletions:

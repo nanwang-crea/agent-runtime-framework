@@ -59,6 +59,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                         "plan_history": app.plan_history_payload(),
                         "run_history": app.run_history_payload(),
                         "memory": app.memory_payload(),
+                        "context": app.context_payload(),
                     }
                 )
                 return
@@ -106,6 +107,15 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/model-center":
                 payload = self._read_json()
                 self._send_json(app.update_model_center(payload))
+                return
+            if self.path == "/api/context":
+                payload = self._read_json()
+                self._send_json(
+                    app.switch_context(
+                        agent_profile=str(payload.get("agent_profile") or "").strip() or None,
+                        workspace=str(payload.get("workspace") or "").strip() or None,
+                    )
+                )
                 return
             if self.path == "/api/model-center/actions":
                 payload = self._read_json()

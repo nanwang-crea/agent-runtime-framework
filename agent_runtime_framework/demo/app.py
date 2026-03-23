@@ -5,19 +5,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.applications import ApplicationContext, create_desktop_content_application
-from agent_runtime_framework.assistant import (
-    AgentLoop,
-    ApprovalManager,
-    AssistantContext,
-    AssistantSession,
-    CapabilityRegistry,
-    SkillRegistry,
-    create_conversation_capability,
-)
-from agent_runtime_framework.assistant.checkpoints import InMemoryCheckpointStore
+from agent_runtime_framework.agents.codex import CodexAgentLoop, CodexContext, build_default_codex_tools, plan_next_codex_action
+from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import stream_conversation_reply
-from agent_runtime_framework.assistant.session import ExecutionPlan, PlannedAction
+from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     CodexCliDriver,
@@ -36,16 +27,25 @@ from agent_runtime_framework.core.errors import AppError
 @dataclass(slots=True)
 class DemoAssistantApp:
     workspace: Path
-    context: AssistantContext
+    context: CodexContext
+    loop: CodexAgentLoop
     model_registry: ModelRegistry
     model_router: ModelRouter
     model_center: ModelCenterService
     _pending_tokens: dict[str, Any]
     _run_history: list[dict[str, Any]]
+    _task_history: list[Any]
+    _run_inputs: dict[str, str]
+    _active_agent: str
+    _available_workspaces: list[str]
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
-            result = AgentLoop(self.context).run(message)
+            if self._active_agent == "qa_only":
+                return self._conversation_payload(message)
+            result = self.loop.run(message)
+            self._task_history.insert(0, result.task)
+            self._task_history = self._task_history[:40]
             payload = self._result_payload(result)
             if result.resume_token is not None:
                 self._pending_tokens[result.resume_token.token_id] = result.resume_token
@@ -60,12 +60,11 @@ class DemoAssistantApp:
         if session is None:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
-        yield {"type": "status", "status": {"phase": "routing", "label": "正在选择能力"}}
-        capability_name = AgentLoop(self.context)._select_capability(message, session)
-        if capability_name == "conversation":
+        yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
+        if self._should_stream_conversation(message, session):
             yield from self._stream_conversation(message, session)
             return
-        yield {"type": "status", "status": {"phase": "execution", "label": f"正在执行 {capability_name}"}}
+        yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
         payload = self.chat(message)
         if payload.get("status") == "error":
             yield {"type": "error", "error": dict(payload.get("error") or {})}
@@ -82,16 +81,11 @@ class DemoAssistantApp:
 
     def _stream_conversation(self, message: str, session: AssistantSession):
         session.add_turn("user", message)
-        plan = ExecutionPlan(
-            goal=message,
-            steps=[PlannedAction(capability_name="conversation", instruction=message, status="in_progress")],
-        )
-        session.plan_history.append(plan)
         yield {"type": "status", "status": {"phase": "conversation", "label": "正在生成回复"}}
         yield {
             "type": "step",
             "step": {
-                "name": "conversation",
+                "name": "respond",
                 "status": "running",
                 "detail": "streaming_response",
             },
@@ -105,19 +99,25 @@ class DemoAssistantApp:
             yield {"type": "delta", "delta": chunk}
         final_answer = "".join(chunks).strip()
         session.add_turn("assistant", final_answer)
-        plan.steps[0].status = "completed"
-        plan.steps[0].observation = final_answer
-        session.focused_capability = "conversation"
+        session.focused_capability = "respond"
         source = str(diagnostics.get("source") or "fallback")
         reason = str(diagnostics.get("reason") or "")
         status = "completed" if source == "model" else "fallback"
+        task = type("CodexConversationTask", (), {})()
+        task.task_id = str(uuid4())
+        task.goal = message
+        task.actions = [type("CodexConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
+        self._task_history.insert(0, task)
+        self._task_history = self._task_history[:40]
         payload = {
             "status": "completed",
+            "run_id": str(uuid4()),
+            "plan_id": task.task_id,
             "final_answer": final_answer,
             "capability_name": "conversation",
             "execution_trace": [
                 {
-                    "name": "conversation",
+                    "name": "respond",
                     "status": status,
                     "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
                 }
@@ -126,9 +126,11 @@ class DemoAssistantApp:
             "resume_token_id": None,
             "session": self.session_payload(),
             "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
             "workspace": str(self.workspace),
         }
+        self._record_run(payload, prompt=message)
         yield {"type": "memory", "memory": payload["memory"]}
         yield {"type": "final", "payload": payload}
 
@@ -148,16 +150,65 @@ class DemoAssistantApp:
                 "resume_token_id": None,
                 "workspace": str(self.workspace),
             }
-        result = AgentLoop(self.context).resume(token, approved=approved)
+        result = self.loop.resume(token, approved=approved)
+        self._task_history.insert(0, result.task)
+        self._task_history = self._task_history[:40]
         payload = self._result_payload(result)
         self._record_run(payload, prompt=f"approval:{'approve' if approved else 'reject'}")
         return payload
 
     def replay(self, run_id: str) -> dict[str, Any]:
-        result = AgentLoop(self.context).replay(run_id)
-        payload = self._result_payload(result)
+        prompt = self._run_inputs.get(run_id)
+        if not prompt:
+            return {
+                "status": "missing_run",
+                "final_answer": "未找到可重放的运行记录。",
+                "capability_name": "",
+                "execution_trace": [],
+                "session": self.session_payload(),
+                "plan_history": self.plan_history_payload(),
+                "run_history": self.run_history_payload(),
+                "memory": self.memory_payload(),
+                "approval_request": None,
+                "resume_token_id": None,
+                "workspace": str(self.workspace),
+            }
+        payload = self.chat(prompt)
         self._record_run(payload, prompt=f"replay:{run_id}")
         return payload
+
+    def context_payload(self) -> dict[str, Any]:
+        return {
+            "active_agent": self._active_agent,
+            "available_agents": [
+                {"id": "codex", "label": "Codex Agent", "kind": "agent"},
+                {"id": "qa_only", "label": "Q&A", "kind": "chat"},
+            ],
+            "active_workspace": str(self.workspace),
+            "available_workspaces": list(dict.fromkeys([str(self.workspace), *self._available_workspaces])),
+        }
+
+    def switch_context(self, *, agent_profile: str | None = None, workspace: str | None = None) -> dict[str, Any]:
+        if agent_profile:
+            if agent_profile not in {"codex", "qa_only"}:
+                raise ValueError(f"unknown agent profile: {agent_profile}")
+            self._active_agent = agent_profile
+        if workspace:
+            next_workspace = Path(workspace).expanduser().resolve()
+            if not next_workspace.exists():
+                raise FileNotFoundError(next_workspace)
+            self.workspace = next_workspace
+            self.context.application_context.resource_repository = LocalFileResourceRepository([next_workspace])
+            self.context.application_context.config["default_directory"] = str(next_workspace)
+            self._available_workspaces = list(dict.fromkeys([str(next_workspace), *self._available_workspaces]))
+        return {
+            "workspace": str(self.workspace),
+            "session": self.session_payload(),
+            "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
+            "memory": self.memory_payload(),
+            "context": self.context_payload(),
+        }
 
     def session_payload(self) -> dict[str, Any]:
         session = self.context.session
@@ -191,24 +242,21 @@ class DemoAssistantApp:
         return self.model_center.run_action(action, payload)
 
     def plan_history_payload(self) -> list[dict[str, Any]]:
-        session = self.context.session
-        if session is None:
-            return []
         return [
             {
-                "plan_id": plan.plan_id,
-                "goal": plan.goal,
+                "plan_id": task.task_id,
+                "goal": task.goal,
                 "steps": [
                     {
-                        "capability_name": step.capability_name,
-                        "instruction": step.instruction,
-                        "status": step.status,
-                        "observation": step.observation,
+                        "capability_name": action.kind,
+                        "instruction": action.instruction,
+                        "status": action.status,
+                        "observation": action.observation,
                     }
-                    for step in plan.steps
+                    for action in task.actions
                 ],
             }
-            for plan in session.plan_history
+            for task in reversed(self._task_history[:40])
         ]
 
     def _result_payload(self, result: Any) -> dict[str, Any]:
@@ -223,19 +271,32 @@ class DemoAssistantApp:
             }
         if result.resume_token is not None:
             resume_token_id = result.resume_token.token_id
+        capability_name = result.action_kind
+        if result.action_kind == "respond" and result.task.actions:
+            last_action = result.task.actions[-1]
+            if not bool(last_action.metadata.get("direct_output")):
+                capability_name = "conversation"
         return {
             "status": result.status,
             "run_id": result.run_id,
-            "plan_id": result.plan_id,
-            "final_answer": result.final_answer,
-            "capability_name": result.capability_name,
-            "execution_trace": list(result.execution_trace),
+            "plan_id": result.task.task_id,
+            "final_answer": result.final_output,
+            "capability_name": capability_name,
+            "execution_trace": [
+                {
+                    "name": action.kind,
+                    "status": action.status,
+                    "detail": action.observation or action.instruction,
+                }
+                for action in result.task.actions
+            ],
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
             "plan_history": self.plan_history_payload(),
             "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
+            "context": self.context_payload(),
             "workspace": str(self.workspace),
         }
 
@@ -253,9 +314,55 @@ class DemoAssistantApp:
             "prompt": prompt,
             "final_answer_preview": str(payload.get("final_answer") or "")[:160],
         }
+        self._run_inputs[run_id] = prompt
         self._run_history = [item for item in self._run_history if item.get("run_id") != run_id]
         self._run_history.insert(0, entry)
         self._run_history = self._run_history[:40]
+
+    def _should_stream_conversation(self, message: str, session: AssistantSession) -> bool:
+        task = type("TaskLike", (), {"goal": message, "actions": []})()
+        planned = plan_next_codex_action(task, session, self.context)
+        if self._active_agent == "qa_only":
+            return True
+        return planned is not None and planned.kind == "respond" and not bool(planned.metadata.get("direct_output"))
+
+    def _conversation_payload(self, message: str) -> dict[str, Any]:
+        session = self.context.session
+        if session is None:
+            session = AssistantSession(session_id=str(uuid4()))
+            self.context.session = session
+        session.add_turn("user", message)
+        chunks: list[str] = []
+        diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
+        for chunk in stream_conversation_reply(message, self.context, session, diagnostics=diagnostics):
+            if chunk:
+                chunks.append(chunk)
+        final_answer = "".join(chunks).strip()
+        session.add_turn("assistant", final_answer)
+        task = type("CodexConversationTask", (), {})()
+        task.task_id = str(uuid4())
+        task.goal = message
+        task.actions = [type("CodexConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
+        self._task_history.insert(0, task)
+        self._task_history = self._task_history[:40]
+        payload = {
+            "status": "completed",
+            "run_id": str(uuid4()),
+            "plan_id": task.task_id,
+            "final_answer": final_answer,
+            "capability_name": "conversation",
+            "execution_trace": [{"name": "respond", "status": "completed", "detail": final_answer}],
+            "approval_request": None,
+            "resume_token_id": None,
+            "session": self.session_payload(),
+            "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
+            "memory": self.memory_payload(),
+            "context": self.context_payload(),
+            "workspace": str(self.workspace),
+        }
+        self._record_run(payload, prompt=message)
+        return payload
 
     def _error_payload(self, exc: Exception) -> dict[str, Any]:
         error = self._normalize_error(exc)
@@ -276,6 +383,7 @@ class DemoAssistantApp:
             "plan_history": self.plan_history_payload(),
             "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
+            "context": self.context_payload(),
             "error": error.as_dict(),
             "workspace": str(self.workspace),
         }
@@ -364,24 +472,26 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
             "model_router": model_router,
         },
     )
-    context = AssistantContext(
+    for tool in build_default_codex_tools():
+        app_context.tools.register(tool)
+    context = CodexContext(
         application_context=app_context,
-        capabilities=CapabilityRegistry(),
-        skills=SkillRegistry(),
-        services={"approval_manager": ApprovalManager()},
+        services={},
         session=AssistantSession(session_id=str(uuid4())),
     )
-    context.services["checkpoint_store"] = InMemoryCheckpointStore()
-    context.capabilities.register(create_conversation_capability())
-    context.capabilities.register_application("desktop_content", create_desktop_content_application())
     app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
+        loop=CodexAgentLoop(context),
         model_registry=model_registry,
         model_router=model_router,
         model_center=model_center,
         _pending_tokens={},
         _run_history=[],
+        _task_history=[],
+        _run_inputs={},
+        _active_agent="codex",
+        _available_workspaces=[str(workspace_path)],
     )
     app.model_center.load()
     return app

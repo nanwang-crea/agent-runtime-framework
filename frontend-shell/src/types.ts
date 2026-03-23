@@ -8,6 +8,19 @@ export type SessionPayload = {
   turns: Turn[];
 };
 
+export type AgentProfilePayload = {
+  id: string;
+  label: string;
+  kind: string;
+};
+
+export type ContextPayload = {
+  active_agent: string;
+  available_agents: AgentProfilePayload[];
+  active_workspace: string;
+  available_workspaces: string[];
+};
+
 export type PlanStep = {
   capability_name: string;
   instruction: string;
@@ -61,6 +74,7 @@ export type AssistantResponse = {
   session: SessionPayload;
   plan_history: PlanPayload[];
   memory: MemoryPayload;
+  context: ContextPayload;
   error?: AssistantError | null;
   workspace: string;
 };
@@ -76,6 +90,7 @@ export type SessionResponse = {
   session: SessionPayload;
   plan_history: PlanPayload[];
   memory: MemoryPayload;
+  context: ContextPayload;
 };
 
 export type ModelProfile = {

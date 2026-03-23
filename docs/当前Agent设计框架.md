@@ -1,5 +1,7 @@
 # 当前 Agent 设计框架
 
+> 说明：本页主要描述当前仍在工作的 `assistant / capability` 主线，同时补充 2026-03-23 起新增的 `agents/codex` action-centric 方向。
+
 ## 1. 目标
 
 当前 Agent 的目标是提供一个接近 Codex 风格的单代理桌面 AI 助手基础框架。它不是单纯的桌面文件助手，也不是仅能执行一次性 application 的运行器，而是一个具备以下能力的单代理系统：
@@ -11,7 +13,7 @@
 
 当前阶段仍然是单代理，不包含子代理调度、多代理协作和后台自治任务系统。
 
-## 2. 当前主链路
+## 2. 当前 capability 主链路
 
 当前 Agent 的主链路可以概括为：
 
@@ -205,3 +207,79 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - 独立的模型注册 / 认证 / 路由层
 
 因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但模型基础设施与深度智能编排仍偏薄”的阶段。
+
+## 9. 新增的双层方向
+
+从 2026-03-23 开始，框架不再把“Codex 风格 agent”与“通用 assistant framework”混在同一条主链路里，而是改成双层结构：
+
+- `Kernel`
+  通用底座：graph、policy、models、tools、artifacts、memory、approval、checkpoint
+- `Profile / Runtime`
+  当前 `assistant` 运行时仍然存在，继续承担 capability-centric 的桌面助手装配
+- `Agent`
+  新增 `agents/codex`，负责 action-centric 的 Codex 风格强执行闭环
+
+这意味着当前仓库里已经存在两条并行路线：
+
+1. `assistant`：
+   面向桌面助手、capability 选择、conversation + desktop content 组合
+2. `agents/codex`：
+   面向任务推进、工具调用、审批恢复、artifact 记录、验证闭环
+
+## 10. 当前 Codex Runtime 的最小能力
+
+新增 `agents/codex` 目前已经具备：
+
+- `CodexTask`
+- `CodexAction`
+- `CodexActionResult`
+- `VerificationResult`
+- `CodexAgentLoop`
+
+当前最小内置动作 / 工具闭环已经开始形成：
+
+- `call_tool`
+- `run_verification`
+- `apply_patch`
+- `move_path`
+- `delete_path`
+- `create_path`
+- `edit_text`
+- 默认 tool 集：
+  - `list_workspace_directory`
+  - `read_workspace_text`
+  - `summarize_workspace_text`
+  - `run_shell_command`
+  - `apply_text_patch`
+  - `move_workspace_path`
+  - `delete_workspace_path`
+  - `create_workspace_path`
+  - `edit_workspace_text`
+
+并且已经具备：
+
+- LLM-first next-action planner
+- tool schema + task state + recent observation 参与下一步动作选择
+- 默认启发式 planner
+- artifact 持久化
+- 高风险 action 的 approval / resume
+- demo 桌面端入口已经切换为 `CodexAgentLoop`
+- demo / frontend shell 已具备同会话切换 agent 与 workspace 的 context 骨架
+
+## 11. 当前阶段的架构判断
+
+当前方向比之前更正确，原因不是“抽象更多”，而是“抽象位置更低”：
+
+- 以前更偏 `capability-centric`
+- 现在已经开始形成 `action/tool-centric`
+- 写操作的风险语义已经开始从 application/capability 层下沉到 action 层
+- planner 的决策输入已经开始包含 tool schema、task state 和 recent observation
+
+这更接近 Codex 类型 agent 的真实工作方式。
+
+但当前仍然只是第一阶段，主要限制仍然是：
+
+- 默认 planner 还是启发式规则，不是真正的 task planner
+- `desktop_content_application` 仍作为兼容层保留，还没有被彻底移除
+- frontend 还只是第一阶段 shell，还没有形成真正的 profile/plugin 式面板体系
+- command / patch 目前还是最小版本，不是完整工作区执行系统

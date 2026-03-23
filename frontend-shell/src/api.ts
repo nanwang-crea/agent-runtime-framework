@@ -1,6 +1,7 @@
 import type {
   AssistantError,
   AssistantResponse,
+  ContextPayload,
   ExecutionTraceStep,
   MemoryPayload,
   ModelCenterResponse,
@@ -30,6 +31,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchSession(): Promise<SessionResponse> {
   return request<SessionResponse>("/api/session");
+}
+
+export function updateContext(payload: { agent_profile?: string; workspace?: string }): Promise<SessionResponse> {
+  return request<SessionResponse>("/api/context", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function sendMessage(message: string): Promise<AssistantResponse> {

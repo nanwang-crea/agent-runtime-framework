@@ -41,3 +41,12 @@ def test_frontend_chat_streaming_keeps_run_card_separate_from_answer_body():
     assert "run.anchorUserTurnIndex === userIndex" in app_tsx
     assert "upsertRunCard" in app_tsx
     assert 'phaseLabel: "请求已发送"' not in app_tsx
+
+
+def test_frontend_shell_mentions_agent_and_workspace_switching():
+    app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+    api_ts = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "api.ts").read_text(encoding="utf-8")
+
+    assert "Agent" in app_tsx
+    assert "Workspace" in app_tsx
+    assert "/api/context" in api_ts

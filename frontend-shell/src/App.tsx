@@ -5,6 +5,7 @@ import {
   respondApproval,
   runModelCenterAction,
   sendMessageStream,
+  updateContext,
   updateModelCenter,
 } from "./api";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -12,6 +13,7 @@ import type {
   AssistantError,
   AssistantResponse,
   ConfigResponse,
+  ContextPayload,
   ModelCenterResponse,
   ModelsResponse,
   PlanPayload,
@@ -48,6 +50,12 @@ type RunCardState = {
 
 function App() {
   const [workspace, setWorkspace] = useState("");
+  const [contextState, setContextState] = useState<ContextPayload>({
+    active_agent: "codex",
+    available_agents: [],
+    active_workspace: "",
+    available_workspaces: [],
+  });
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
   const [modelCenter, setModelCenter] = useState<ModelCenterResponse | null>(null);
@@ -73,6 +81,7 @@ function App() {
   async function loadSession() {
     const payload = await fetchSession();
     setWorkspace(payload.workspace);
+    setContextState(payload.context);
     setSession(payload.session);
     setPlans(payload.plan_history);
   }
@@ -157,6 +166,7 @@ function App() {
 
   function applyResponse(payload: AssistantResponse, runId?: string, anchorUserTurnIndex?: number) {
     setWorkspace(payload.workspace);
+    setContextState(payload.context);
     setSession(payload.session);
     setPlans(payload.plan_history);
     setStatus(payload.status);
@@ -172,6 +182,25 @@ function App() {
       );
     }
     setStreamingReply("");
+  }
+
+  async function handleAgentSwitch(agentProfile: string) {
+    const payload = await updateContext({ agent_profile: agentProfile });
+    setWorkspace(payload.workspace);
+    setContextState(payload.context);
+    setSession(payload.session);
+    setPlans(payload.plan_history);
+  }
+
+  async function handleWorkspaceSwitch(nextWorkspace: string) {
+    if (!nextWorkspace.trim()) {
+      return;
+    }
+    const payload = await updateContext({ workspace: nextWorkspace.trim() });
+    setWorkspace(payload.workspace);
+    setContextState(payload.context);
+    setSession(payload.session);
+    setPlans(payload.plan_history);
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -518,6 +547,28 @@ function App() {
         <div className="sidebar-card">
           <span>Workspace</span>
           <code>{workspace || "加载中..."}</code>
+        </div>
+
+        <div className="sidebar-card">
+          <span>Agent</span>
+          <select value={contextState.active_agent} onChange={(event) => void handleAgentSwitch(event.target.value)}>
+            {contextState.available_agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="sidebar-card">
+          <span>Workspace Switch</span>
+          <select value={contextState.active_workspace || workspace} onChange={(event) => void handleWorkspaceSwitch(event.target.value)}>
+            {(contextState.available_workspaces.length > 0 ? contextState.available_workspaces : [workspace]).filter(Boolean).map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="sidebar-stats">
