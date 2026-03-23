@@ -439,6 +439,18 @@ function App() {
     return turns;
   }, [pendingUserMessage, session.turns, streamingReply]);
 
+  const runsByAnchor = useMemo(() => {
+    const grouped: Record<number, RunCardState[]> = {};
+    for (const run of runCards) {
+      const key = run.anchorUserTurnIndex;
+      if (!grouped[key]) {
+        grouped[key] = [];
+      }
+      grouped[key].push(run);
+    }
+    return grouped;
+  }, [runCards]);
+
   const chatItems = useMemo(() => {
     const items: Array<
       | { id: string; kind: "message"; role: string; content: string }
@@ -455,7 +467,7 @@ function App() {
         content: turn.content,
       });
       if (turn.role === "user") {
-        const runsForTurn = runCards.filter((run) => run.anchorUserTurnIndex === userIndex);
+        const runsForTurn = runsByAnchor[userIndex] || [];
         for (const run of runsForTurn) {
           items.push({
             id: `run-${run.id}`,
@@ -468,7 +480,9 @@ function App() {
     }
 
     return items;
-  }, [displayedTurns, runCards]);
+  }, [displayedTurns, runsByAnchor]);
+
+  const activeWorkspace = contextState.active_workspace || workspace;
 
   const latestRunCardId = runCards.length > 0 ? runCards[runCards.length - 1].id : null;
 
@@ -527,8 +541,8 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <p className="kicker">Agent Runtime Framework</p>
-          <h1>Desktop Assistant</h1>
-          <p className="brand-copy">聊天、桌面操作、模型设置和历史记录，现在分成一个真正可工作的桌面工作台。</p>
+          <h1>Agent Workbench</h1>
+          <p className="brand-copy">同一个会话里切换 agent 和 workspace，聊天区、执行轨迹、配置台共用一套工作台。</p>
         </div>
 
         <nav className="nav">
@@ -545,8 +559,8 @@ function App() {
         </nav>
 
         <div className="sidebar-card">
-          <span>Workspace</span>
-          <code>{workspace || "加载中..."}</code>
+          <span>Current Workspace</span>
+          <code>{activeWorkspace || "加载中..."}</code>
         </div>
 
         <div className="sidebar-card">
@@ -573,27 +587,32 @@ function App() {
 
         <div className="sidebar-stats">
           <div className="stat-card">
-            <span>Session</span>
+            <span>Turns</span>
             <strong>{session.turns.length}</strong>
           </div>
           <div className="stat-card">
-            <span>Plans</span>
-            <strong>{plans.length}</strong>
+            <span>Runs</span>
+            <strong>{runCards.length}</strong>
           </div>
           <div className="stat-card">
             <span>Status</span>
             <strong>{status}</strong>
           </div>
         </div>
+
       </aside>
 
       <section className="main-stage">
         <header className="topbar">
           <div>
             <p className="eyebrow">{activeView === "chat" ? "Conversation Workspace" : activeView === "history" ? "Run History" : "Model & Config Center"}</p>
-            <h2>{activeView === "chat" ? "Chat" : activeView === "history" ? "History" : "Settings"}</h2>
+            <h2>{activeView === "chat" ? "Agent Shell" : activeView === "history" ? "History" : "Settings"}</h2>
           </div>
-          <span className={`pill ${status}`}>{status}</span>
+          <div className="topbar-meta">
+            <span className="pill">{contextState.active_agent}</span>
+            <span className="pill">{compactText(activeWorkspace || "workspace", 28)}</span>
+            <span className={`pill ${status}`}>{status}</span>
+          </div>
         </header>
 
         {activeView === "chat" ? (
@@ -703,7 +722,7 @@ function App() {
                   session.turns.map((turn, index) => (
                     <div key={`${turn.role}-${index}`} className="history-item">
                       <span className={`history-role ${turn.role}`}>{turn.role}</span>
-                      <p>{turn.content}</p>
+                      <p>{compactText(turn.content, 220)}</p>
                     </div>
                   ))
                 )}
@@ -728,8 +747,8 @@ function App() {
                         <div key={`${plan.plan_id}-${index}`} className="timeline-step">
                           <span className="step-status">{step.status}</span>
                           <strong>{step.capability_name}</strong>
-                          <p>{step.instruction}</p>
-                          {step.observation ? <code>{step.observation}</code> : null}
+                          <p>{compactText(step.instruction, 220)}</p>
+                          {step.observation ? <code>{compactText(step.observation, 240)}</code> : null}
                         </div>
                       ))}
                     </div>
@@ -968,7 +987,8 @@ function finalizeRunCard(
 }
 
 function formatStepLabel(step: AssistantResponse["execution_trace"][number]): string {
-  return step.detail ? `${step.name} · ${step.status} · ${step.detail}` : `${step.name} · ${step.status}`;
+  const detail = normalizeDetail(step.detail);
+  return detail ? `${step.name} · ${step.status} · ${detail}` : `${step.name} · ${step.status}`;
 }
 
 function buildRunSummary(payload: AssistantResponse): string {
@@ -977,12 +997,44 @@ function buildRunSummary(payload: AssistantResponse): string {
     return `${payload.error.code} · ${payload.error.message}`;
   }
   if (lastTrace?.detail) {
-    return lastTrace.detail;
+    return normalizeDetail(lastTrace.detail);
   }
   if (payload.capability_name) {
     return `已完成 ${payload.capability_name}`;
   }
   return "已完成";
+}
+
+function normalizeDetail(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function compactText(value: string | null | undefined, limit = 120): string {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, limit)}... (${text.length} chars)`;
 }
 
 function maskApiKey(value: string): string {
@@ -1004,7 +1056,11 @@ function RunCard({
   onToggle: () => void;
   setContainerRef?: (element: HTMLDivElement | null) => void;
 }) {
-  const summaryText = (run.collapsed ? run.summary : run.phaseLabel).trim() || run.phaseLabel || run.summary || "运行中";
+  const summaryText =
+    normalizeDetail(run.collapsed ? run.summary : run.phaseLabel).trim() ||
+    normalizeDetail(run.phaseLabel) ||
+    normalizeDetail(run.summary) ||
+    "运行中";
 
   return (
     <div ref={setContainerRef} className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>

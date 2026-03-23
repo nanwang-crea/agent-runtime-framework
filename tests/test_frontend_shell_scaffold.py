@@ -38,7 +38,7 @@ def test_frontend_chat_streaming_keeps_run_card_separate_from_answer_body():
     assert "run-draft" not in app_tsx
     assert "messagesRef.current.scrollTop = messagesRef.current.scrollHeight" in app_tsx
     assert "anchorUserTurnIndex" in app_tsx
-    assert "run.anchorUserTurnIndex === userIndex" in app_tsx
+    assert "runsByAnchor[userIndex]" in app_tsx
     assert "upsertRunCard" in app_tsx
     assert 'phaseLabel: "请求已发送"' not in app_tsx
 
@@ -50,3 +50,19 @@ def test_frontend_shell_mentions_agent_and_workspace_switching():
     assert "Agent" in app_tsx
     assert "Workspace" in app_tsx
     assert "/api/context" in api_ts
+
+
+def test_frontend_shell_keeps_run_grouping_without_inspector_panel():
+    app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "runsByAnchor" in app_tsx
+    assert "runCards.filter" not in app_tsx
+    assert "inspector-panel" not in app_tsx
+
+
+def test_frontend_shell_normalizes_non_string_trace_details():
+    app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "normalizeDetail(" in app_tsx
+    assert "return normalizeDetail(lastTrace.detail);" in app_tsx
+    assert "normalizeDetail(run.collapsed ? run.summary : run.phaseLabel)" in app_tsx

@@ -248,7 +248,7 @@ select {
 
 .panel-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
@@ -289,8 +289,13 @@ select {
 }
 
 .messages {
+  flex: 1;
+  min-height: 420px;
+  max-height: calc(100dvh - 360px);
+  overflow: auto;
   padding-bottom: 4px;
 }
+
 
 .message,
 .run-card,
@@ -359,6 +364,7 @@ select {
   display: flex;
   justify-content: flex-start;
 }
+
 
 .run-card-header {
   width: 100%;
@@ -835,6 +841,11 @@ select {
   .history-layout,
   .settings-layout {
     grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .model-console-hero,

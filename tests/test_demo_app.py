@@ -213,6 +213,19 @@ def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
     assert events[-1]["payload"]["status"] == "completed"
 
 
+def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("你是谁？", chunk_size=8))
+    payload = events[-1]["payload"]
+
+    assert payload["context"]["active_agent"] in {"codex", "qa_only"}
+    assert payload["context"]["active_workspace"] == str(workspace)
+    assert payload["context"]["available_agents"]
+
+
 def test_demo_assistant_app_emits_single_delta_for_fallback_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -283,6 +296,20 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["execution_trace"][0]["name"] == "call_tool"
     assert payload["execution_trace"][-1]["name"] == "respond"
+
+
+def test_demo_assistant_app_compacts_large_trace_and_plan_details(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    large_text = "A" * 8000
+    (workspace / "README.md").write_text(large_text, encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["final_answer"] == large_text
+    assert len(str(payload["execution_trace"][0]["detail"])) < 400
+    assert len(str(payload["plan_history"][-1]["steps"][0]["observation"])) < 400
 
 
 def test_demo_assistant_app_can_switch_agent_profile_within_session(tmp_path: Path):

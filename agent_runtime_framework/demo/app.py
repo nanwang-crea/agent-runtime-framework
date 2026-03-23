@@ -128,6 +128,7 @@ class DemoAssistantApp:
             "plan_history": self.plan_history_payload(),
             "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
+            "context": self.context_payload(),
             "workspace": str(self.workspace),
         }
         self._record_run(payload, prompt=message)
@@ -251,7 +252,7 @@ class DemoAssistantApp:
                         "capability_name": action.kind,
                         "instruction": action.instruction,
                         "status": action.status,
-                        "observation": action.observation,
+                        "observation": self._compact_text(action.observation),
                     }
                     for action in task.actions
                 ],
@@ -286,7 +287,7 @@ class DemoAssistantApp:
                 {
                     "name": action.kind,
                     "status": action.status,
-                    "detail": action.observation or action.instruction,
+                    "detail": self._compact_text(action.observation or action.instruction),
                 }
                 for action in result.task.actions
             ],
@@ -325,6 +326,14 @@ class DemoAssistantApp:
         if self._active_agent == "qa_only":
             return True
         return planned is not None and planned.kind == "respond" and not bool(planned.metadata.get("direct_output"))
+
+    def _compact_text(self, value: Any, *, limit: int = 240) -> str | None:
+        if value is None:
+            return None
+        text = str(value)
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}... ({len(text)} chars)"
 
     def _conversation_payload(self, message: str) -> dict[str, Any]:
         session = self.context.session
