@@ -90,6 +90,11 @@ def _normalize_llm_intent(parsed: dict[str, Any], user_input: str) -> DesktopInt
     target_kind = str(parsed.get("target_kind") or "file").strip().lower()
     if target_kind not in {"file", "directory"}:
         target_kind = "file"
+    lowered_input = user_input.lower()
+    if action == "create":
+        destination_name = None
+        if any(marker in user_input for marker in ("文件夹", "目录")) or any(marker in lowered_input for marker in ("folder", "directory")):
+            target_kind = "directory"
     return DesktopIntent(
         user_input=user_input.strip(),
         action=action,

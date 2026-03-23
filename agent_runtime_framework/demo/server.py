@@ -57,6 +57,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                         "workspace": str(app.workspace),
                         "session": app.session_payload(),
                         "plan_history": app.plan_history_payload(),
+                        "run_history": app.run_history_payload(),
                         "memory": app.memory_payload(),
                     }
                 )

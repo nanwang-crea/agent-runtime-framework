@@ -41,6 +41,7 @@ class DemoAssistantApp:
     model_router: ModelRouter
     model_center: ModelCenterService
     _pending_tokens: dict[str, Any]
+    _run_history: list[dict[str, Any]]
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
@@ -48,6 +49,7 @@ class DemoAssistantApp:
             payload = self._result_payload(result)
             if result.resume_token is not None:
                 self._pending_tokens[result.resume_token.token_id] = result.resume_token
+            self._record_run(payload, prompt=message)
             return payload
         except Exception as exc:
             return self._error_payload(exc)
@@ -140,17 +142,22 @@ class DemoAssistantApp:
                 "execution_trace": [],
                 "session": self.session_payload(),
                 "plan_history": self.plan_history_payload(),
+                "run_history": self.run_history_payload(),
                 "memory": self.memory_payload(),
                 "approval_request": None,
                 "resume_token_id": None,
                 "workspace": str(self.workspace),
             }
         result = AgentLoop(self.context).resume(token, approved=approved)
-        return self._result_payload(result)
+        payload = self._result_payload(result)
+        self._record_run(payload, prompt=f"approval:{'approve' if approved else 'reject'}")
+        return payload
 
     def replay(self, run_id: str) -> dict[str, Any]:
         result = AgentLoop(self.context).replay(run_id)
-        return self._result_payload(result)
+        payload = self._result_payload(result)
+        self._record_run(payload, prompt=f"replay:{run_id}")
+        return payload
 
     def session_payload(self) -> dict[str, Any]:
         session = self.context.session
@@ -227,9 +234,28 @@ class DemoAssistantApp:
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
             "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
             "workspace": str(self.workspace),
         }
+
+    def run_history_payload(self) -> list[dict[str, Any]]:
+        return list(self._run_history[:40])
+
+    def _record_run(self, payload: dict[str, Any], *, prompt: str) -> None:
+        run_id = str(payload.get("run_id") or "").strip()
+        if not run_id:
+            return
+        entry = {
+            "run_id": run_id,
+            "status": str(payload.get("status") or ""),
+            "capability_name": str(payload.get("capability_name") or ""),
+            "prompt": prompt,
+            "final_answer_preview": str(payload.get("final_answer") or "")[:160],
+        }
+        self._run_history = [item for item in self._run_history if item.get("run_id") != run_id]
+        self._run_history.insert(0, entry)
+        self._run_history = self._run_history[:40]
 
     def _error_payload(self, exc: Exception) -> dict[str, Any]:
         error = self._normalize_error(exc)
@@ -248,6 +274,7 @@ class DemoAssistantApp:
             "resume_token_id": None,
             "session": self.session_payload(),
             "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
             "memory": self.memory_payload(),
             "error": error.as_dict(),
             "workspace": str(self.workspace),
@@ -354,6 +381,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         model_router=model_router,
         model_center=model_center,
         _pending_tokens={},
+        _run_history=[],
     )
     app.model_center.load()
     return app

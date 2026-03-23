@@ -5,6 +5,7 @@ const state = {
 const elements = {
   workspacePath: document.getElementById("workspacePath"),
   messages: document.getElementById("messages"),
+  runHistory: document.getElementById("runHistory"),
   planHistory: document.getElementById("planHistory"),
   statusBadge: document.getElementById("statusBadge"),
   chatForm: document.getElementById("chatForm"),
@@ -40,6 +41,7 @@ function renderSession(payload) {
     elements.workspacePath.textContent = payload.workspace;
   }
   renderMessages(payload.session?.turns || []);
+  renderRuns(payload.run_history || []);
   renderPlans(payload.plan_history || []);
 }
 
@@ -83,6 +85,36 @@ function renderPlans(plans) {
   }
 }
 
+function renderRuns(runs) {
+  elements.runHistory.innerHTML = "";
+  if (!runs.length) {
+    elements.runHistory.innerHTML = `<div class="run-card"><h3>暂无运行记录</h3></div>`;
+    return;
+  }
+  for (const run of runs) {
+    const card = document.createElement("div");
+    card.className = "run-card";
+    const replayDisabled = !run.run_id ? "disabled" : "";
+    card.innerHTML = `
+      <h3>${escapeHtml(run.prompt || run.capability_name || "run")}</h3>
+      <div class="run-meta">run_id: ${escapeHtml(run.run_id || "")}</div>
+      <div class="run-meta">status: ${escapeHtml(run.status || "")}</div>
+      <div class="run-preview">${escapeHtml(run.final_answer_preview || "")}</div>
+      <div class="composer-actions">
+        <button class="secondary replay-btn" data-run-id="${escapeHtml(run.run_id || "")}" ${replayDisabled}>Replay</button>
+      </div>
+    `;
+    elements.runHistory.appendChild(card);
+  }
+  elements.runHistory.querySelectorAll(".replay-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const runId = button.dataset.runId;
+      if (!runId) return;
+      await replayRun(runId);
+    });
+  });
+}
+
 function showApproval(request, tokenId) {
   if (!request || !tokenId) {
     state.pendingTokenId = null;
@@ -112,6 +144,14 @@ async function respondApproval(approved) {
     token_id: state.pendingTokenId,
     approved,
   });
+  setStatus(payload.status || "idle");
+  renderSession(payload);
+  showApproval(payload.approval_request, payload.resume_token_id);
+}
+
+async function replayRun(runId) {
+  setStatus("running");
+  const payload = await postJson("/api/replay", { run_id: runId });
   setStatus(payload.status || "idle");
   renderSession(payload);
   showApproval(payload.approval_request, payload.resume_token_id);
