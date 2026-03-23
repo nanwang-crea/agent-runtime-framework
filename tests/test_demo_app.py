@@ -73,6 +73,8 @@ def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     assert payload["capability_name"] == "conversation"
     assert "我可以继续和你对话" in payload["final_answer"]
     assert payload["execution_trace"]
+    assert payload["execution_trace"][0]["name"] == "router"
+    assert "conversation" in str(payload["execution_trace"][0]["detail"])
     assert payload["execution_trace"][-1]["name"] == "respond"
 
 
@@ -385,6 +387,8 @@ def test_demo_assistant_app_uses_router_role_before_planner(tmp_path: Path):
 
     assert payload["status"] == "completed"
     assert payload["capability_name"] == "conversation"
+    assert payload["execution_trace"][0]["name"] == "router"
+    assert "source=model" in str(payload["execution_trace"][0]["detail"])
 
 
 def test_demo_assistant_app_stream_returns_model_unavailable_without_final_payload(tmp_path: Path):
@@ -423,7 +427,9 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     payload = app.chat("读取 README.md")
 
     assert payload["status"] == "completed"
-    assert payload["execution_trace"][0]["name"] == "call_tool"
+    assert payload["execution_trace"][0]["name"] == "router"
+    assert "codex" in str(payload["execution_trace"][0]["detail"])
+    assert payload["execution_trace"][1]["name"] == "call_tool"
     assert payload["execution_trace"][-1]["name"] == "respond"
 
 
@@ -508,4 +514,5 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
     assert [event["delta"] for event in delta_events] == ["你好", "，我是流式回复"]
     assert events[-1]["payload"]["final_answer"] == "你好，我是流式回复"
     assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
+    assert events[-1]["payload"]["execution_trace"][0]["name"] == "router"
     assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)

@@ -107,10 +107,17 @@ def route_default_capability(user_input: str, _session: Any, registry: Any, _con
     return None
 
 def route_user_message(user_input: str, context: Any | None = None) -> str:
+    return get_route_decision(user_input, context)["route"]
+
+
+def get_route_decision(user_input: str, context: Any | None = None) -> dict[str, str]:
     model_route = _route_with_model(user_input, context)
     if model_route in {"conversation", "codex"}:
-        return model_route
-    return "conversation" if _deterministic_conversation_gate(user_input) else "codex"
+        return {"route": model_route, "source": "model"}
+    return {
+        "route": "conversation" if _deterministic_conversation_gate(user_input) else "codex",
+        "source": "deterministic",
+    }
 
 
 def should_route_to_conversation(user_input: str, context: Any | None = None) -> bool:

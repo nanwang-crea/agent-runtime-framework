@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from agent_runtime_framework.agents.codex import CodexAgentLoop, CodexContext, build_default_codex_tools
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import should_route_to_conversation, stream_conversation_reply
+from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
@@ -37,14 +37,18 @@ class DemoAssistantApp:
     _run_history: list[dict[str, Any]]
     _task_history: list[Any]
     _run_inputs: dict[str, str]
+    _last_route_decision: dict[str, str] | None
     _active_agent: str
     _available_workspaces: list[str]
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
             if self._active_agent == "qa_only":
+                self._last_route_decision = {"route": "conversation", "source": "profile"}
                 return self._conversation_payload(message)
-            if should_route_to_conversation(message, self.context):
+            route_decision = get_route_decision(message, self.context)
+            self._last_route_decision = route_decision
+            if route_decision["route"] == "conversation":
                 return self._conversation_payload(message)
             self._ensure_codex_planner_available()
             result = self.loop.run(message)
@@ -93,6 +97,9 @@ class DemoAssistantApp:
     def _stream_conversation(self, message: str, session: AssistantSession):
         session.add_turn("user", message)
         yield {"type": "status", "status": {"phase": "conversation", "label": "正在生成回复"}}
+        router_step = self._router_trace_step()
+        if router_step is not None:
+            yield {"type": "step", "step": router_step}
         yield {
             "type": "step",
             "step": {
@@ -126,13 +133,15 @@ class DemoAssistantApp:
             "plan_id": task.task_id,
             "final_answer": final_answer,
             "capability_name": "conversation",
-            "execution_trace": [
-                {
-                    "name": "respond",
-                    "status": status,
-                    "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
-                }
-            ],
+            "execution_trace": self._with_router_trace(
+                [
+                    {
+                        "name": "respond",
+                        "status": status,
+                        "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
+                    }
+                ]
+            ),
             "approval_request": None,
             "resume_token_id": None,
             "session": self.session_payload(),
@@ -294,14 +303,16 @@ class DemoAssistantApp:
             "plan_id": result.task.task_id,
             "final_answer": result.final_output,
             "capability_name": capability_name,
-            "execution_trace": [
-                {
-                    "name": action.kind,
-                    "status": action.status,
-                    "detail": self._compact_text(action.observation or action.instruction),
-                }
-                for action in result.task.actions
-            ],
+            "execution_trace": self._with_router_trace(
+                [
+                    {
+                        "name": action.kind,
+                        "status": action.status,
+                        "detail": self._compact_text(action.observation or action.instruction),
+                    }
+                    for action in result.task.actions
+                ]
+            ),
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
@@ -333,8 +344,10 @@ class DemoAssistantApp:
 
     def _should_stream_conversation(self, message: str, _session: AssistantSession) -> bool:
         if self._active_agent == "qa_only":
+            self._last_route_decision = {"route": "conversation", "source": "profile"}
             return True
-        return should_route_to_conversation(message, self.context)
+        self._last_route_decision = get_route_decision(message, self.context)
+        return self._last_route_decision["route"] == "conversation"
 
     def _ensure_codex_planner_available(self) -> None:
         if callable(self.context.services.get("next_action_planner")) or callable(self.context.services.get("action_planner")):
@@ -384,7 +397,7 @@ class DemoAssistantApp:
             "plan_id": task.task_id,
             "final_answer": final_answer,
             "capability_name": "conversation",
-            "execution_trace": [{"name": "respond", "status": "completed", "detail": final_answer}],
+            "execution_trace": self._with_router_trace([{"name": "respond", "status": "completed", "detail": final_answer}]),
             "approval_request": None,
             "resume_token_id": None,
             "session": self.session_payload(),
@@ -403,13 +416,15 @@ class DemoAssistantApp:
             "status": "error",
             "final_answer": error.message,
             "capability_name": "",
-            "execution_trace": [
-                {
-                    "name": error.stage or "run",
-                    "status": "error",
-                    "detail": f"{error.code}: {error.message}",
-                }
-            ],
+            "execution_trace": self._with_router_trace(
+                [
+                    {
+                        "name": error.stage or "run",
+                        "status": "error",
+                        "detail": f"{error.code}: {error.message}",
+                    }
+                ]
+            ),
             "approval_request": None,
             "resume_token_id": None,
             "session": self.session_payload(),
@@ -477,6 +492,25 @@ class DemoAssistantApp:
             "title": str(getattr(resource, "title", "")),
         }
 
+    def _with_router_trace(self, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        router_step = self._router_trace_step()
+        if router_step is None:
+            return steps
+        return [router_step, *steps]
+
+    def _router_trace_step(self) -> dict[str, Any] | None:
+        decision = self._last_route_decision
+        if not decision:
+            return None
+        route = str(decision.get("route") or "").strip()
+        source = str(decision.get("source") or "").strip()
+        if not route:
+            return None
+        detail = f"route={route}"
+        if source:
+            detail = f"{detail}; source={source}"
+        return {"name": "router", "status": "completed", "detail": detail}
+
 
 def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, Any] | None = None) -> DemoAssistantApp:
     workspace_path = Path(workspace).expanduser().resolve()
@@ -523,6 +557,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _run_history=[],
         _task_history=[],
         _run_inputs={},
+        _last_route_decision=None,
         _active_agent="codex",
         _available_workspaces=[str(workspace_path)],
     )
