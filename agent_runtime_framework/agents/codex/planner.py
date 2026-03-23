@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
 from agent_runtime_framework.core.errors import AppError
-from agent_runtime_framework.models import resolve_model_runtime
-from agent_runtime_framework.runtime import parse_structured_output
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
 def plan_codex_actions(user_input: str) -> list[CodexAction]:
@@ -31,7 +31,7 @@ def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexActio
     if llm_planned is not None:
         return llm_planned
     raise AppError(
-        code="MODEL_UNAVAILABLE",
+        code="PLANNER_RUNTIME_MISSING",
         message="未配置可用的大模型，无法为 Codex Agent 规划下一步动作。",
         detail="planner model runtime is unavailable",
         stage="planner",
@@ -195,33 +195,81 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
         f"- kind: {action.kind}; status: {action.status}; instruction: {action.instruction}; observation: {action.observation or ''}"
         for action in task.actions[-6:]
     ]
-    planned = parse_structured_output(
-        llm_client,
-        model=model_name,
-        system_prompt=(
-            "你是 Codex 风格 agent 的 next-action planner。"
-            "请根据任务目标、最近 observation 和可用工具，选择唯一的下一步动作。"
-            "只输出合法 JSON，字段允许为 kind、instruction、tool_name、arguments、risk_class、direct_output。"
-        ),
-        user_prompt=(
-            f"任务目标：{task.goal}\n"
-            f"最近动作：\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
-            f"可用工具：\n{chr(10).join(tool_lines)}\n"
-            f"工作区根目录：{context.application_context.config.get('default_directory', '')}\n"
-            "约束：\n"
-            "- 只能选择可用工具列表中的 tool_name\n"
-            "- 写操作必须设置合适的 risk_class\n"
-            "- destructive_write 对应 destructive\n"
-            "- safe_write 对应 high\n"
-            "- content_read / metadata_read 对应 low\n"
-        ),
-        normalizer=lambda parsed: _normalize_llm_action(parsed),
-        max_tokens=220,
+    system_prompt = (
+        "你是 Codex 风格 agent 的 next-action planner。"
+        "请根据任务目标、最近 observation 和可用工具，选择唯一的下一步动作。"
+        "只输出合法 JSON，字段允许为 kind、instruction、tool_name、arguments、risk_class、direct_output。"
     )
+    user_prompt = (
+        f"任务目标：{task.goal}\n"
+        f"最近动作：\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
+        f"可用工具：\n{chr(10).join(tool_lines)}\n"
+        f"工作区根目录：{context.application_context.config.get('default_directory', '')}\n"
+        "约束：\n"
+        "- 只能选择可用工具列表中的 tool_name\n"
+        "- 写操作必须设置合适的 risk_class\n"
+        "- destructive_write 对应 destructive\n"
+        "- safe_write 对应 high\n"
+        "- content_read / metadata_read 对应 low\n"
+    )
+    try:
+        response = chat_once(
+            llm_client,
+            ChatRequest(
+                model=model_name,
+                messages=[
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content=user_prompt),
+                ],
+                temperature=0.0,
+                max_tokens=220,
+            ),
+        )
+    except Exception as exc:
+        raise AppError(
+            code="PLANNER_REQUEST_FAILED",
+            message="planner 模型请求失败，无法生成下一步动作。",
+            detail=f"{type(exc).__name__}: {exc}",
+            stage="planner",
+            retriable=True,
+            suggestion="请检查 planner 模型配置、认证状态和网络连通性。",
+        ) from exc
+
+    raw_content = (response.content or "").strip()
+    try:
+        parsed = json.loads(_extract_json_block(raw_content))
+    except Exception as exc:
+        raise AppError(
+            code="PLANNER_INVALID_JSON",
+            message="planner 模型已返回结果，但不是合法 JSON。",
+            detail=raw_content[:400],
+            stage="planner",
+            retriable=True,
+            suggestion="请检查 planner prompt 或切换到更稳定的模型。",
+        ) from exc
+
+    planned = _normalize_llm_action(parsed, tool_names=set(tool_names))
+    if planned is None:
+        raise AppError(
+            code="PLANNER_NORMALIZATION_FAILED",
+            message="planner 模型返回了 JSON，但内容不符合动作约束。",
+            detail=json.dumps(parsed, ensure_ascii=False)[:400],
+            stage="planner",
+            retriable=True,
+            suggestion="请检查 tool_name、kind 和 arguments 是否满足约束。",
+        )
     return planned
 
 
-def _normalize_llm_action(parsed: dict[str, Any]) -> CodexAction | None:
+def _extract_json_block(text: str) -> str:
+    stripped = text.strip()
+    if "```" in stripped:
+        stripped = re.sub(r"^.*?```(?:json)?\s*", "", stripped, flags=re.DOTALL)
+        stripped = re.sub(r"\s*```.*$", "", stripped, flags=re.DOTALL)
+    return stripped.strip()
+
+
+def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> CodexAction | None:
     if not isinstance(parsed, dict):
         return None
     kind = str(parsed.get("kind") or "").strip()
@@ -242,6 +290,8 @@ def _normalize_llm_action(parsed: dict[str, Any]) -> CodexAction | None:
         metadata["tool_name"] = "delete_workspace_path"
     if kind == "run_verification" and not instruction:
         instruction = str(metadata["arguments"].get("command") or "")
+    if tool_names is not None and metadata["tool_name"] and metadata["tool_name"] not in tool_names:
+        return None
     if kind != "respond" and not metadata["tool_name"] and kind != "run_verification":
         return None
     if not instruction and kind == "respond":

@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.agents.codex import CodexAgentLoop, CodexContext, build_default_codex_tools, plan_next_codex_action
+from agent_runtime_framework.agents.codex import CodexAgentLoop, CodexContext, build_default_codex_tools
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import stream_conversation_reply
+from agent_runtime_framework.assistant.conversation import should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
@@ -43,6 +43,8 @@ class DemoAssistantApp:
     def chat(self, message: str) -> dict[str, Any]:
         try:
             if self._active_agent == "qa_only":
+                return self._conversation_payload(message)
+            if should_route_to_conversation(message, self.context):
                 return self._conversation_payload(message)
             self._ensure_codex_planner_available()
             result = self.loop.run(message)
@@ -329,16 +331,10 @@ class DemoAssistantApp:
         self._run_history.insert(0, entry)
         self._run_history = self._run_history[:40]
 
-    def _should_stream_conversation(self, message: str, session: AssistantSession) -> bool:
+    def _should_stream_conversation(self, message: str, _session: AssistantSession) -> bool:
         if self._active_agent == "qa_only":
             return True
-        task = type("TaskLike", (), {"goal": message, "actions": []})()
-        planner = self.context.services.get("next_action_planner")
-        if callable(planner):
-            planned = planner(task, session, self.context, list(self.context.application_context.tools.names()))
-        else:
-            planned = plan_next_codex_action(task, session, self.context)
-        return planned is not None and planned.kind == "respond" and not bool(planned.metadata.get("direct_output"))
+        return should_route_to_conversation(message, self.context)
 
     def _ensure_codex_planner_available(self) -> None:
         if callable(self.context.services.get("next_action_planner")) or callable(self.context.services.get("action_planner")):

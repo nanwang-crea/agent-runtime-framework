@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import ssl
 from typing import Any, Iterable
 from urllib.error import URLError
@@ -10,6 +12,59 @@ from agent_runtime_framework.assistant.capabilities import CapabilitySpec
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
+
+_WORKSPACE_VERB_MARKERS = (
+    "读取",
+    "读一下",
+    "打开",
+    "查看",
+    "列出",
+    "列一下",
+    "总结",
+    "概括",
+    "搜索",
+    "查找",
+    "创建",
+    "新建",
+    "编辑",
+    "修改",
+    "替换",
+    "移动",
+    "重命名",
+    "删除",
+    "运行",
+    "测试",
+    "验证",
+    "read ",
+    "open ",
+    "list ",
+    "summarize ",
+    "search ",
+    "create ",
+    "edit ",
+    "move ",
+    "rename ",
+    "delete ",
+    "run ",
+    "test ",
+    "verify ",
+)
+
+_WORKSPACE_NOUN_MARKERS = (
+    "工作区",
+    "文件",
+    "目录",
+    "文件夹",
+    "路径",
+    "workspace",
+    "file",
+    "directory",
+    "folder",
+    "path",
+)
+
+_RESOURCE_PATTERN = re.compile(r"(^|[\s\"'])[\w./-]+\.[A-Za-z0-9]{1,8}($|[\s\"'])")
+_PATH_PATTERN = re.compile(r"(^|[\s\"'])(?:\.{1,2}/|/)[^\s]+")
 
 
 def create_conversation_capability(name: str = "conversation") -> CapabilitySpec:
@@ -50,6 +105,89 @@ def route_default_capability(user_input: str, _session: Any, registry: Any, _con
     if "conversation" in registry.names():
         return "conversation"
     return None
+
+def route_user_message(user_input: str, context: Any | None = None) -> str:
+    model_route = _route_with_model(user_input, context)
+    if model_route in {"conversation", "codex"}:
+        return model_route
+    return "conversation" if _deterministic_conversation_gate(user_input) else "codex"
+
+
+def should_route_to_conversation(user_input: str, context: Any | None = None) -> bool:
+    return route_user_message(user_input, context) == "conversation"
+
+
+def _deterministic_conversation_gate(user_input: str) -> bool:
+    text = user_input.strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if any(marker in text for marker in _WORKSPACE_VERB_MARKERS):
+        return False
+    if any(marker in lowered for marker in _WORKSPACE_VERB_MARKERS):
+        return False
+    if any(marker in text for marker in _WORKSPACE_NOUN_MARKERS) and any(
+        keyword in text for keyword in ("当前", "这个", "那个", "里面", "下", "内容")
+    ):
+        return False
+    if any(marker in lowered for marker in _WORKSPACE_NOUN_MARKERS):
+        return False
+    if _RESOURCE_PATTERN.search(text) or _PATH_PATTERN.search(text):
+        return False
+    return True
+
+
+def _route_with_model(user_input: str, context: Any | None) -> str | None:
+    if context is None:
+        return None
+    application_context = getattr(context, "application_context", context)
+    runtime = resolve_model_runtime(application_context, "router")
+    if runtime is None:
+        return None
+    try:
+        response = chat_once(
+            runtime.client,
+            ChatRequest(
+                model=runtime.profile.model_name,
+                messages=[
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "你是消息路由器。"
+                            "判断用户输入应该直接进入 conversation，还是进入 codex 任务执行。"
+                            "只输出 JSON：{\"route\":\"conversation\"|\"codex\",\"reason\":\"...\"}"
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"用户输入：{user_input}\n"
+                            "如果只是聊天、寒暄、问答、讨论方案，返回 conversation。"
+                            "如果明确要求读取、列出、编辑、删除、移动、创建、总结工作区资源，返回 codex。"
+                        ),
+                    ),
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            ),
+        )
+    except Exception:
+        return None
+    raw_content = (response.content or "").strip()
+    try:
+        parsed = json.loads(_extract_json_block(raw_content))
+    except Exception:
+        return None
+    route = str(parsed.get("route") or "").strip().lower()
+    return route if route in {"conversation", "codex"} else None
+
+
+def _extract_json_block(text: str) -> str:
+    stripped = text.strip()
+    if "```" in stripped:
+        stripped = re.sub(r"^.*?```(?:json)?\s*", "", stripped, flags=re.DOTALL)
+        stripped = re.sub(r"\s*```.*$", "", stripped, flags=re.DOTALL)
+    return stripped.strip()
 
 
 def _run_conversation(user_input: str, context: Any, session: Any) -> str:

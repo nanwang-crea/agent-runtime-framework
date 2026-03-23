@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from agent_runtime_framework.agents.codex import (
     CodexAction,
     CodexActionResult,
@@ -13,6 +15,7 @@ from agent_runtime_framework.agents.codex import (
     build_default_codex_tools,
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.artifacts import InMemoryArtifactStore
 from agent_runtime_framework.assistant import AssistantSession
@@ -355,3 +358,47 @@ def test_codex_loop_edits_workspace_file_via_default_tooling(tmp_path: Path):
     assert result.status == "completed"
     assert target.read_text(encoding="utf-8") == "new text"
     assert "new text" in result.final_output
+
+
+def test_codex_loop_surfaces_planner_runtime_missing(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("读取 note.md")
+
+    assert exc_info.value.code == "PLANNER_RUNTIME_MISSING"
+
+
+def test_codex_loop_surfaces_planner_invalid_json(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("hello", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(["not json"])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("读取 note.md")
+
+    assert exc_info.value.code == "PLANNER_INVALID_JSON"
+
+
+def test_codex_loop_surfaces_planner_normalization_failed(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(['{"kind":"call_tool","tool_name":"missing_tool","arguments":{}}'])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("读取 note.md")
+
+    assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"

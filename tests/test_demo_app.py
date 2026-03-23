@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
@@ -152,6 +153,7 @@ def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
         {
             "routes": {
                 "conversation": {"instance": "dashscope", "model": "qwen-plus"},
+                "router": {"instance": "dashscope", "model": "qwen-plus"},
                 "capability_selector": {"instance": "dashscope", "model": "qwen-plus"},
                 "planner": {"instance": "dashscope", "model": "qwen-plus"},
             }
@@ -159,8 +161,10 @@ def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
     )
 
     assert payload["config"]["routes"]["conversation"]["model"] == "qwen-plus"
+    assert payload["config"]["routes"]["router"]["model"] == "qwen-plus"
     persisted = json.loads((workspace / ".arf_demo_config.json").read_text(encoding="utf-8"))
     assert persisted["routes"]["conversation"]["model"] == "qwen-plus"
+    assert persisted["routes"]["router"]["model"] == "qwen-plus"
 
 
 def test_demo_assistant_app_default_route_can_drive_other_roles(tmp_path: Path):
@@ -302,6 +306,85 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     assert payload["status"] == "error"
     assert payload["error"]["code"] == "MODEL_UNAVAILABLE"
     assert payload["error"]["stage"] == "planner"
+
+
+def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    def _unexpected_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called for plain conversation")
+
+    app.context.services["next_action_planner"] = _unexpected_planner
+
+    payload = app.chat("你好")
+
+    assert payload["status"] == "completed"
+    assert payload["capability_name"] == "conversation"
+    assert payload["execution_trace"][-1]["name"] == "respond"
+
+
+def test_demo_assistant_app_stream_routes_plain_greeting_without_planner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    def _unexpected_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called for plain conversation")
+
+    app.context.services["next_action_planner"] = _unexpected_planner
+
+    events = list(app.stream_chat("你好"))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["payload"]["status"] == "completed"
+    assert events[-1]["payload"]["capability_name"] == "conversation"
+
+
+def test_demo_assistant_app_uses_router_role_before_planner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    class _RouterClient:
+        def create_chat_completion(self, _request):
+            return SimpleNamespace(content='{"route":"conversation","reason":"user asked to discuss before acting"}')
+
+    class _RouterInstance:
+        instance_id = "router_fake"
+
+        def list_models(self):
+            return [
+                ModelProfile(
+                    instance=self.instance_id,
+                    model_name="router-model",
+                    display_name="Router Model",
+                    recommended_roles=["router"],
+                )
+            ]
+
+        def authenticate(self, credentials, store):
+            if credentials.get("api_key"):
+                store.set(self.instance_id, {"api_key": credentials["api_key"]})
+            return AuthSession(instance=self.instance_id, authenticated=True, auth_type="api_key")
+
+        def get_client(self, _store):
+            return _RouterClient()
+
+    app.model_registry.register_instance(_RouterInstance())
+    app.model_registry.authenticate("router_fake", {"api_key": "secret"})
+    app.model_router.set_route("router", instance_id="router_fake", model_name="router-model")
+
+    def _unexpected_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called when router chooses conversation")
+
+    app.context.services["next_action_planner"] = _unexpected_planner
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    assert payload["capability_name"] == "conversation"
 
 
 def test_demo_assistant_app_stream_returns_model_unavailable_without_final_payload(tmp_path: Path):

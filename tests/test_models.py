@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import create_conversation_capability
+from agent_runtime_framework.assistant.conversation import create_conversation_capability, should_route_to_conversation
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,
@@ -53,6 +53,7 @@ class _FakeLLMClient:
 @dataclass
 class _FakeInstance:
     instance_id: str = "fake"
+    client_content: str = '{"capability_name":"conversation"}'
 
     def __post_init__(self) -> None:
         self._profiles = [
@@ -76,6 +77,16 @@ class _FakeInstance:
                 reasoning_level="high",
                 recommended_roles=["planner"],
             ),
+            ModelProfile(
+                instance=self.instance_id,
+                model_name="router-model",
+                display_name="Router Model",
+                supports_chat=True,
+                cost_level="low",
+                latency_level="low",
+                reasoning_level="medium",
+                recommended_roles=["router"],
+            ),
         ]
 
     def list_models(self) -> list[ModelProfile]:
@@ -97,7 +108,7 @@ class _FakeInstance:
         stored = store.get(self.instance_id) or {}
         if not stored.get("api_key"):
             return None
-        return _FakeLLMClient('{"capability_name":"conversation"}')
+        return _FakeLLMClient(self.client_content)
 
 
 @dataclass
@@ -131,7 +142,7 @@ def test_model_registry_authenticates_instance_and_lists_models():
     auth = registry.authenticate("fake", {"api_key": "secret"})
 
     assert auth.authenticated is True
-    assert [profile.model_name for profile in registry.list_models()] == ["fast-model", "planner-model"]
+    assert [profile.model_name for profile in registry.list_models()] == ["fast-model", "planner-model", "router-model"]
 
 
 def test_model_router_returns_runtime_for_selected_role():
@@ -201,6 +212,40 @@ def test_conversation_capability_uses_model_router_when_available(tmp_path: Path
 
     assert result["final_answer"] == '{"capability_name":"conversation"}'
     assert "source=model" in str(result["execution_trace"][-1]["detail"])
+
+
+def test_should_route_to_conversation_prefers_router_model_when_available(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _app_context(workspace)
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(_FakeInstance(client_content='{"route":"conversation","reason":"ask before acting"}'))
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("router", instance_id="fake", model_name="router-model")
+    context.services["model_registry"] = registry
+    context.services["model_router"] = router
+
+    routed = should_route_to_conversation("读取 README.md", SimpleNamespace(application_context=context))
+
+    assert routed is True
+
+
+def test_should_route_to_conversation_falls_back_when_router_output_is_invalid(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _app_context(workspace)
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(_FakeInstance(client_content="not-json"))
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("router", instance_id="fake", model_name="router-model")
+    context.services["model_registry"] = registry
+    context.services["model_router"] = router
+
+    routed = should_route_to_conversation("读取 README.md", SimpleNamespace(application_context=context))
+
+    assert routed is False
 
 
 def test_openai_compatible_driver_builds_instance_with_pure_python_http_client():
