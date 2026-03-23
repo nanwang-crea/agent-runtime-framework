@@ -4,15 +4,38 @@ from pathlib import Path
 import json
 from types import SimpleNamespace
 
+from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
+
+
+def _create_demo_assistant_app_with_test_planner(workspace: Path):
+    app = create_demo_assistant_app(workspace)
+    def _planner(task, _session, _context, tool_names):
+        completed = [action for action in task.actions if action.status == "completed"]
+        if completed:
+            last_action = completed[-1]
+            if last_action.kind == "respond":
+                return None
+            if last_action.observation:
+                return CodexAction(
+                    kind="respond",
+                    instruction=last_action.observation,
+                    metadata={"direct_output": True},
+                )
+            return None
+        return _plan_from_goal(task.goal, tool_names=set(tool_names))
+
+    app.context.services["next_action_planner"] = _planner
+    return app
 
 
 def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.chat("读取 README.md")
 
@@ -29,7 +52,7 @@ def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     first = app.chat("读取 README.md")
     replayed = app.replay(first["run_id"])
@@ -41,7 +64,7 @@ def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
 def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.chat("你是谁？")
 
@@ -65,7 +88,7 @@ def test_demo_assets_are_loadable():
 def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     before = app.model_center_payload()
     app.update_model_center(
@@ -96,7 +119,7 @@ def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path
 def test_demo_assistant_app_exposes_minimax_and_codex_models(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.model_center_payload()
     by_instance = payload["runtime"]["instances"]
@@ -110,7 +133,7 @@ def test_demo_assistant_app_exposes_minimax_and_codex_models(tmp_path: Path):
 def test_demo_assistant_app_exposes_model_center_payload(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.model_center_payload()
 
@@ -123,7 +146,7 @@ def test_demo_assistant_app_exposes_model_center_payload(tmp_path: Path):
 def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.update_model_center(
         {
@@ -143,7 +166,7 @@ def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
 def test_demo_assistant_app_default_route_can_drive_other_roles(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.update_model_center(
         {
@@ -161,7 +184,7 @@ def test_demo_assistant_app_creates_default_config_center(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
     config = app.model_center_payload()["config"]
 
     assert "dashscope" in config["instances"]
@@ -172,7 +195,7 @@ def test_demo_assistant_app_creates_default_config_center(tmp_path: Path):
 def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     result = app.update_model_center(
         {
@@ -202,7 +225,7 @@ def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
 def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("你是谁？", chunk_size=8))
 
@@ -216,7 +239,7 @@ def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
 def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("你是谁？", chunk_size=8))
     payload = events[-1]["payload"]
@@ -229,7 +252,7 @@ def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path
 def test_demo_assistant_app_emits_single_delta_for_fallback_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("你现在是跟我流式输出嘛？", chunk_size=6))
     delta_events = [event for event in events if event["type"] == "delta"]
@@ -242,7 +265,7 @@ def test_demo_assistant_app_emits_single_delta_for_non_conversation_results(tmp_
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("读取 README.md", chunk_size=4))
     delta_events = [event for event in events if event["type"] == "delta"]
@@ -256,7 +279,7 @@ def test_demo_assistant_app_emits_structured_error_for_directory_summarize(tmp_p
     workspace.mkdir()
     docs_dir = workspace / "docs"
     docs_dir.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("总结 docs"))
 
@@ -269,12 +292,35 @@ def test_demo_assistant_app_emits_structured_error_for_directory_summarize(tmp_p
     assert events[-1]["type"] == "error"
 
 
+def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("列一下当前工作区都有什么文件")
+
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert payload["error"]["stage"] == "planner"
+
+
+def test_demo_assistant_app_stream_returns_model_unavailable_without_final_payload(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("列一下当前工作区都有什么文件"))
+
+    assert [event["type"] for event in events][-1] == "error"
+    assert events[-1]["error"]["code"] == "MODEL_UNAVAILABLE"
+
+
 def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     readme = workspace / "README.md"
     readme.write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("读取 README.md"))
 
@@ -289,7 +335,7 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.chat("读取 README.md")
 
@@ -303,7 +349,7 @@ def test_demo_assistant_app_compacts_large_trace_and_plan_details(tmp_path: Path
     workspace.mkdir()
     large_text = "A" * 8000
     (workspace / "README.md").write_text(large_text, encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.chat("读取 README.md")
 
@@ -315,7 +361,7 @@ def test_demo_assistant_app_compacts_large_trace_and_plan_details(tmp_path: Path
 def test_demo_assistant_app_can_switch_agent_profile_within_session(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.switch_context(agent_profile="qa_only")
 
@@ -330,7 +376,7 @@ def test_demo_assistant_app_can_switch_workspace_within_session(tmp_path: Path):
     workspace.mkdir()
     other.mkdir()
     (other / "README.md").write_text("from other workspace", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
+    app = _create_demo_assistant_app_with_test_planner(workspace)
 
     payload = app.switch_context(workspace=str(other))
     chat = app.chat("读取 README.md")
@@ -368,6 +414,7 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
+    app.switch_context(agent_profile="qa_only")
     app.context.application_context.llm_client = _StreamingLLM()
     app.context.application_context.llm_model = "test-model"
 

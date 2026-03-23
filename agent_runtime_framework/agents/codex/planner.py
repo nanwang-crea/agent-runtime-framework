@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import resolve_model_runtime
 from agent_runtime_framework.runtime import parse_structured_output
 
@@ -14,9 +15,6 @@ def plan_codex_actions(user_input: str) -> list[CodexAction]:
 
 
 def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexAction | None:
-    llm_planned = _plan_next_action_with_llm(task, context)
-    if llm_planned is not None:
-        return llm_planned
     completed = [action for action in task.actions if action.status == "completed"]
     if completed:
         last_action = completed[-1]
@@ -29,7 +27,17 @@ def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexActio
                 metadata={"direct_output": True},
             )
         return None
-    return _plan_from_goal(task.goal, tool_names=set(context.application_context.tools.names()))
+    llm_planned = _plan_next_action_with_llm(task, context)
+    if llm_planned is not None:
+        return llm_planned
+    raise AppError(
+        code="MODEL_UNAVAILABLE",
+        message="未配置可用的大模型，无法为 Codex Agent 规划下一步动作。",
+        detail="planner model runtime is unavailable",
+        stage="planner",
+        retriable=True,
+        suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
+    )
 
 
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:

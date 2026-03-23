@@ -66,3 +66,11 @@ def test_frontend_shell_normalizes_non_string_trace_details():
     assert "normalizeDetail(" in app_tsx
     assert "return normalizeDetail(lastTrace.detail);" in app_tsx
     assert "normalizeDetail(run.collapsed ? run.summary : run.phaseLabel)" in app_tsx
+
+
+def test_frontend_shell_keeps_pending_user_turn_until_final_payload():
+    app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "const finalPayload = await sendMessageStream(trimmed, {" in app_tsx
+    assert "if (finalPayload !== null) {" in app_tsx
+    assert 'setPendingUserMessage("");' in app_tsx

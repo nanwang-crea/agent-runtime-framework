@@ -216,7 +216,7 @@ function App() {
     const runId = `run-${Date.now()}`;
     setMessage("");
     try {
-      await sendMessageStream(trimmed, {
+      const finalPayload = await sendMessageStream(trimmed, {
         onStart: () => {
           setActiveView("chat");
         },
@@ -285,6 +285,9 @@ function App() {
           applyResponse(finalPayload, runId, anchorUserTurnIndex);
         },
       });
+      if (finalPayload !== null) {
+        setPendingUserMessage("");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
@@ -321,7 +324,6 @@ function App() {
         })),
       );
     }
-    setPendingUserMessage("");
   }
 
   async function handleApproval(approved: boolean) {

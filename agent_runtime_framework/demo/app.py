@@ -16,6 +16,7 @@ from agent_runtime_framework.models import (
     ModelRegistry,
     ModelRouter,
     OpenAICompatibleDriver,
+    resolve_model_runtime,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
@@ -43,6 +44,7 @@ class DemoAssistantApp:
         try:
             if self._active_agent == "qa_only":
                 return self._conversation_payload(message)
+            self._ensure_codex_planner_available()
             result = self.loop.run(message)
             self._task_history.insert(0, result.task)
             self._task_history = self._task_history[:40]
@@ -61,6 +63,13 @@ class DemoAssistantApp:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
+        if self._active_agent != "qa_only":
+            try:
+                self._ensure_codex_planner_available()
+            except Exception as exc:
+                payload = self._error_payload(exc)
+                yield {"type": "error", "error": dict(payload.get("error") or {})}
+                return
         if self._should_stream_conversation(message, session):
             yield from self._stream_conversation(message, session)
             return
@@ -321,11 +330,30 @@ class DemoAssistantApp:
         self._run_history = self._run_history[:40]
 
     def _should_stream_conversation(self, message: str, session: AssistantSession) -> bool:
-        task = type("TaskLike", (), {"goal": message, "actions": []})()
-        planned = plan_next_codex_action(task, session, self.context)
         if self._active_agent == "qa_only":
             return True
+        task = type("TaskLike", (), {"goal": message, "actions": []})()
+        planner = self.context.services.get("next_action_planner")
+        if callable(planner):
+            planned = planner(task, session, self.context, list(self.context.application_context.tools.names()))
+        else:
+            planned = plan_next_codex_action(task, session, self.context)
         return planned is not None and planned.kind == "respond" and not bool(planned.metadata.get("direct_output"))
+
+    def _ensure_codex_planner_available(self) -> None:
+        if callable(self.context.services.get("next_action_planner")) or callable(self.context.services.get("action_planner")):
+            return
+        runtime = resolve_model_runtime(self.context.application_context, "planner")
+        if runtime is not None:
+            return
+        raise AppError(
+            code="MODEL_UNAVAILABLE",
+            message="未配置可用的大模型，Codex Agent 无法规划下一步动作。",
+            detail="planner model runtime is unavailable",
+            stage="planner",
+            retriable=True,
+            suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
+        )
 
     def _compact_text(self, value: Any, *, limit: int = 240) -> str | None:
         if value is None:

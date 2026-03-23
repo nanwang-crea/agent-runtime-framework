@@ -12,6 +12,7 @@ from agent_runtime_framework.agents.codex import (
     VerificationResult,
     build_default_codex_tools,
 )
+from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.artifacts import InMemoryArtifactStore
 from agent_runtime_framework.assistant import AssistantSession
@@ -50,6 +51,26 @@ def _context(workspace: Path) -> CodexContext:
         config={"default_directory": str(workspace)},
     )
     return CodexContext(application_context=app_context, session=AssistantSession(session_id="codex"))
+
+
+def _attach_test_next_action_planner(context: CodexContext) -> CodexContext:
+    def _planner(task, _session, _context, tool_names):
+        completed = [action for action in task.actions if action.status == "completed"]
+        if completed:
+            last_action = completed[-1]
+            if last_action.kind == "respond":
+                return None
+            if last_action.observation:
+                return CodexAction(
+                    kind="respond",
+                    instruction=last_action.observation,
+                    metadata={"direct_output": True},
+                )
+            return None
+        return _plan_from_goal(task.goal, tool_names=set(tool_names))
+
+    context.services["next_action_planner"] = _planner
+    return context
 
 
 def test_codex_models_track_defaults_and_verification(tmp_path: Path):
@@ -98,7 +119,7 @@ def test_codex_loop_executes_planned_actions_in_order(tmp_path: Path):
 def test_codex_loop_falls_back_to_single_respond_action(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
 
     result = CodexAgentLoop(context).run("hello")
 
@@ -162,7 +183,7 @@ def test_codex_loop_reads_workspace_file_via_default_tooling(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "note.md").write_text("hello from codex agent", encoding="utf-8")
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -177,7 +198,7 @@ def test_codex_loop_reads_workspace_file_via_default_tooling(tmp_path: Path):
 def test_codex_loop_runs_verification_command_and_records_success(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -196,7 +217,7 @@ def test_codex_loop_applies_text_patch_via_default_tooling(tmp_path: Path):
     workspace.mkdir()
     target = workspace / "note.md"
     target.write_text("hello old world", encoding="utf-8")
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -221,7 +242,7 @@ def test_codex_loop_moves_workspace_file_via_default_tooling(tmp_path: Path):
     source = workspace / "old.txt"
     source.write_text("move me", encoding="utf-8")
     destination = workspace / "new.txt"
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -246,7 +267,7 @@ def test_codex_loop_deletes_workspace_file_via_default_tooling(tmp_path: Path):
     workspace.mkdir()
     target = workspace / "trash.txt"
     target.write_text("delete me", encoding="utf-8")
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -275,7 +296,6 @@ def test_codex_loop_uses_llm_next_action_planner_with_tool_context(tmp_path: Pat
     llm = _SequenceLLM(
         [
             '{"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"note.md"}}',
-            '{"kind":"respond","instruction":"hello llm planner","direct_output":true}',
         ]
     )
     context.application_context.llm_client = llm
@@ -285,15 +305,16 @@ def test_codex_loop_uses_llm_next_action_planner_with_tool_context(tmp_path: Pat
     assert result.status == "completed"
     assert result.final_output == "hello llm planner"
     assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
-    second_prompt = llm.completions.calls[-1]["messages"][-1]["content"]
-    assert "hello llm planner" in second_prompt
+    assert len(llm.completions.calls) == 1
+    first_prompt = llm.completions.calls[0]["messages"][-1]["content"]
+    assert "read_workspace_text" in first_prompt
 
 
 def test_codex_loop_creates_workspace_file_via_default_tooling(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     target = workspace / "draft.txt"
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
@@ -317,7 +338,7 @@ def test_codex_loop_edits_workspace_file_via_default_tooling(tmp_path: Path):
     workspace.mkdir()
     target = workspace / "draft.txt"
     target.write_text("old text", encoding="utf-8")
-    context = _context(workspace)
+    context = _attach_test_next_action_planner(_context(workspace))
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
