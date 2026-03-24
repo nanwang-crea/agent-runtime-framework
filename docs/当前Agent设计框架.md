@@ -219,6 +219,52 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - `Agent`
   新增 `agents/codex`，负责 action-centric 的 Codex 风格强执行闭环
 
+## 10. 当前 Codex Agent 主链路
+
+当前 `agents/codex` 主链路已经从单纯的 next-action loop，演进为：
+
+`user input -> router -> planner / task pattern -> tool execution -> output evaluator -> continue / finish`
+
+当前已具备：
+
+- `router`
+  区分普通对话与任务执行，优先走模型，失败时回退确定性规则。
+
+- `planner`
+  负责下一步动作选择，支持 role 级模型路由和结构化动作约束。
+
+- `task pattern`
+  对高频任务补专门模式，例如目录/代码库讲解。
+
+- `output_evaluator`
+  已升级为 `LLM-first + deterministic fallback`。
+  负责判断：
+  - 当前结果是否已经足够完成目标
+  - 是否需要继续调用工具
+  - 是否应该先综合证据再回复
+
+- `approval / resume`
+  继续承担高风险动作的人工确认边界。
+
+## 11. 当前最大缺口
+
+当前最明显的缺口已经不再是 router / planner / evaluator 本身，而是 **真实 sandbox**。
+
+现在已有：
+
+- tool permission level
+- workspace root path guard
+- approval / resume
+
+但仍然缺少：
+
+- shell execution sandbox
+- network isolation
+- sandbox mode（`read_only / workspace_write / full_access`）
+- sandbox 状态进入 trace / UI
+
+所以当前系统已经有“执行策略”，但还没有真正的“执行隔离”。
+
 这意味着当前仓库里已经存在两条并行路线：
 
 1. `assistant`：
