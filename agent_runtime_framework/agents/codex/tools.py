@@ -1,12 +1,50 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
 from agent_runtime_framework.resources import ResourceRef
+from agent_runtime_framework.sandbox import run_sandboxed_command
+
+
+def _output_limit(context: Any, key: str, default: int) -> int:
+    value = context.application_context.config.get(key, default)
+    try:
+        return max(80, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _truncate_text(text: str, *, limit: int, label: str = "输出") -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit].rstrip()}\n\n[{label}已截断，保留前 {limit} 个字符。]"
+
+
+def _build_agent_output(
+    *,
+    path: str,
+    text: str,
+    summary: str,
+    truncated: bool = False,
+    next_hint: str = "",
+    changed_paths: list[str] | None = None,
+    items: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "path": path,
+        "text": text,
+        "content": text,
+        "summary": summary,
+        "truncated": truncated,
+        "next_hint": next_hint,
+        "changed_paths": list(changed_paths or []),
+        "items": list(items or []),
+        "entities": {"path": path, "items": list(items or [])},
+    }
 
 
 def build_default_codex_tools() -> list[ToolSpec]:
@@ -17,6 +55,8 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_list_workspace_directory,
             input_schema={"path": "string"},
             permission_level="metadata_read",
+            prompt_snippet="List files and directories from the current workspace.",
+            prompt_guidelines=["Use list_workspace_directory before broad file reads when you need structure."],
         ),
         ToolSpec(
             name="read_workspace_text",
@@ -24,6 +64,8 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_read_workspace_text,
             input_schema={"path": "string"},
             permission_level="content_read",
+            prompt_snippet="Read concise text from workspace files.",
+            prompt_guidelines=["Prefer read_workspace_text over shell cat for normal file inspection."],
         ),
         ToolSpec(
             name="summarize_workspace_text",
@@ -31,6 +73,8 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_summarize_workspace_text,
             input_schema={"path": "string"},
             permission_level="content_read",
+            prompt_snippet="Summarize a workspace file when raw text is unnecessary.",
+            prompt_guidelines=["Prefer summarize_workspace_text when the user asks for a summary instead of full content."],
         ),
         ToolSpec(
             name="inspect_workspace_path",
@@ -38,6 +82,8 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_inspect_workspace_path,
             input_schema={"path": "string"},
             permission_level="content_read",
+            prompt_snippet="Inspect a path and explain its structure.",
+            prompt_guidelines=["Use inspect_workspace_path after a directory listing when the user asks for architecture or module roles."],
         ),
         ToolSpec(
             name="run_shell_command",
@@ -46,6 +92,8 @@ def build_default_codex_tools() -> list[ToolSpec]:
             input_schema={"command": "string"},
             permission_level="safe_write",
             timeout_seconds=30.0,
+            prompt_snippet="Run an allowed workspace shell command inside the sandbox.",
+            prompt_guidelines=["Use run_shell_command only when a dedicated workspace tool cannot answer the request."],
         ),
         ToolSpec(
             name="apply_text_patch",
@@ -53,6 +101,9 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_apply_text_patch,
             input_schema={"path": "string", "search_text": "string", "replace_text": "string"},
             permission_level="safe_write",
+            prompt_snippet="Apply a surgical text patch to a workspace file.",
+            prompt_guidelines=["Use apply_text_patch for targeted edits when the exact old text is known."],
+            serialize_by_argument="path",
         ),
         ToolSpec(
             name="move_workspace_path",
@@ -60,6 +111,9 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_move_workspace_path,
             input_schema={"path": "string", "destination_path": "string"},
             permission_level="safe_write",
+            prompt_snippet="Move or rename a workspace file.",
+            prompt_guidelines=["Use move_workspace_path instead of shell mv for workspace file moves."],
+            serialize_by_argument="path",
         ),
         ToolSpec(
             name="delete_workspace_path",
@@ -67,6 +121,9 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_delete_workspace_path,
             input_schema={"path": "string"},
             permission_level="destructive_write",
+            prompt_snippet="Delete a workspace file after explicit confirmation.",
+            prompt_guidelines=["Only delete workspace files when the user clearly requested removal."],
+            serialize_by_argument="path",
         ),
         ToolSpec(
             name="create_workspace_path",
@@ -74,6 +131,9 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_create_workspace_path,
             input_schema={"path": "string", "content": "string", "kind": "string"},
             permission_level="safe_write",
+            prompt_snippet="Create a new file or directory inside the workspace.",
+            prompt_guidelines=["Use create_workspace_path for new files or folders instead of shell mkdir/touch."],
+            serialize_by_argument="path",
         ),
         ToolSpec(
             name="edit_workspace_text",
@@ -81,6 +141,9 @@ def build_default_codex_tools() -> list[ToolSpec]:
             executor=_edit_workspace_text,
             input_schema={"path": "string", "content": "string"},
             permission_level="safe_write",
+            prompt_snippet="Replace the full contents of a workspace file.",
+            prompt_guidelines=["Use edit_workspace_text only for full rewrites, not surgical patches."],
+            serialize_by_argument="path",
         ),
     ]
 
@@ -150,7 +213,13 @@ def _list_workspace_directory(task: Any, context: Any, arguments: dict[str, Any]
         lines.append(f"文件：{', '.join(files)}")
     text = "\n".join(lines)
     _remember_focus(context, ref, text)
-    return {"path": ref.location, "items": [item.title for item in items], "text": text}
+    return _build_agent_output(
+        path=ref.location,
+        text=text,
+        summary=lines[0],
+        next_hint="如果需要理解目录职责，下一步调用 inspect_workspace_path。",
+        items=[item.title for item in items],
+    )
 
 
 def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -160,13 +229,16 @@ def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> 
         use_last_focus=bool(arguments.get("use_last_focus")),
     )
     content = context.application_context.resource_repository.load_text(ref)
-    summary = "\n".join(content.splitlines()[:3]) if content.strip() else ""
+    limited = _truncate_text(content, limit=_output_limit(context, "codex_max_read_chars", 4000))
+    summary = "\n".join(limited.splitlines()[:3]) if limited.strip() else ""
     _remember_focus(context, ref, summary)
-    return {
-        "path": ref.location,
-        "content": content,
-        "text": content,
-    }
+    return _build_agent_output(
+        path=ref.location,
+        text=limited,
+        summary=summary or f"Read {Path(ref.location).name}",
+        truncated=limited != content.strip(),
+        next_hint="如果需要更多内容，继续读取同一路径或改用 summarize/inspect。",
+    )
 
 
 def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -178,12 +250,15 @@ def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]
     content = context.application_context.resource_repository.load_text(ref)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     summary = "\n".join(lines[:3]) if lines else content[:300]
+    summary = _truncate_text(summary, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="摘要")
     _remember_focus(context, ref, summary)
-    return {
-        "path": ref.location,
-        "content": summary,
-        "text": summary,
-    }
+    return _build_agent_output(
+        path=ref.location,
+        text=summary,
+        summary=summary,
+        truncated=summary != content[: len(summary)],
+        next_hint="如果摘要不够，下一步读取原文或 inspect 相关路径。",
+    )
 
 
 def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -197,7 +272,12 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
     if path.is_file():
         text = _summarize_file(path)
         _remember_focus(context, ref, text)
-        return {"path": str(path), "text": text}
+        return _build_agent_output(
+            path=str(path),
+            text=text,
+            summary=text,
+            next_hint="如果需要原文细节，下一步读取该文件。",
+        )
     items = context.application_context.resource_repository.list_directory(ref)
     directories = [item for item in items if item.kind == "directory"]
     files = [item for item in items if item.kind == "file"]
@@ -212,32 +292,35 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
             file_path = Path(item.location)
             lines.append(f"- {item.title}：{_summarize_file(file_path)}")
     text = "\n".join(lines)
+    text = _truncate_text(text, limit=_output_limit(context, "codex_max_inspect_chars", 2000))
     _remember_focus(context, ref, text)
-    return {"path": str(path), "items": [item.title for item in items], "text": text}
+    return _build_agent_output(
+        path=str(path),
+        text=text,
+        summary=lines[0],
+        next_hint="如果需要细化模块作用，继续读取关键文件。",
+        items=[item.title for item in items],
+    )
 
 
 def _run_shell_command(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     command = str(arguments.get("command") or "").strip()
     if not command:
         raise ValueError("missing command")
-    completed = subprocess.run(
-        command,
-        shell=True,
-        cwd=str(_workspace_root(context)),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    output = (completed.stdout or "").strip()
-    error = (completed.stderr or "").strip()
-    return {
-        "command": command,
-        "returncode": completed.returncode,
-        "stdout": output,
-        "stderr": error,
-        "text": output if output else error,
-        "success": completed.returncode == 0,
-    }
+    result = run_sandboxed_command(command, context, timeout=30)
+    text = str(result.get("text") or "")
+    truncated_text = _truncate_text(text, limit=_output_limit(context, "codex_max_shell_chars", 2000))
+    result["text"] = truncated_text
+    if result.get("stdout"):
+        result["stdout"] = _truncate_text(str(result["stdout"]), limit=_output_limit(context, "codex_max_shell_chars", 2000))
+    elif result.get("stderr"):
+        result["stderr"] = _truncate_text(str(result["stderr"]), limit=_output_limit(context, "codex_max_shell_chars", 2000))
+    result["summary"] = truncated_text.splitlines()[0] if truncated_text else command
+    result["truncated"] = truncated_text != text.strip()
+    result["next_hint"] = "如果这是验证命令，检查 success 字段；否则结合上下文决定是否继续读取文件。"
+    result["changed_paths"] = []
+    result["entities"] = {"path": "", "items": []}
+    return result
 
 
 def _summarize_file(path: Path) -> str:
@@ -284,11 +367,18 @@ def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dic
     ref = ResourceRef.for_path(path)
     summary = "\n".join(updated.splitlines()[:3]) if updated.strip() else ""
     _remember_focus(context, ref, summary)
+    truncated = _truncate_text(updated, limit=_output_limit(context, "codex_max_write_chars", 2000))
     return {
-        "path": str(path),
+        **_build_agent_output(
+            path=str(path),
+            text=truncated,
+            summary=f"Patched {path.name}",
+            truncated=truncated != updated.strip(),
+            next_hint="下一步应运行验证或重新读取文件确认修改。",
+            changed_paths=[path.name],
+        ),
         "before_text": original,
         "after_text": updated,
-        "text": updated,
     }
 
 
@@ -303,9 +393,14 @@ def _move_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> 
     summary = f"moved: {source.name} -> {destination.name}"
     _remember_focus(context, ref, summary)
     return {
-        "path": str(source),
+        **_build_agent_output(
+            path=str(destination),
+            text=summary,
+            summary=summary,
+            next_hint="如果需要确认内容未变，下一步读取目标文件。",
+            changed_paths=[destination.name],
+        ),
         "destination_path": str(destination),
-        "text": summary,
     }
 
 
@@ -317,10 +412,13 @@ def _delete_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -
         raise IsADirectoryError(path)
     path.unlink()
     context.application_context.session_memory.remember_focus([], summary=f"deleted: {path.name}")
-    return {
-        "path": str(path),
-        "text": f"deleted: {path.name}",
-    }
+    return _build_agent_output(
+        path=str(path),
+        text=f"deleted: {path.name}",
+        summary=f"Deleted {path.name}",
+        next_hint="如果这是计划中的清理操作，下一步运行验证或继续其余修改。",
+        changed_paths=[path.name],
+    )
 
 
 def _create_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -339,8 +437,13 @@ def _create_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -
     ref = ResourceRef.for_path(path)
     _remember_focus(context, ref, text[:200] if text else f"created: {path.name}")
     return {
-        "path": str(path),
-        "text": text,
+        **_build_agent_output(
+            path=str(path),
+            text=text,
+            summary=f"Created {path.name}",
+            next_hint="如果这是代码文件，下一步读取或验证该文件内容。",
+            changed_paths=[path.name],
+        ),
         "content": content,
     }
 
@@ -355,8 +458,15 @@ def _edit_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> 
     path.write_text(content, encoding="utf-8")
     ref = ResourceRef.for_path(path)
     _remember_focus(context, ref, content[:200] if content else f"edited: {path.name}")
+    truncated = _truncate_text(content, limit=_output_limit(context, "codex_max_write_chars", 2000))
     return {
-        "path": str(path),
-        "text": content,
+        **_build_agent_output(
+            path=str(path),
+            text=truncated,
+            summary=f"Updated {path.name}",
+            truncated=truncated != content.strip(),
+            next_hint="下一步应运行验证或重新读取文件确认最终内容。",
+            changed_paths=[path.name],
+        ),
         "content": content,
     }

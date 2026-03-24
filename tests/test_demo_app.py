@@ -388,6 +388,20 @@ def test_demo_assistant_app_uses_router_role_before_planner(tmp_path: Path):
     assert payload["status"] == "completed"
     assert payload["capability_name"] == "conversation"
     assert payload["execution_trace"][0]["name"] == "router"
+
+
+def test_demo_context_payload_includes_sandbox_state(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    from agent_runtime_framework.demo.app import create_demo_assistant_app
+
+    app = create_demo_assistant_app(workspace)
+
+    context_payload = app.context_payload()
+
+    assert context_payload["sandbox"]["mode"] == "workspace_write"
+    assert context_payload["sandbox"]["workspace_root"] == str(workspace.resolve())
     assert "source=model" in str(payload["execution_trace"][0]["detail"])
 
 

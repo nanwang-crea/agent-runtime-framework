@@ -80,6 +80,18 @@ Wrap `run_shell_command` behind a command runner that can:
 - optionally block network
 - emit structured failure reasons when sandbox denies execution
 
+Current implementation slice now started:
+
+- added `agent_runtime_framework/sandbox/`
+- introduced `SandboxConfig`
+- switched `run_shell_command` away from `shell=True`
+- commands are now parsed with `shlex.split()`
+- shell metacharacters such as `&&`, `|`, `;`, redirection, and command substitution are denied
+- common network commands such as `curl`, `wget`, and `ssh` are blocked by default
+- demo context payload now exposes current sandbox state
+
+This is intentionally only the first slice. It is a command sandbox adapter, not yet a full process jail.
+
 ### Priority 3: Surface Sandbox State In Trace And UI
 
 The user should be able to see:
@@ -102,6 +114,24 @@ Planner and evaluator should know:
 2. do not revert to capability-centric control flow
 3. add a real `sandbox` module to the kernel layer
 4. route shell execution through that module before expanding agent autonomy further
+
+## Implemented First Slice
+
+The first minimal sandbox slice now covers:
+
+1. explicit `SandboxConfig` runtime object
+2. default mode `workspace_write`
+3. command allowlist and network-command denylist
+4. no `shell=True` for default shell tool execution
+5. UI-visible sandbox payload through demo context
+
+Still not covered yet:
+
+- filesystem sandbox for write tools
+- per-tool sandbox policy unification
+- planner / evaluator awareness of sandbox denial
+- approval escalation based on sandbox mode
+- process/container isolation
 
 ## Key Principle
 

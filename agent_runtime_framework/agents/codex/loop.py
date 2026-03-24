@@ -15,7 +15,9 @@ from agent_runtime_framework.agents.codex.models import (
     CodexTask,
     VerificationResult,
 )
+from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
+from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
 
 
@@ -54,6 +56,7 @@ class CodexAgentLoop:
         session = self._require_session()
         session.add_turn("user", user_input)
         task = self._build_task(user_input, session)
+        self._runtime().on_task_started(task)
         result = self._execute_task(task, session, start_index=0)
         if result.status == "completed":
             session.add_turn("assistant", result.final_output)
@@ -81,27 +84,62 @@ class CodexAgentLoop:
             self.context.session = session
         return session
 
+    def _runtime(self) -> CodexSessionRuntime:
+        runtime = self.context.services.get("session_runtime")
+        if isinstance(runtime, CodexSessionRuntime):
+            self.context.application_context.services["tool_runtime"] = runtime
+            return runtime
+        runtime = CodexSessionRuntime()
+        self.context.services["session_runtime"] = runtime
+        self.context.application_context.services["tool_runtime"] = runtime
+        return runtime
+
     def _build_task(self, user_input: str, session: AssistantSession) -> CodexTask:
         planner = self.context.services.get("action_planner")
         if callable(planner):
             planned = planner(user_input, session, self.context)
             if isinstance(planned, CodexTask):
+                for action in planned.actions:
+                    self._ensure_action_subgoal(action)
+                    if action.kind == "respond" and "direct_output" not in action.metadata:
+                        action.metadata["direct_output"] = True
                 return planned
             if isinstance(planned, list):
-                return CodexTask(goal=user_input, actions=[self._normalize_action(item) for item in planned])
+                actions = [self._normalize_action(item) for item in planned]
+                for action in actions:
+                    self._ensure_action_subgoal(action)
+                    if action.kind == "respond" and "direct_output" not in action.metadata:
+                        action.metadata["direct_output"] = True
+                return CodexTask(goal=user_input, actions=actions)
         return CodexTask(goal=user_input, actions=[])
 
     def _normalize_action(self, action: Any) -> CodexAction:
         if isinstance(action, CodexAction):
+            self._ensure_action_subgoal(action)
             return action
         if isinstance(action, dict):
-            return CodexAction(
+            normalized = CodexAction(
                 kind=str(action.get("kind") or ""),
                 instruction=str(action.get("instruction") or ""),
+                subgoal=str(action.get("subgoal") or "execute_step"),
                 risk_class=str(action.get("risk_class") or "low"),
                 metadata=dict(action.get("metadata") or {}),
             )
+            self._ensure_action_subgoal(normalized)
+            return normalized
         raise TypeError(f"unsupported action type: {type(action)!r}")
+
+    def _ensure_action_subgoal(self, action: CodexAction) -> None:
+        if action.subgoal != "execute_step":
+            return
+        if action.kind == "respond":
+            action.subgoal = "synthesize_answer"
+        elif action.kind == "run_verification":
+            action.subgoal = "verify_changes"
+        elif action.kind in {"call_tool"}:
+            action.subgoal = "gather_evidence"
+        elif action.kind in {"apply_patch", "create_path", "edit_text", "move_path", "delete_path"}:
+            action.subgoal = "modify_workspace"
 
     def _execute_task(
         self,
@@ -156,6 +194,7 @@ class CodexAgentLoop:
             action.status = result.status
             action.observation = result.final_output
             action.metadata["result"] = dict(result.metadata)
+            update_task_memory(task, action, result)
             verification_payload = dict(result.metadata.get("verification") or {})
             if verification_payload:
                 action.metadata["verification_result"] = VerificationResult(
@@ -166,6 +205,7 @@ class CodexAgentLoop:
             final_output = result.final_output
             last_kind = action.kind
             session.focused_capability = action.kind
+            self._runtime().record_action(task, action)
             if result.status != "completed":
                 task.status = result.status
                 return CodexAgentLoopResult(
@@ -177,6 +217,7 @@ class CodexAgentLoop:
                 )
             action_index = next_index + 1
         task.status = "completed"
+        task.summary = self._runtime().build_task_summary(task)
         task.verification = self._build_verification(task, final_output)
         return CodexAgentLoopResult(
             status="completed",

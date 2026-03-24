@@ -61,6 +61,9 @@ class ToolSpec:
     timeout_seconds: float = 10.0
     max_retries: int = 0
     idempotent: bool = True
+    prompt_snippet: str = ""
+    prompt_guidelines: list[str] = field(default_factory=list)
+    serialize_by_argument: str | None = None
 
 
 @dataclass(slots=True)

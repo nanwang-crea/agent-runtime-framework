@@ -27,9 +27,9 @@ def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexActio
             return CodexAction(
                 kind="respond",
                 instruction=last_action.observation,
+                subgoal="synthesize_answer",
                 metadata={"direct_output": True},
             )
-        return None
     llm_planned = _plan_next_action_with_llm(task, context)
     if llm_planned is not None:
         return llm_planned
@@ -55,6 +55,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
                 return CodexAction(
                     kind="run_verification",
                     instruction=command,
+                    subgoal="verify_changes",
                     metadata={"command": command},
                 )
 
@@ -67,6 +68,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="apply_patch",
             instruction=text,
+            subgoal="modify_workspace",
             risk_class="high",
             metadata={
                 "tool_name": "apply_text_patch",
@@ -85,6 +87,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="create_path",
             instruction=text,
+            subgoal="modify_workspace",
             risk_class="high",
             metadata={
                 "tool_name": "create_workspace_path",
@@ -102,6 +105,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="edit_text",
             instruction=text,
+            subgoal="modify_workspace",
             risk_class="high",
             metadata={
                 "tool_name": "edit_workspace_text",
@@ -115,6 +119,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="move_path",
             instruction=text,
+            subgoal="modify_workspace",
             risk_class="high",
             metadata={
                 "tool_name": "move_workspace_path",
@@ -128,6 +133,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="delete_path",
             instruction=text,
+            subgoal="modify_workspace",
             risk_class="destructive",
             metadata={
                 "tool_name": "delete_workspace_path",
@@ -141,6 +147,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="call_tool",
             instruction=text,
+            subgoal="gather_evidence",
             metadata={
                 "tool_name": "summarize_workspace_text",
                 "arguments": {
@@ -157,6 +164,7 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
             return CodexAction(
                 kind="call_tool",
                 instruction=text,
+                subgoal="gather_evidence",
                 metadata={
                     "tool_name": "list_workspace_directory",
                     "arguments": {
@@ -173,10 +181,11 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
         return CodexAction(
             kind="call_tool",
             instruction=text,
+            subgoal="gather_evidence",
             metadata={"tool_name": "read_workspace_text", "arguments": {"path": path}},
         )
 
-    return CodexAction(kind="respond", instruction=text)
+    return CodexAction(kind="respond", instruction=text, subgoal="synthesize_answer")
 
 
 def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
@@ -191,8 +200,9 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
         tool = context.application_context.tools.get(name)
         if tool is None:
             continue
+        guideline_text = " | ".join(tool.prompt_guidelines) if getattr(tool, "prompt_guidelines", None) else ""
         tool_lines.append(
-            f"- name: {tool.name}; description: {tool.description}; input_schema: {tool.input_schema}; permission: {tool.permission_level}; risk_hint: {_risk_hint_for_permission(tool.permission_level)}"
+            f"- name: {tool.name}; description: {tool.description}; snippet: {tool.prompt_snippet}; guidelines: {guideline_text}; input_schema: {tool.input_schema}; permission: {tool.permission_level}; risk_hint: {_risk_hint_for_permission(tool.permission_level)}"
         )
     action_lines = [
         f"- kind: {action.kind}; status: {action.status}; instruction: {action.instruction}; observation: {action.observation or ''}"
@@ -313,9 +323,25 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         risk_class = "destructive"
     elif tool_name in {"apply_text_patch", "move_workspace_path", "create_workspace_path", "edit_workspace_text"}:
         risk_class = "high"
+    subgoal = "execute_step"
+    if kind == "respond":
+        subgoal = "synthesize_answer"
+    elif kind == "run_verification":
+        subgoal = "verify_changes"
+    elif kind in {"call_tool"}:
+        subgoal = "gather_evidence"
+    elif kind in {"apply_patch", "move_path", "delete_path"} or tool_name in {
+        "apply_text_patch",
+        "move_workspace_path",
+        "create_workspace_path",
+        "edit_workspace_text",
+        "delete_workspace_path",
+    }:
+        subgoal = "modify_workspace"
     return CodexAction(
         kind=kind,
         instruction=instruction or metadata["tool_name"],
+        subgoal=subgoal,
         risk_class=risk_class,
         metadata=metadata,
     )

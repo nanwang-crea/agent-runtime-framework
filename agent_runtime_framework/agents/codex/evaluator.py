@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
@@ -31,6 +32,20 @@ _KNOWLEDGE_MARKERS = (
 
 
 def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
+    if task.memory.pending_verifications:
+        command = task.memory.pending_verifications[0]
+        return CodexEvaluationDecision(
+            status="continue",
+            next_action=CodexAction(
+                kind="run_verification",
+                instruction=command,
+                subgoal="verify_changes",
+                metadata={"command": command, "from_evaluator": True, "evaluator_reason": "pending_verification"},
+            ),
+            summary="verification required before finish",
+        )
+    if task.memory.open_questions and _last_completed_action(task) and _last_completed_action(task).kind == "respond":
+        return CodexEvaluationDecision(status="continue", summary="cannot finish while open questions remain")
     llm_decision = _evaluate_with_model(task, context, tool_names)
     if llm_decision.status != "abstain":
         if llm_decision.next_action is not None:
@@ -109,11 +124,11 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     if not completed:
         return CodexEvaluationDecision()
     last_action = completed[-1]
-    if last_action.kind == "respond":
+    if last_action.kind == "respond" and not task.memory.open_questions and not task.memory.pending_verifications:
         return CodexEvaluationDecision(status="finish")
     if not _is_knowledge_task(task.goal):
         return CodexEvaluationDecision()
-    if bool(last_action.metadata.get("from_evaluator")):
+    if bool(last_action.metadata.get("from_evaluator")) and last_action.kind == "respond":
         return CodexEvaluationDecision()
     tool_name = str(last_action.metadata.get("tool_name") or "").strip()
     arguments = dict(last_action.metadata.get("arguments") or {})
@@ -123,6 +138,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             next_action=CodexAction(
                 kind="call_tool",
                 instruction=task.goal,
+                subgoal="gather_evidence",
                 metadata={
                     "tool_name": "inspect_workspace_path",
                     "arguments": {
@@ -136,18 +152,26 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             summary="directory listing needs deeper inspection",
         )
     if tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path"}:
-        synthesized = _synthesize_knowledge_answer(task.goal, completed)
+        synthesized = _synthesize_knowledge_answer(task, completed)
         if synthesized:
             return CodexEvaluationDecision(
                 status="continue",
                 next_action=CodexAction(
                     kind="respond",
                     instruction=synthesized,
+                    subgoal="synthesize_answer",
                     metadata={"direct_output": True, "from_evaluator": True, "evaluator_reason": "synthesize_answer"},
                 ),
                 summary="raw evidence should be synthesized before finishing",
             )
     return CodexEvaluationDecision()
+
+
+def _last_completed_action(task: CodexTask) -> CodexAction | None:
+    for action in reversed(task.actions):
+        if action.status == "completed":
+            return action
+    return None
 
 
 def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str]) -> CodexEvaluationDecision:
@@ -170,6 +194,7 @@ def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str
         action = CodexAction(
             kind="call_tool",
             instruction=instruction or tool_name,
+            subgoal="gather_evidence",
             metadata={"tool_name": tool_name, "arguments": arguments, "from_evaluator": True, "evaluator_reason": "llm_continue"},
         )
         return CodexEvaluationDecision(status="continue", next_action=action)
@@ -178,6 +203,7 @@ def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str
     action = CodexAction(
         kind="respond",
         instruction=instruction,
+        subgoal="synthesize_answer",
         metadata={
             "direct_output": bool(parsed.get("direct_output")),
             "from_evaluator": True,
@@ -192,19 +218,62 @@ def _is_knowledge_task(goal: str) -> bool:
     return any(marker in text for marker in _KNOWLEDGE_MARKERS)
 
 
-def _synthesize_knowledge_answer(goal: str, completed: list[CodexAction]) -> str:
+def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) -> str:
     last = completed[-1]
     tool_name = str(last.metadata.get("tool_name") or "").strip()
     observation = (last.observation or "").strip()
     if not observation:
         return ""
+    role_summary = _build_claim_based_answer(
+        task.goal,
+        task.memory.claims or _extract_claims_from_observation(observation),
+        task.memory.typed_claims,
+    )
+    if role_summary:
+        return role_summary
     if tool_name == "inspect_workspace_path":
-        return f"关于 `{_extract_target_label(goal)}`，我先整理了目录结构和关键文件职责：\n{observation}"
+        return f"关于 `{_extract_target_label(task.goal)}`，我先整理了目录结构和关键文件职责：\n{observation}"
     if tool_name == "summarize_workspace_text":
         return f"按你的问题，我先概括如下：\n{observation}"
     if tool_name == "read_workspace_text":
         return f"我先基于已读取内容做一个简要说明：\n{_summarize_read_content(observation)}"
     return observation
+
+
+def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[dict[str, str]]) -> str:
+    if not claims:
+        return ""
+    relevant = [claim for claim in claims if any(token in claim for token in _goal_target_tokens(goal))]
+    selected = relevant or claims[:3]
+    structure_claims = [claim for claim in typed_claims if claim.get("kind") == "structure"]
+    role_claims = [claim for claim in typed_claims if claim.get("kind") == "role"]
+    if "作用" in goal or "功能" in goal or "role" in goal.lower():
+        lines: list[str] = []
+        if structure_claims:
+            lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
+        if role_claims:
+            for claim in role_claims[:3]:
+                lines.append(f"{claim.get('subject', '')} 的作用是{claim.get('detail', '')}")
+        elif selected:
+            lines.extend(selected)
+        return "基于已收集的信息，我的总结是：\n" + "\n".join(f"- {line}" for line in lines if line)
+    return ""
+
+
+def _goal_target_tokens(goal: str) -> list[str]:
+    return [token for token in re.split(r"[\s，。,:：]+", goal) if token and ("/" in token or "." in token or "_" in token)]
+
+
+def _extract_claims_from_observation(observation: str) -> list[str]:
+    claims: list[str] = []
+    for line in observation.splitlines():
+        match = re.match(r"-\s+([^:：]+)[:：](.+)", line.strip())
+        if not match:
+            continue
+        target = match.group(1).strip()
+        detail = match.group(2).strip()
+        claims.append(f"{target} 的作用是{detail}")
+    return claims
 
 
 def _extract_target_label(goal: str) -> str:

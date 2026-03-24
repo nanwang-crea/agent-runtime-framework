@@ -11,11 +11,13 @@ from agent_runtime_framework.agents.codex import (
     CodexAgentLoop,
     CodexContext,
     CodexTask,
+    CodexTaskMemory,
     VerificationResult,
     build_default_codex_tools,
     evaluate_codex_output,
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.artifacts import InMemoryArtifactStore
@@ -93,6 +95,7 @@ def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     assert action.status == "pending"
     assert task.status == "pending"
     assert task.verification is verification
+    assert task.memory.known_facts == []
     assert result.artifacts[0]["artifact_type"] == "command_log"
 
 
@@ -305,6 +308,132 @@ def test_codex_output_evaluator_marks_fallback_source_when_model_is_unavailable(
     assert result.task.actions[1].metadata["evaluation_source"] == "fallback"
 
 
+def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
+    task = CodexTask(
+        goal="总结 note.md",
+        actions=[
+            CodexAction(
+                kind="respond",
+                instruction="done",
+                status="completed",
+                metadata={"direct_output": True},
+                observation="done",
+            )
+        ],
+        memory=CodexTaskMemory(open_questions=["still missing evidence"]),
+    )
+
+    decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), [])
+
+    assert decision.status != "finish"
+
+
+def test_codex_output_evaluator_blocks_finish_when_verification_is_pending():
+    task = CodexTask(
+        goal="检查修改是否生效",
+        actions=[
+            CodexAction(
+                kind="respond",
+                instruction="done",
+                status="completed",
+                metadata={"direct_output": True},
+                observation="done",
+            )
+        ],
+        memory=CodexTaskMemory(pending_verifications=["pytest -q"]),
+    )
+
+    decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), ["run_shell_command"])
+
+    assert decision.status == "continue"
+    assert decision.next_action is not None
+    assert decision.next_action.kind == "run_verification"
+
+
+def test_codex_task_memory_tracks_read_and_modified_paths(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="read note",
+            metadata={"tool_name": "read_workspace_text", "arguments": {"path": "note.md"}},
+        ),
+        CodexAction(
+            kind="edit_text",
+            instruction="edit note",
+            metadata={"tool_name": "edit_workspace_text", "arguments": {"path": "note.md"}},
+        ),
+        CodexAction(kind="respond", instruction="done", metadata={"direct_output": True}),
+    ]
+
+    def _executor(action, session, ctx):
+        if action.kind == "call_tool":
+            return {
+                "status": "completed",
+                "final_output": "note body",
+                "metadata": {"tool_output": {"path": "note.md", "summary": "note body", "text": "note body"}},
+            }
+        if action.kind == "edit_text":
+            return {
+                "status": "completed",
+                "final_output": "updated note",
+                "metadata": {"tool_output": {"path": "note.md", "changed_paths": ["note.md"], "text": "updated note"}},
+            }
+        return {"status": "completed", "final_output": action.instruction}
+
+    context.services["action_executor"] = _executor
+
+    result = CodexAgentLoop(context).run("edit note")
+
+    assert result.status == "completed"
+    assert result.task.memory.read_paths == ["note.md"]
+    assert result.task.memory.modified_paths == ["note.md"]
+
+
+def test_codex_task_memory_tracks_pending_verifications_until_run(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="edit_text",
+            instruction="edit note",
+            metadata={"tool_name": "edit_workspace_text", "arguments": {"path": "note.md"}},
+        ),
+        CodexAction(
+            kind="run_verification",
+            instruction="pytest -q",
+            metadata={"command": "pytest -q"},
+        ),
+        CodexAction(kind="respond", instruction="done", metadata={"direct_output": True}),
+    ]
+
+    def _executor(action, session, ctx):
+        if action.kind == "edit_text":
+            return {
+                "status": "completed",
+                "final_output": "updated note",
+                "metadata": {"tool_output": {"path": "note.md", "changed_paths": ["note.md"], "text": "updated note"}},
+            }
+        if action.kind == "run_verification":
+            return {
+                "status": "completed",
+                "final_output": "ok",
+                "metadata": {"verification": {"success": True, "summary": "ok", "command": "pytest -q"}},
+            }
+        return {"status": "completed", "final_output": action.instruction}
+
+    context.services["action_executor"] = _executor
+
+    result = CodexAgentLoop(context).run("edit and verify note")
+
+    assert result.status == "completed"
+    assert result.task.memory.pending_verifications == []
+    assert "pytest -q" in result.task.memory.known_facts[-1]
+
+
 def test_codex_loop_runs_verification_command_and_records_success(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -320,6 +449,68 @@ def test_codex_loop_runs_verification_command_and_records_success(tmp_path: Path
     assert result.task.verification.success is True
     assert "ok" in result.final_output
     assert [action.kind for action in result.task.actions] == ["run_verification", "respond"]
+
+
+def test_run_shell_command_uses_sandbox_and_returns_sandbox_state(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "run_shell_command", "arguments": {"command": "pwd"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("run pwd")
+
+    assert result.status == "completed"
+    tool_output = result.task.actions[0].metadata["result"]["tool_output"]
+    assert tool_output["sandbox_applied"] is True
+    assert tool_output["sandbox"]["mode"] == "workspace_write"
+
+
+def test_run_shell_command_blocks_shell_metacharacters(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "run_shell_command", "arguments": {"command": "pwd && ls"}},
+        )
+    ]
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("run dangerous shell")
+
+    assert exc_info.value.code == "SANDBOX_DENIED"
+
+
+def test_run_shell_command_blocks_network_commands_by_default(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "run_shell_command", "arguments": {"command": "curl https://example.com"}},
+        )
+    ]
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("fetch remote")
+
+    assert exc_info.value.code == "SANDBOX_DENIED"
 
 
 def test_codex_loop_applies_text_patch_via_default_tooling(tmp_path: Path):
@@ -422,6 +613,244 @@ def test_codex_loop_uses_llm_next_action_planner_with_tool_context(tmp_path: Pat
     assert "kind 只能是" in system_prompt
     assert "run_shell_command" in first_prompt
     assert '"kind":"call_tool"' in first_prompt
+
+
+def test_codex_loop_llm_planner_includes_tool_prompt_metadata(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(['{"kind":"respond","instruction":"ok"}'])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("随便看一下")
+
+    assert result.status == "completed"
+    planner_prompt = llm.completions.calls[0]["messages"][-1]["content"]
+    assert "snippet:" in planner_prompt
+    assert "guidelines:" in planner_prompt
+    assert "Prefer read_workspace_text over shell cat" in planner_prompt
+
+
+def test_codex_read_tool_returns_agent_friendly_metadata(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("\n".join(f"line-{index}-content" for index in range(20)), encoding="utf-8")
+    context = _context(workspace)
+    context.application_context.config["codex_max_read_chars"] = 12
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "read_workspace_text")
+
+    output = tool.executor(None, context, {"path": "note.md"})
+
+    assert output["summary"]
+    assert output["truncated"] is True
+    assert output["next_hint"]
+    assert output["entities"]["path"] == str(workspace / "note.md")
+
+
+def test_codex_edit_tool_returns_change_summary_metadata(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "draft.txt").write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "edit_workspace_text")
+
+    output = tool.executor(None, context, {"path": "draft.txt", "content": "new text"})
+
+    assert output["summary"]
+    assert output["changed_paths"] == ["draft.txt"]
+    assert output["next_hint"]
+
+
+def test_codex_loop_records_runtime_events_and_task_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("\n".join(f"line-{index}" for index in range(40)), encoding="utf-8")
+    context = _context(workspace)
+    runtime = CodexSessionRuntime(max_observation_chars=80)
+    context.services["session_runtime"] = runtime
+    context.application_context.config["codex_max_read_chars"] = 80
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "read_workspace_text", "arguments": {"path": "note.md"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("读取 note.md")
+
+    assert result.status == "completed"
+    assert result.task.summary
+    assert "read_workspace_text" in result.task.summary
+    assert runtime.events
+    assert runtime.events[0]["type"] == "task_started"
+    assert any(event["type"] == "tool_result" for event in runtime.events)
+    assert "输出已截断" in (result.task.actions[0].observation or "")
+
+
+def test_codex_planner_assigns_subgoal_for_analysis_request(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(['{"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"note.md"}}'])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("总结 note.md 主要内容")
+
+    assert result.task.actions[0].subgoal in {"gather_evidence", "analyze_target"}
+
+
+def test_codex_complex_task_advances_across_subgoals(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pkg" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "pkg"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("介绍 pkg 目录结构并总结 service.py 的作用")
+
+    assert result.status == "completed"
+    assert len(result.task.actions) >= 3
+    subgoals = [action.subgoal for action in result.task.actions]
+    assert "gather_evidence" in subgoals
+    assert "synthesize_answer" in subgoals
+    assert "service.py" in result.final_output
+
+
+def test_codex_task_memory_extracts_claims_from_inspect_output(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="inspect pkg",
+            metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": "pkg"}},
+        ),
+        CodexAction(kind="respond", instruction="done", metadata={"direct_output": True}),
+    ]
+
+    def _executor(action, session, ctx):
+        if action.kind == "call_tool":
+            text = "pkg 下面共有 2 个条目。\n关键文件：\n- service.py：定义了 run\n- utils.py：定义了 format_value"
+            return {
+                "status": "completed",
+                "final_output": text,
+                "metadata": {"tool_output": {"path": "pkg", "summary": "pkg structure", "text": text}},
+            }
+        return {"status": "completed", "final_output": action.instruction}
+
+    context.services["action_executor"] = _executor
+
+    result = CodexAgentLoop(context).run("介绍 pkg")
+
+    assert result.status == "completed"
+    assert any("service.py" in claim for claim in result.task.memory.claims)
+    assert any("utils.py" in claim for claim in result.task.memory.claims)
+
+
+def test_codex_complex_task_uses_claims_for_role_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pkg" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "pkg"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("介绍 pkg 目录结构并总结 service.py 的作用")
+
+    assert result.status == "completed"
+    assert "service.py 的作用" in result.final_output
+    assert "定义了 run" in result.final_output
+
+
+def test_codex_task_memory_stores_typed_claims(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="inspect pkg",
+            metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": "pkg"}},
+        ),
+        CodexAction(kind="respond", instruction="done", metadata={"direct_output": True}),
+    ]
+
+    def _executor(action, session, ctx):
+        if action.kind == "call_tool":
+            text = "pkg 下面共有 2 个条目。\n关键文件：\n- service.py：定义了 run\n- utils.py：定义了 format_value"
+            return {
+                "status": "completed",
+                "final_output": text,
+                "metadata": {"tool_output": {"path": "pkg", "summary": "pkg structure", "text": text}},
+            }
+        return {"status": "completed", "final_output": action.instruction}
+
+    context.services["action_executor"] = _executor
+
+    result = CodexAgentLoop(context).run("介绍 pkg")
+
+    assert result.status == "completed"
+    assert any(claim["kind"] == "role" for claim in result.task.memory.typed_claims)
+    assert any(claim["subject"] == "service.py" for claim in result.task.memory.typed_claims)
+
+
+def test_codex_complex_task_combines_structure_and_role_claims(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pkg" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (workspace / "pkg" / "utils.py").write_text("def format_value(value):\n    return str(value).upper()\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "pkg"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("介绍 pkg 目录结构并总结 service.py 的作用")
+
+    assert result.status == "completed"
+    assert "目录结构" in result.final_output
+    assert "service.py 的作用" in result.final_output
+    assert "utils.py" in result.final_output
 
 
 def test_codex_loop_creates_workspace_file_via_default_tooling(tmp_path: Path):

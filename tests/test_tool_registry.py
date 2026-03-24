@@ -1,4 +1,6 @@
 import pytest
+from threading import Event, Thread
+from types import SimpleNamespace
 
 from agent_runtime_framework.core.specs import AgentSpec, ToolSpec
 from agent_runtime_framework.tools.executor import execute_tool_call
@@ -63,6 +65,88 @@ def test_execute_tool_call_retries_until_success():
 
     assert result.success is True
     assert result.attempt_count == 2
+
+
+def test_execute_tool_call_applies_runtime_hooks():
+    events: list[tuple[str, str]] = []
+
+    class _Runtime:
+        def before_tool_call(self, tool, call, task):
+            events.append(("before", tool.name))
+            return ToolCall(tool_name=call.tool_name, arguments={"value": f"{call.arguments['value']}-before"})
+
+        def after_tool_call(self, tool, call, result, task):
+            events.append(("after", tool.name))
+            result.output = {"echo": f"{result.output['echo']}-after"}
+            return result
+
+    tool = ToolSpec(
+        name="echo",
+        description="echo input",
+        executor=_echo_tool,
+    )
+    context = SimpleNamespace(application_context=SimpleNamespace(services={"tool_runtime": _Runtime()}))
+
+    result = execute_tool_call(
+        tool,
+        ToolCall(tool_name="echo", arguments={"value": "x"}),
+        task=None,
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output == {"echo": "x-before-after"}
+    assert events == [("before", "echo"), ("after", "echo")]
+
+
+def test_execute_tool_call_serializes_calls_with_same_argument():
+    started = Event()
+    release = Event()
+    order: list[str] = []
+
+    def _tool(task, context, arguments):
+        order.append(f"start:{arguments['path']}")
+        if not started.is_set():
+            started.set()
+            assert release.wait(timeout=1.0)
+        order.append(f"end:{arguments['path']}")
+        return {"ok": True}
+
+    tool = ToolSpec(
+        name="writer",
+        description="serialized write",
+        executor=_tool,
+        serialize_by_argument="path",
+    )
+    results: list[object] = []
+
+    def _run_call():
+        results.append(
+            execute_tool_call(
+                tool,
+                ToolCall(tool_name="writer", arguments={"path": "same.txt"}),
+                task=None,
+                context=None,
+            )
+        )
+
+    first = Thread(target=_run_call)
+    second = Thread(target=_run_call)
+
+    first.start()
+    assert started.wait(timeout=1.0)
+    second.start()
+    release.set()
+    first.join()
+    second.join()
+
+    assert [result.success for result in results] == [True, True]
+    assert order == [
+        "start:same.txt",
+        "end:same.txt",
+        "start:same.txt",
+        "end:same.txt",
+    ]
 
 
 def test_agent_spec_allows_minimal_callable_components():

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from agent_runtime_framework.agents.codex.memory import CodexTaskMemory
+
 
 @dataclass(slots=True)
 class VerificationResult:
@@ -23,6 +25,7 @@ class CodexEvaluationDecision:
 class CodexAction:
     kind: str
     instruction: str
+    subgoal: str = "execute_step"
     risk_class: str = "low"
     status: str = "pending"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -50,3 +53,4 @@ class CodexTask:
     summary: str = ""
     artifact_ids: list[str] = field(default_factory=list)
     verification: VerificationResult | None = None
+    memory: CodexTaskMemory = field(default_factory=CodexTaskMemory)

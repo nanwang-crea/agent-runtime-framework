@@ -21,6 +21,7 @@ from agent_runtime_framework.models import (
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
+from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.core.errors import AppError
@@ -208,6 +209,7 @@ class DemoAssistantApp:
             ],
             "active_workspace": str(self.workspace),
             "available_workspaces": list(dict.fromkeys([str(self.workspace), *self._available_workspaces])),
+            "sandbox": resolve_sandbox(self.context).to_payload(),
         }
 
     def switch_context(self, *, agent_profile: str | None = None, workspace: str | None = None) -> dict[str, Any]:
@@ -222,6 +224,10 @@ class DemoAssistantApp:
             self.workspace = next_workspace
             self.context.application_context.resource_repository = LocalFileResourceRepository([next_workspace])
             self.context.application_context.config["default_directory"] = str(next_workspace)
+            sandbox = self.context.application_context.services.get("sandbox")
+            if isinstance(sandbox, SandboxConfig):
+                sandbox.workspace_root = next_workspace
+                sandbox.writable_roots = [next_workspace]
             self._available_workspaces = list(dict.fromkeys([str(next_workspace), *self._available_workspaces]))
         return {
             "workspace": str(self.workspace),
@@ -553,6 +559,12 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         services={
             "model_registry": model_registry,
             "model_router": model_router,
+            "sandbox": SandboxConfig(
+                mode="workspace_write",
+                workspace_root=workspace_path,
+                writable_roots=[workspace_path],
+                allow_network=False,
+            ),
         },
     )
     for tool in build_default_codex_tools():
