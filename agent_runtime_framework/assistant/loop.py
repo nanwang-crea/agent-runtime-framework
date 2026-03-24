@@ -489,7 +489,7 @@ class AgentLoop:
             return default_selected
         if "desktop_content" in self.context.capabilities.names():
             return "desktop_content"
-        names = self.context.capabilities.names()
+        names = self.context.capabilities.executable_names()
         if not names:
             raise RuntimeError("no capabilities registered")
         return names[0]
@@ -497,7 +497,7 @@ class AgentLoop:
     def _select_capability_with_llm(self, user_input: str, session: AssistantSession) -> str | None:
         capabilities = [
             self.context.capabilities.require(name)
-            for name in self.context.capabilities.names()
+            for name in self.context.capabilities.executable_names()
         ]
         if not capabilities:
             return None

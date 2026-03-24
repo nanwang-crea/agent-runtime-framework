@@ -48,6 +48,11 @@
 ## 3. Capability 体系
 
 当前 Agent 不直接把桌面动作、skill 或 MCP 当作特例，而是统一收敛到 capability 体系。
+但从当前阶段开始，`CapabilityRegistry` 的定位不再只是“直接执行中心”，而是逐步转向：
+
+- `assistant` 侧的能力发现 / 目录中心
+- profile/runtime 装配层的语义注册表
+- 通往 `agents/codex` 的桥接入口，而不是唯一执行平面
 
 关键对象：
 
@@ -67,6 +72,7 @@
 - `risk_class`
 - `dependency_readiness`
 - `output_type`
+- `execution_mode`
 
 这样 capability selector 在选择能力时，已经不再只看 capability 名称，而是可以同时参考：
 
@@ -75,6 +81,13 @@
 - capability 的输入契约
 - capability 的成本 / 延迟 / 风险
 - capability 的依赖就绪度与输出类型
+
+其中：
+
+- `execution_mode=direct` 表示该 capability 仍可在 `AgentLoop` 中直接执行
+- `execution_mode=codex_only` 表示它只是能力目录中的发现条目，真实执行应下沉到 `agents/codex` 的 action/tool 层
+
+当前已开始允许把 tool 注册为 `tool:<name>` 形式的 discovery capability，用于给 selector / planner 提供统一能力视图，但不会继续把它们直接当作 capability runner 执行。
 
 ## 4. Skill 接入方式
 
@@ -197,6 +210,7 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - conversation capability
 - LLM-first capability selector
 - approval / resume 骨架
+- assistant -> codex 的桥接能力
 
 但仍然没有：
 
@@ -206,7 +220,7 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - 会话级 MCP 生命周期治理
 - 独立的模型注册 / 认证 / 路由层
 
-因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但模型基础设施与深度智能编排仍偏薄”的阶段。
+因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但模型基础设施、真实执行隔离与 action/tool 主链成熟度仍偏薄”的阶段。
 
 ## 9. 新增的双层方向
 
@@ -215,9 +229,15 @@ MCP provider 暴露的是 `MCPToolSpec`，其中包含：
 - `Kernel`
   通用底座：graph、policy、models、tools、artifacts、memory、approval、checkpoint
 - `Profile / Runtime`
-  当前 `assistant` 运行时仍然存在，继续承担 capability-centric 的桌面助手装配
+  当前 `assistant` 运行时仍然存在，继续承担 capability-centric 的桌面助手装配，以及 capability / skill / MCP / tool discovery 的宿主层角色
 - `Agent`
   新增 `agents/codex`，负责 action-centric 的 Codex 风格强执行闭环
+
+这意味着后续职责边界会更明确：
+
+- `assistant`：会话、上下文、发现、兼容、桥接
+- `CapabilityRegistry`：语义能力目录与 profile 装配表
+- `agents/codex`：任务推进、工具执行、审批恢复、artifact、sandbox 接入点
 
 ## 10. 当前 Codex Agent 主链路
 

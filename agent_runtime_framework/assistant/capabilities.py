@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent_runtime_framework.applications import ApplicationRunner, ApplicationSpec
+from agent_runtime_framework.core.specs import ToolSpec
 
 
 CapabilityRunner = Callable[[str, Any, Any], Any]
@@ -22,6 +23,18 @@ class CapabilitySpec:
     risk_class: str = "low"
     dependency_readiness: str = "ready"
     output_type: str = "text"
+    execution_mode: str = "direct"
+
+
+def _risk_class_for_permission(permission_level: str) -> str:
+    normalized = permission_level.strip().lower()
+    if normalized == "destructive_write":
+        return "destructive"
+    if normalized in {"safe_write", "write", "execute", "run"}:
+        return "high"
+    if normalized in {"content_read", "metadata_read", "read"}:
+        return "low"
+    return "moderate"
 
 
 class CapabilityRegistry:
@@ -120,6 +133,55 @@ class CapabilityRegistry:
                 )
             )
 
+    def register_tool_registry(self, tools: Any) -> None:
+        for tool_name in tools.names():
+            tool = tools.get(tool_name)
+            if tool is None:
+                continue
+            self.register_tool(tool)
+
+    def register_tool(self, tool: ToolSpec) -> None:
+        def _runner(user_input: str, context: Any, session: Any, _tool: ToolSpec = tool) -> dict[str, Any]:
+            return {
+                "final_answer": (
+                    f"tool '{_tool.name}' is registered for discovery only; "
+                    "use the Codex action loop to execute it"
+                ),
+                "execution_trace": [
+                    {
+                        "name": _tool.name,
+                        "status": "blocked",
+                        "detail": "tool discovery entry cannot execute inside capability loop",
+                    }
+                ],
+                "observations": [
+                    {
+                        "kind": "tool_discovery",
+                        "payload": {
+                            "tool_name": _tool.name,
+                            "permission_level": _tool.permission_level,
+                        },
+                    }
+                ],
+            }
+
+        self.register(
+            CapabilitySpec(
+                name=f"tool:{tool.name}",
+                runner=_runner,
+                source="tool",
+                description=tool.description,
+                safety_level=tool.permission_level,
+                input_contract=dict(tool.input_schema),
+                cost_hint="medium",
+                latency_hint="medium",
+                risk_class=_risk_class_for_permission(tool.permission_level),
+                dependency_readiness="ready",
+                output_type="tool",
+                execution_mode="codex_only",
+            )
+        )
+
     def get(self, name: str) -> CapabilitySpec | None:
         return self._capabilities.get(name)
 
@@ -131,3 +193,17 @@ class CapabilityRegistry:
 
     def names(self) -> list[str]:
         return list(self._capabilities.keys())
+
+    def executable_names(self) -> list[str]:
+        return [
+            name
+            for name, spec in self._capabilities.items()
+            if spec.execution_mode == "direct"
+        ]
+
+    def discovery_names(self) -> list[str]:
+        return [
+            name
+            for name, spec in self._capabilities.items()
+            if spec.execution_mode != "direct"
+        ]

@@ -17,14 +17,17 @@ from agent_runtime_framework.assistant import (
     ResumeToken,
     SkillRegistry,
     StaticMCPProvider,
+    create_codex_delegate_capability,
     create_conversation_capability,
     route_default_capability,
 )
+from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext
 from agent_runtime_framework.assistant.approval import InMemoryApprovalStore
 from agent_runtime_framework.assistant.checkpoints import InMemoryCheckpointStore
 from agent_runtime_framework.assistant.conversation import _build_messages
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
+from agent_runtime_framework.core.specs import ToolSpec
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
 
@@ -97,6 +100,73 @@ def test_capability_registry_collects_local_skill_and_mcp_capabilities(tmp_path:
     assert "desktop_content" in registry.names()
     assert "skill:summarizer_skill" in registry.names()
     assert "mcp:external_search" in registry.names()
+
+
+def test_capability_registry_can_register_tool_entries_as_discovery_only(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.application_context.tools.register(
+        ToolSpec(
+            name="read_workspace_text",
+            description="Read workspace text",
+            executor=lambda task, ctx, arguments: {"text": "hello"},
+            input_schema={"path": "string"},
+            permission_level="content_read",
+        )
+    )
+    context.capabilities.register_tool_registry(context.application_context.tools)
+
+    capability = context.capabilities.require("tool:read_workspace_text")
+
+    assert capability.execution_mode == "codex_only"
+    assert capability.output_type == "tool"
+    assert "tool:read_workspace_text" in context.capabilities.discovery_names()
+    assert "tool:read_workspace_text" not in context.capabilities.executable_names()
+
+
+def test_agent_loop_can_delegate_task_execution_to_codex_runner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _assistant_context(workspace)
+    context.capabilities.register(create_codex_delegate_capability())
+    context.services["capability_selector"] = lambda user_input, session, registry, _context: "codex_task"
+
+    codex_context = CodexContext(
+        application_context=context.application_context,
+        services={
+            "action_planner": lambda user_input, session, ctx: [
+                CodexAction(kind="respond", instruction=f"codex handled: {user_input}")
+            ]
+        },
+        session=context.session,
+    )
+    codex_loop = CodexAgentLoop(codex_context)
+
+    def _run_codex(user_input, assistant_context, session):
+        codex_context.session = session
+        result = codex_loop.run(user_input)
+        return {
+            "final_answer": result.final_output,
+            "execution_trace": [
+                {
+                    "name": action.kind,
+                    "status": action.status,
+                    "detail": action.observation or action.instruction,
+                }
+                for action in result.task.actions
+            ],
+        }
+
+    context.services["codex_task_runner"] = _run_codex
+
+    result = AgentLoop(context).run("inspect repo")
+
+    assert result.status == "completed"
+    assert result.capability_name == "codex_task"
+    assert result.final_answer == "codex handled: inspect repo"
+    assert result.execution_trace[-1]["name"] == "respond"
+
 
 
 def test_agent_loop_invokes_desktop_content_capability(tmp_path: Path):

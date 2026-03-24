@@ -1,6 +1,7 @@
 """Single-agent assistant runtime with capability, skill, and MCP slots."""
 
 from agent_runtime_framework.assistant.approval import ApprovalManager, ApprovalRequest, ResumeToken
+from agent_runtime_framework.assistant.bridges import create_codex_delegate_capability
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry, CapabilitySpec
 from agent_runtime_framework.assistant.conversation import create_conversation_capability, route_default_capability
 from agent_runtime_framework.assistant.loop import AgentLoop, AgentLoopResult, AssistantContext
@@ -18,6 +19,7 @@ __all__ = [
     "AssistantTurn",
     "CapabilityRegistry",
     "CapabilitySpec",
+    "create_codex_delegate_capability",
     "create_conversation_capability",
     "ExecutionPlan",
     "MCPClient",
