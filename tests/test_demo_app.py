@@ -306,7 +306,7 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     payload = app.chat("列一下当前工作区都有什么文件")
 
     assert payload["status"] == "error"
-    assert payload["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert payload["error"]["code"] == "PLANNER_RUNTIME_MISSING"
     assert payload["error"]["stage"] == "planner"
 
 
@@ -399,7 +399,7 @@ def test_demo_assistant_app_stream_returns_model_unavailable_without_final_paylo
     events = list(app.stream_chat("列一下当前工作区都有什么文件"))
 
     assert [event["type"] for event in events][-1] == "error"
-    assert events[-1]["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert events[-1]["error"]["code"] == "PLANNER_RUNTIME_MISSING"
 
 
 def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(tmp_path: Path):
@@ -431,6 +431,33 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     assert "codex" in str(payload["execution_trace"][0]["detail"])
     assert payload["execution_trace"][1]["name"] == "call_tool"
     assert payload["execution_trace"][-1]["name"] == "respond"
+
+
+def test_demo_assistant_app_explains_directory_structure_with_specialized_pattern(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    package = workspace / "agent_runtime_framework"
+    assistant = package / "assistant"
+    workspace.mkdir()
+    package.mkdir()
+    assistant.mkdir()
+    (package / "__init__.py").write_text('"""Runtime package entry."""\n', encoding="utf-8")
+    (assistant / "conversation.py").write_text(
+        '"""Conversation routing helpers."""\n\n'
+        "def route_user_message(text: str) -> str:\n"
+        '    return "conversation"\n',
+        encoding="utf-8",
+    )
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("我想知道 agent_runtime_framework 目录下面主要都在讲些什么，各个子文件之间都有什么功能？")
+
+    assert payload["status"] == "completed"
+    assert payload["execution_trace"][0]["name"] == "router"
+    assert payload["execution_trace"][1]["name"] == "call_tool"
+    assert any(step["name"] == "evaluator" for step in payload["execution_trace"])
+    assert "agent_runtime_framework" in payload["final_answer"]
+    assert "assistant/" in payload["final_answer"]
+    assert "__init__.py" in payload["final_answer"]
 
 
 def test_demo_assistant_app_compacts_large_trace_and_plan_details(tmp_path: Path):

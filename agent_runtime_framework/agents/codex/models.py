@@ -13,6 +13,13 @@ class VerificationResult:
 
 
 @dataclass(slots=True)
+class CodexEvaluationDecision:
+    status: str = "abstain"
+    next_action: "CodexAction | None" = None
+    summary: str = ""
+
+
+@dataclass(slots=True)
 class CodexAction:
     kind: str
     instruction: str

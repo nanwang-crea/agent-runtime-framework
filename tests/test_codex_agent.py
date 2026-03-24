@@ -13,6 +13,7 @@ from agent_runtime_framework.agents.codex import (
     CodexTask,
     VerificationResult,
     build_default_codex_tools,
+    evaluate_codex_output,
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.core.errors import AppError
@@ -196,6 +197,112 @@ def test_codex_loop_reads_workspace_file_via_default_tooling(tmp_path: Path):
     assert result.action_kind == "respond"
     assert result.final_output == "hello from codex agent"
     assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
+
+
+def test_codex_output_evaluator_promotes_directory_explanation_into_inspect_then_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    package = workspace / "agent_runtime_framework"
+    assistant = package / "assistant"
+    workspace.mkdir()
+    package.mkdir()
+    assistant.mkdir()
+    (package / "__init__.py").write_text('"""Runtime package entry."""\n', encoding="utf-8")
+    (assistant / "conversation.py").write_text('"""Conversation helpers."""\n', encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "agent_runtime_framework"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("介绍 agent_runtime_framework 目录结构和功能")
+
+    assert result.status == "completed"
+    assert [action.kind for action in result.task.actions] == ["call_tool", "call_tool", "respond"]
+    assert result.task.actions[1].metadata["tool_name"] == "inspect_workspace_path"
+    assert "assistant/" in result.final_output
+    assert "__init__.py" in result.final_output
+
+
+def test_codex_output_evaluator_synthesizes_read_content_for_summary_requests(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta\ngamma\ndelta", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "read_workspace_text", "arguments": {"path": "note.md"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("总结 note.md 主要内容")
+
+    assert result.status == "completed"
+    assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
+    assert "我先基于已读取内容做一个简要说明" in result.final_output
+    assert "- alpha" in result.final_output
+
+
+def test_codex_output_evaluator_prefers_llm_decision_when_available(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta\ngamma\ndelta", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "read_workspace_text", "arguments": {"path": "note.md"}},
+        )
+    ]
+    llm = _SequenceLLM([
+        '{"decision":"continue","kind":"respond","instruction":"这是模型判断后的总结。","direct_output":true}',
+        '{"decision":"finish"}',
+    ])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("总结 note.md 主要内容")
+
+    assert result.status == "completed"
+    assert result.final_output == "这是模型判断后的总结。"
+    assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
+    assert result.task.actions[1].metadata["evaluation_source"] == "model"
+
+
+def test_codex_output_evaluator_marks_fallback_source_when_model_is_unavailable(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta\ngamma\ndelta", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "read_workspace_text", "arguments": {"path": "note.md"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("总结 note.md 主要内容")
+
+    assert result.status == "completed"
+    assert result.task.actions[1].metadata["evaluation_source"] == "fallback"
 
 
 def test_codex_loop_runs_verification_command_and_records_success(tmp_path: Path):

@@ -11,6 +11,7 @@ from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.agents.codex.models import (
     CodexAction,
     CodexActionResult,
+    CodexEvaluationDecision,
     CodexTask,
     VerificationResult,
 )
@@ -192,6 +193,15 @@ class CodexAgentLoop:
         return None
 
     def _plan_next_action(self, task: CodexTask, session: AssistantSession) -> CodexAction | None:
+        evaluator = self.context.services.get("output_evaluator")
+        if callable(evaluator) and any(action.status == "completed" for action in task.actions):
+            decision = self._normalize_evaluation_decision(
+                evaluator(task, session, self.context, list(self.context.application_context.tools.names()))
+            )
+            if decision.status == "finish":
+                return None
+            if decision.next_action is not None:
+                return decision.next_action
         planner = self.context.services.get("next_action_planner")
         if callable(planner):
             planned = planner(task, session, self.context, list(self.context.application_context.tools.names()))
@@ -199,6 +209,23 @@ class CodexAgentLoop:
                 return None
             return self._normalize_action(planned)
         return plan_next_codex_action(task, session, self.context)
+
+    def _normalize_evaluation_decision(self, decision: Any) -> CodexEvaluationDecision:
+        if isinstance(decision, CodexEvaluationDecision):
+            if decision.next_action is not None:
+                decision.next_action = self._normalize_action(decision.next_action)
+            return decision
+        if isinstance(decision, CodexAction):
+            return CodexEvaluationDecision(status="continue", next_action=decision)
+        if isinstance(decision, dict):
+            status = str(decision.get("status") or "abstain")
+            next_action = decision.get("next_action")
+            return CodexEvaluationDecision(
+                status=status,
+                next_action=self._normalize_action(next_action) if next_action is not None else None,
+                summary=str(decision.get("summary") or ""),
+            )
+        return CodexEvaluationDecision()
 
     def _maybe_pause_for_approval(
         self,

@@ -24,6 +24,7 @@ def test_normalize_config_v3_fills_missing_sections():
     assert "openai" in normalized["instances"]
     assert "default" in normalized["routes"]
     assert "router" in normalized["routes"]
+    assert "evaluator" in normalized["routes"]
     assert "planner" in normalized["routes"]
 
 

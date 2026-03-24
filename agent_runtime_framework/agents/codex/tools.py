@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,13 @@ def build_default_codex_tools() -> list[ToolSpec]:
             name="summarize_workspace_text",
             description="Summarize a text file inside the current workspace.",
             executor=_summarize_workspace_text,
+            input_schema={"path": "string"},
+            permission_level="content_read",
+        ),
+        ToolSpec(
+            name="inspect_workspace_path",
+            description="Inspect a workspace directory or file and produce a concise structural explanation.",
+            executor=_inspect_workspace_path,
             input_schema={"path": "string"},
             permission_level="content_read",
         ),
@@ -178,6 +186,36 @@ def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]
     }
 
 
+def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    ref = _resolve_resource_ref(
+        context,
+        str(arguments.get("path") or ""),
+        use_last_focus=bool(arguments.get("use_last_focus")),
+        use_default_directory=not bool(arguments.get("path")),
+    )
+    path = Path(ref.location)
+    if path.is_file():
+        text = _summarize_file(path)
+        _remember_focus(context, ref, text)
+        return {"path": str(path), "text": text}
+    items = context.application_context.resource_repository.list_directory(ref)
+    directories = [item for item in items if item.kind == "directory"]
+    files = [item for item in items if item.kind == "file"]
+    lines = [f"{path.name or str(path)} 下面共有 {len(items)} 个条目。"]
+    if directories:
+        lines.append("子目录：")
+        for item in directories[:8]:
+            lines.append(f"- {item.title}/：模块目录。")
+    if files:
+        lines.append("关键文件：")
+        for item in files[:8]:
+            file_path = Path(item.location)
+            lines.append(f"- {item.title}：{_summarize_file(file_path)}")
+    text = "\n".join(lines)
+    _remember_focus(context, ref, text)
+    return {"path": str(path), "items": [item.title for item in items], "text": text}
+
+
 def _run_shell_command(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     command = str(arguments.get("command") or "").strip()
     if not command:
@@ -200,6 +238,34 @@ def _run_shell_command(task: Any, context: Any, arguments: dict[str, Any]) -> di
         "text": output if output else error,
         "success": completed.returncode == 0,
     }
+
+
+def _summarize_file(path: Path) -> str:
+    if not path.exists():
+        return "文件不存在。"
+    if path.suffix == ".py":
+        return _summarize_python_file(path)
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip().strip("#").strip()
+        if stripped:
+            return stripped[:120]
+    return "文件内容较少。"
+
+
+def _summarize_python_file(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return "Python 模块。"
+    docstring = ast.get_docstring(module)
+    if docstring:
+        return docstring.strip().splitlines()[0][:120]
+    symbols = [node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    if symbols:
+        return f"定义了 {', '.join(symbols[:4])}"
+    return "Python 模块。"
 
 
 def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -10,6 +10,7 @@ from agent_runtime_framework.models import ModelRegistry, ModelRouter
 MODEL_ROLES = (
     "default",
     "router",
+    "evaluator",
     "conversation",
     "capability_selector",
     "planner",
@@ -54,6 +55,7 @@ DEFAULT_V3_CONFIG: dict[str, Any] = {
     "routes": {
         "default": {"instance": "dashscope", "model": "qwen3.5-plus"},
         "router": {"instance": "dashscope", "model": "qwen3.5-plus"},
+        "evaluator": {"instance": "dashscope", "model": "qwen3.5-plus"},
         "conversation": {"instance": "dashscope", "model": "qwen3.5-plus"},
         "capability_selector": {"instance": "dashscope", "model": "qwen3.5-plus"},
         "planner": {"instance": "dashscope", "model": "qwen3.5-plus"},

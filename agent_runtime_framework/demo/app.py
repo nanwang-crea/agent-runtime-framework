@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.agents.codex import CodexAgentLoop, CodexContext, build_default_codex_tools
+from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext, build_default_codex_tools, evaluate_codex_output, plan_next_codex_action
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
@@ -306,9 +307,9 @@ class DemoAssistantApp:
             "execution_trace": self._with_router_trace(
                 [
                     {
-                        "name": action.kind,
+                        "name": "evaluator" if bool(action.metadata.get("from_evaluator")) else action.kind,
                         "status": action.status,
-                        "detail": self._compact_text(action.observation or action.instruction),
+                        "detail": self._compact_text(self._trace_detail_for_action(action)),
                     }
                     for action in result.task.actions
                 ]
@@ -511,6 +512,21 @@ class DemoAssistantApp:
             detail = f"{detail}; source={source}"
         return {"name": "router", "status": "completed", "detail": detail}
 
+    def _trace_detail_for_action(self, action: Any) -> str:
+        base = str(action.observation or action.instruction or "")
+        if not bool(action.metadata.get("from_evaluator")):
+            return base
+        source = str(action.metadata.get("evaluation_source") or "")
+        reason = str(action.metadata.get("evaluator_reason") or "")
+        detail = "decision=continue"
+        if source:
+            detail = f"{detail}; source={source}"
+        if reason:
+            detail = f"{detail}; reason={reason}"
+        if base:
+            detail = f"{detail}; payload={base}"
+        return detail
+
 
 def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, Any] | None = None) -> DemoAssistantApp:
     workspace_path = Path(workspace).expanduser().resolve()
@@ -546,6 +562,8 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         services={},
         session=AssistantSession(session_id=str(uuid4())),
     )
+    context.services["next_action_planner"] = _build_demo_next_action_planner(workspace_path)
+    context.services["output_evaluator"] = evaluate_codex_output
     app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
@@ -563,3 +581,53 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     )
     app.model_center.load()
     return app
+
+
+def _build_demo_next_action_planner(workspace_root: Path):
+    def _planner(task: Any, session: AssistantSession, context: CodexContext, tool_names: list[str]):
+        completed = [action for action in task.actions if action.status == "completed"]
+        if completed:
+            last_action = completed[-1]
+            if last_action.kind == "respond":
+                return None
+            if last_action.observation:
+                return CodexAction(
+                    kind="respond",
+                    instruction=last_action.observation,
+                    metadata={"direct_output": True},
+                )
+            return None
+        inspect_path = _match_codebase_explanation_target(task.goal, workspace_root)
+        if inspect_path and "inspect_workspace_path" in tool_names:
+            return CodexAction(
+                kind="call_tool",
+                instruction=task.goal,
+                metadata={
+                    "tool_name": "inspect_workspace_path",
+                    "arguments": {"path": inspect_path},
+                },
+            )
+        return plan_next_codex_action(task, session, context)
+
+    return _planner
+
+
+def _match_codebase_explanation_target(user_input: str, workspace_root: Path) -> str | None:
+    text = user_input.strip()
+    if not text:
+        return None
+    explanation_markers = ("主要", "功能", "讲些什么", "做什么", "结构", "介绍", "解释", "子文件", "模块")
+    if "目录" not in text and "文件夹" not in text:
+        return None
+    if not any(marker in text for marker in explanation_markers):
+        return None
+    candidates = re.findall(r"[A-Za-z0-9_./-]+", text)
+    for candidate in candidates:
+        if candidate in {".", ".."}:
+            continue
+        target = (workspace_root / candidate).resolve()
+        if target.exists() and workspace_root in target.parents and target.is_dir():
+            return candidate
+    if "当前工作区" in text:
+        return ""
+    return None
