@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_runtime_framework.resources import (
     LocalFileResourceRepository,
+    LocalResourceResolver,
     ResolveRequest,
     ResourceRef,
     ResolverPipeline,
@@ -104,3 +105,64 @@ def test_repository_find_by_name_prefers_non_hidden_and_direct_children(tmp_path
     assert result[0] == ResourceRef.for_path(direct)
     assert result[1] == ResourceRef.for_path(nested / "notes.md")
     assert result[-1] == ResourceRef.for_path(hidden / "notes.md")
+
+
+def test_resource_semantics_describes_directory_and_file_targets(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs_dir = workspace / "docs"
+    docs_dir.mkdir()
+    note = workspace / "note.md"
+    note.write_text("hello", encoding="utf-8")
+    repository = LocalFileResourceRepository([workspace])
+    pipeline = ResolverPipeline.default()
+    default_directory = ResourceRef.for_path(workspace)
+
+    directory_result = pipeline.resolve_with_semantics(
+        ResolveRequest(user_input="列出 docs", default_directory=default_directory),
+        repository,
+    )
+    file_result = pipeline.resolve_with_semantics(
+        ResolveRequest(user_input="读取 note.md", default_directory=default_directory),
+        repository,
+    )
+
+    assert directory_result[0].ref == ResourceRef.for_path(docs_dir)
+    assert directory_result[0].resource_kind == "directory"
+    assert directory_result[0].is_container is True
+    assert directory_result[0].allowed_actions == ["list", "inspect"]
+
+    assert file_result[0].ref == ResourceRef.for_path(note)
+    assert file_result[0].resource_kind == "file"
+    assert file_result[0].is_container is False
+    assert file_result[0].allowed_actions == ["read", "summarize", "inspect"]
+
+
+def test_local_resource_resolver_reports_ambiguity_for_multiple_matches(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    repository = LocalFileResourceRepository([workspace])
+    resolver = LocalResourceResolver()
+
+    state = resolver.resolve_state(
+        ResolveRequest(
+            user_input="查看 service",
+            default_directory=ResourceRef.for_path(workspace),
+            target_hint="service",
+        ),
+        repository,
+    )
+
+    assert state.status == "ambiguous"
+    assert sorted(item.ref.location for item in state.candidates) == sorted(
+        [
+            str(src / "service.py"),
+            str(docs / "service.md"),
+        ]
+    )

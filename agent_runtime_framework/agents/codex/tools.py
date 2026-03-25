@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
-from agent_runtime_framework.resources import ResourceRef
+from agent_runtime_framework.memory import MemoryRecord
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.resources import ResolveHint, ResolveRequest, ResourceRef, describe_resource_semantics
 from agent_runtime_framework.sandbox import run_sandboxed_command
 
 
@@ -49,6 +52,15 @@ def _build_agent_output(
 
 def build_default_codex_tools() -> list[ToolSpec]:
     return [
+        ToolSpec(
+            name="resolve_workspace_target",
+            description="Resolve a natural-language workspace target into the best matching path and candidate list.",
+            executor=_resolve_workspace_target,
+            input_schema={"query": "string", "target_hint": "string"},
+            permission_level="metadata_read",
+            prompt_snippet="Resolve a fuzzy workspace target before exploring files or directories.",
+            prompt_guidelines=["Use resolve_workspace_target first when the user mentions a folder/file informally or ambiguously."],
+        ),
         ToolSpec(
             name="list_workspace_directory",
             description="List a directory inside the current workspace.",
@@ -194,6 +206,129 @@ def _resolve_resource_ref(
 
 def _remember_focus(context: Any, ref: ResourceRef, summary: str) -> None:
     context.application_context.session_memory.remember_focus([ref], summary=summary)
+    index_memory = getattr(context.application_context, "index_memory", None)
+    remember = getattr(index_memory, "remember", None)
+    if not callable(remember):
+        return
+    path = _relative_workspace_path(context, ref.location)
+    remember(
+        MemoryRecord(
+            key=f"focus:{path}",
+            text=f"{path} {summary}".strip(),
+            kind="workspace_focus",
+            metadata={"path": path, "summary": summary},
+        )
+    )
+
+
+def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    query = str(arguments.get("query") or "").strip()
+    target_hint = str(arguments.get("target_hint") or "").strip()
+    root = _workspace_root(context)
+    candidates = _workspace_candidates(root)
+    best_match = _resolve_target_with_model(query, target_hint, candidates, context)
+    if best_match:
+        resolved = root if best_match in {"", "."} else (root / best_match).resolve()
+        ref = ResourceRef.for_path(resolved)
+        semantics = describe_resource_semantics(ref, context.application_context.resource_repository)
+        summary = f"Resolved target: {best_match or '.'}"
+        _remember_focus(context, ref, summary)
+        return {
+            **_build_agent_output(
+                path=str(resolved),
+                text=summary,
+                summary=summary,
+                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                items=candidates[:12],
+            ),
+            "resolved_path": str(resolved),
+            "resource_kind": semantics.resource_kind,
+            "is_container": semantics.is_container,
+            "allowed_actions": list(semantics.allowed_actions),
+            "best_match": best_match or ".",
+            "candidates": candidates[:20],
+            "resolution_status": "resolved",
+            "resolution_source": "model",
+        }
+    state = _resolve_target_state(query, target_hint, context)
+    if state is None:
+        best_match = _resolve_target_fallback(query, target_hint, candidates)
+        resolved = root if best_match in {"", "."} else (root / best_match).resolve()
+        ref = ResourceRef.for_path(resolved)
+        semantics = describe_resource_semantics(ref, context.application_context.resource_repository)
+        summary = f"Resolved target: {best_match or '.'}"
+        _remember_focus(context, ref, summary)
+        return {
+            **_build_agent_output(
+                path=str(resolved),
+                text=summary,
+                summary=summary,
+                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                items=candidates[:12],
+            ),
+            "resolved_path": str(resolved),
+            "resource_kind": semantics.resource_kind,
+            "is_container": semantics.is_container,
+            "allowed_actions": list(semantics.allowed_actions),
+            "best_match": best_match or ".",
+            "candidates": candidates[:20],
+            "resolution_status": "resolved",
+            "resolution_source": "fallback",
+        }
+    if state.status == "resolved" and state.selected is not None:
+        relative_path = _relative_workspace_path(context, state.selected.ref.location)
+        resolved = root if relative_path == "." else (root / relative_path).resolve()
+        summary = f"Resolved target: {relative_path or '.'}"
+        _remember_focus(context, state.selected.ref, summary)
+        return {
+            **_build_agent_output(
+                path=str(resolved),
+                text=summary,
+                summary=summary,
+                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                items=candidates[:12],
+            ),
+            "resolved_path": str(resolved),
+            "resource_kind": state.selected.resource_kind,
+            "is_container": state.selected.is_container,
+            "allowed_actions": list(state.selected.allowed_actions),
+            "best_match": relative_path or ".",
+            "candidates": candidates[:20],
+            "resolution_status": "resolved",
+            "resolution_source": state.source,
+        }
+    if state.status == "ambiguous":
+        candidate_paths = [_relative_workspace_path(context, item.ref.location) for item in state.candidates]
+        text = "找到多个可能目标，请明确指定其中一个：\n" + "\n".join(f"- {item}" for item in candidate_paths[:6])
+        return {
+            **_build_agent_output(
+                path="",
+                text=text,
+                summary="找到多个可能目标。",
+                next_hint="请直接指定其中一个候选路径或名称。",
+                items=candidate_paths[:12],
+            ),
+            "resolved_path": "",
+            "best_match": "",
+            "candidates": candidate_paths[:20],
+            "resolution_status": "ambiguous",
+            "resolution_source": state.source,
+        }
+    text = "没有找到明确目标。请补充更具体的路径、文件名或模块名。"
+    return {
+        **_build_agent_output(
+            path="",
+            text=text,
+            summary="没有找到明确目标。",
+            next_hint="可以补充路径，或从当前目录下给出更具体的名称。",
+            items=candidates[:12],
+        ),
+        "resolved_path": "",
+        "best_match": "",
+        "candidates": candidates[:20],
+        "resolution_status": "unresolved",
+        "resolution_source": state.source or "fallback",
+    }
 
 
 def _list_workspace_directory(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -220,6 +355,133 @@ def _list_workspace_directory(task: Any, context: Any, arguments: dict[str, Any]
         next_hint="如果需要理解目录职责，下一步调用 inspect_workspace_path。",
         items=[item.title for item in items],
     )
+
+
+def _workspace_candidates(root: Path) -> list[str]:
+    candidates = ["."]
+    for path in sorted(root.rglob("*")):
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        candidates.append(relative)
+    return candidates[:400]
+
+
+def _relative_workspace_path(context: Any, path: str) -> str:
+    root = _workspace_root(context)
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        resolved = candidate.resolve()
+    except FileNotFoundError:
+        resolved = candidate.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(root).as_posix()
+    except ValueError:
+        return path.strip()
+    return relative or "."
+
+
+def _resolve_target_with_model(query: str, target_hint: str, candidates: list[str], context: Any) -> str:
+    runtime = resolve_model_runtime(context.application_context, "planner")
+    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+    if llm_client is None or not model_name:
+        return ""
+    try:
+        response = chat_once(
+            llm_client,
+            ChatRequest(
+                model=model_name,
+                messages=[
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "你是 workspace target resolver。"
+                            "只输出 JSON，格式为 {\"best_match\":\"...\",\"candidates\":[...]}。"
+                            "best_match 必须从候选列表中选择，若当前目录最合适则返回 ."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"用户问题：{query}\n"
+                            f"目标提示：{target_hint}\n"
+                            f"候选路径：{json.dumps(candidates[:80], ensure_ascii=False)}"
+                        ),
+                    ),
+                ],
+                temperature=0.0,
+                max_tokens=180,
+            ),
+        )
+    except Exception:
+        return ""
+    try:
+        parsed = json.loads(str(response.content or "").strip())
+    except Exception:
+        return ""
+    best_match = str(parsed.get("best_match") or "").strip()
+    return best_match if best_match in set(candidates) else ""
+
+
+def _resolve_target_state(query: str, target_hint: str, context: Any):
+    resolver = getattr(context.application_context, "resource_resolver", None)
+    if resolver is None or not hasattr(resolver, "resolve_state"):
+        return None
+    repository = context.application_context.resource_repository
+    default_directory = ResourceRef.for_path(_workspace_root(context))
+    snapshot = context.application_context.session_memory.snapshot()
+    request = ResolveRequest(
+        user_input=query,
+        target_hint=target_hint,
+        default_directory=default_directory,
+        last_focused=list(snapshot.focused_resources),
+        memory_hints=_memory_hints_for_query(query, target_hint, context),
+    )
+    return resolver.resolve_state(request, repository)
+
+
+def _memory_hints_for_query(query: str, target_hint: str, context: Any) -> list[ResolveHint]:
+    index_memory = getattr(context.application_context, "index_memory", None)
+    search = getattr(index_memory, "search", None)
+    if not callable(search):
+        return []
+    memory_query = " ".join(part for part in (target_hint, query) if part).strip()
+    if not memory_query:
+        return []
+    hints: list[ResolveHint] = []
+    seen: set[str] = set()
+    for kind in ("workspace_focus", "task_conclusion", "workspace_fact"):
+        for record in search(memory_query, limit=5, kind=kind):
+            path = str(record.metadata.get("path") or "").strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            hints.append(ResolveHint(path=path, source=kind, summary=str(record.metadata.get("summary") or "")))
+    return hints
+
+
+def _resolve_target_fallback(query: str, target_hint: str, candidates: list[str]) -> str:
+    lowered_query = query.lower()
+    lowered_hint = target_hint.lower()
+    if any(marker in lowered_query for marker in ("当前目录", "根目录", "workspace")):
+        return "."
+    for candidate in candidates:
+        base = Path(candidate).name.lower()
+        if lowered_hint and lowered_hint in base:
+            return candidate
+        if lowered_hint and lowered_hint == candidate.lower():
+            return candidate
+    for candidate in candidates:
+        base = Path(candidate).name.lower()
+        if base and base in lowered_query:
+            return candidate
+    return "."
 
 
 def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:

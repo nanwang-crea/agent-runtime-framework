@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import stream_conversation_reply
 from agent_runtime_framework.assistant.approval import ApprovalRequest, ResumeToken
 from agent_runtime_framework.assistant.session import AssistantSession
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.agents.codex.models import (
     CodexAction,
     CodexActionResult,
@@ -17,8 +19,21 @@ from agent_runtime_framework.agents.codex.models import (
 )
 from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
+from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
+from agent_runtime_framework.agents.codex.task_plans import (
+    advance_task_plan,
+    attach_action_to_plan,
+    build_task_plan,
+    has_pending_plan_task,
+    plan_next_task_action,
+    sync_task_plan,
+)
+from agent_runtime_framework.memory import MemoryRecord
+from agent_runtime_framework.resources import ResourceRef, describe_resource_semantics
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
+
+_PENDING_CLARIFICATION_KEY = "codex:pending_clarification"
 
 
 @dataclass(slots=True)
@@ -47,10 +62,21 @@ class _PendingCodexApproval:
     request: ApprovalRequest
 
 
+def _merge_clarification_goal(goal: str, clarification: str) -> str:
+    base = goal.strip()
+    detail = clarification.strip()
+    if not base:
+        return detail
+    if not detail:
+        return base
+    return f"{base}\n用户澄清目标：{detail}"
+
+
 class CodexAgentLoop:
     def __init__(self, context: CodexContext) -> None:
         self.context = context
         self._pending_approvals: dict[str, _PendingCodexApproval] = {}
+        self._pending_clarifications: dict[str, CodexTask] = {}
 
     def run(self, user_input: str) -> CodexAgentLoopResult:
         session = self._require_session()
@@ -58,9 +84,15 @@ class CodexAgentLoop:
         task = self._build_task(user_input, session)
         self._runtime().on_task_started(task)
         result = self._execute_task(task, session, start_index=0)
-        if result.status == "completed":
+        if result.status in {"completed", "needs_clarification"}:
             session.add_turn("assistant", result.final_output)
         return result
+
+    def has_pending_clarification(self, session: AssistantSession | None = None) -> bool:
+        active_session = session or self.context.session
+        if active_session is not None and active_session.session_id in self._pending_clarifications:
+            return True
+        return self._pending_clarification_payload() is not None
 
     def resume(self, token: ResumeToken, *, approved: bool) -> CodexAgentLoopResult:
         pending = self._pending_approvals.pop(token.token_id, None)
@@ -95,10 +127,21 @@ class CodexAgentLoop:
         return runtime
 
     def _build_task(self, user_input: str, session: AssistantSession) -> CodexTask:
+        pending = self._pending_clarifications.pop(session.session_id, None)
+        if pending is None:
+            pending = self._restore_persisted_pending_clarification()
+        if pending is not None:
+            self._clear_persisted_pending_clarification()
+            task = CodexTask(goal=_merge_clarification_goal(pending.goal, user_input), actions=[], task_profile=pending.task_profile)
+            task.memory = pending.memory
+            task.plan = build_task_plan(task, self.context)
+            return task
+        task_profile = classify_task_profile(user_input, self.context)
         planner = self.context.services.get("action_planner")
         if callable(planner):
             planned = planner(user_input, session, self.context)
             if isinstance(planned, CodexTask):
+                planned.task_profile = task_profile
                 for action in planned.actions:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
@@ -110,8 +153,10 @@ class CodexAgentLoop:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
                         action.metadata["direct_output"] = True
-                return CodexTask(goal=user_input, actions=actions)
-        return CodexTask(goal=user_input, actions=[])
+                return CodexTask(goal=user_input, actions=actions, task_profile=task_profile)
+        task = CodexTask(goal=user_input, actions=[], task_profile=task_profile)
+        task.plan = build_task_plan(task, self.context)
+        return task
 
     def _normalize_action(self, action: Any) -> CodexAction:
         if isinstance(action, CodexAction):
@@ -161,6 +206,7 @@ class CodexAgentLoop:
                     break
                 task.actions.append(planned)
                 next_index = len(task.actions) - 1
+                attach_action_to_plan(task, planned, next_index)
             action = task.actions[next_index]
             approval = self._maybe_pause_for_approval(task, next_index, action, session)
             if approval is not None:
@@ -173,7 +219,16 @@ class CodexAgentLoop:
                     resume_token=approval[1],
                     run_id=run_id,
                 )
-            result = self._execute_action(action, session)
+            try:
+                result = self._execute_action(action, session)
+            except AppError as exc:
+                if self._maybe_retry_action_after_exception(action, exc):
+                    continue
+                if not exc.retriable:
+                    raise
+                result = self._result_from_app_error(exc)
+            if self._maybe_retry_action_after_result(action, result):
+                continue
             if result.artifacts:
                 task.artifact_ids.extend(self._persist_artifacts(task, action, result.artifacts, run_id))
             if result.artifact_ids:
@@ -195,6 +250,8 @@ class CodexAgentLoop:
             action.observation = result.final_output
             action.metadata["result"] = dict(result.metadata)
             update_task_memory(task, action, result)
+            advance_task_plan(task, action, result, self.context)
+            sync_task_plan(task)
             verification_payload = dict(result.metadata.get("verification") or {})
             if verification_payload:
                 action.metadata["verification_result"] = VerificationResult(
@@ -206,7 +263,21 @@ class CodexAgentLoop:
             last_kind = action.kind
             session.focused_capability = action.kind
             self._runtime().record_action(task, action)
+            if bool(action.metadata.get("clarification_required")):
+                task.status = "needs_clarification"
+                self._pending_clarifications[session.session_id] = task
+                self._store_persisted_pending_clarification(task, result.final_output)
+                return CodexAgentLoopResult(
+                    status="needs_clarification",
+                    final_output=result.final_output,
+                    task=task,
+                    action_kind="clarify_target",
+                    run_id=run_id,
+                )
             if result.status != "completed":
+                if has_pending_plan_task(task):
+                    action_index = next_index + 1
+                    continue
                 task.status = result.status
                 return CodexAgentLoopResult(
                     status=result.status,
@@ -217,8 +288,10 @@ class CodexAgentLoop:
                 )
             action_index = next_index + 1
         task.status = "completed"
+        self._clear_persisted_pending_clarification()
         task.summary = self._runtime().build_task_summary(task)
         task.verification = self._build_verification(task, final_output)
+        self._remember_completed_task(task, final_output)
         return CodexAgentLoopResult(
             status="completed",
             final_output=final_output,
@@ -227,6 +300,54 @@ class CodexAgentLoop:
             run_id=run_id,
         )
 
+    def _pending_clarification_payload(self) -> dict[str, Any] | None:
+        index_memory = getattr(self.context.application_context, "index_memory", None)
+        get = getattr(index_memory, "get", None)
+        if not callable(get):
+            return None
+        payload = get(_PENDING_CLARIFICATION_KEY)
+        return dict(payload) if isinstance(payload, dict) else None
+
+    def _restore_persisted_pending_clarification(self) -> CodexTask | None:
+        payload = self._pending_clarification_payload()
+        if payload is None:
+            return None
+        goal = str(payload.get("goal") or "").strip()
+        if not goal:
+            return None
+        task = CodexTask(
+            goal=goal,
+            actions=[],
+            task_profile=str(payload.get("task_profile") or "chat").strip() or "chat",
+        )
+        memory_payload = dict(payload.get("memory") or {})
+        for field_name, value in memory_payload.items():
+            if hasattr(task.memory, field_name) and isinstance(value, list):
+                setattr(task.memory, field_name, [item for item in value if isinstance(item, (str, dict))])
+        task.plan = build_task_plan(task, self.context)
+        return task
+
+    def _store_persisted_pending_clarification(self, task: CodexTask, message: str) -> None:
+        index_memory = getattr(self.context.application_context, "index_memory", None)
+        put = getattr(index_memory, "put", None)
+        if not callable(put):
+            return
+        put(
+            _PENDING_CLARIFICATION_KEY,
+            {
+                "goal": task.goal,
+                "task_profile": task.task_profile,
+                "message": message,
+                "memory": asdict(task.memory),
+            },
+        )
+
+    def _clear_persisted_pending_clarification(self) -> None:
+        index_memory = getattr(self.context.application_context, "index_memory", None)
+        put = getattr(index_memory, "put", None)
+        if callable(put):
+            put(_PENDING_CLARIFICATION_KEY, None)
+
     def _next_action_index(self, task: CodexTask, *, start_index: int) -> int | None:
         for index in range(max(0, start_index), len(task.actions)):
             if task.actions[index].status == "pending":
@@ -234,6 +355,9 @@ class CodexAgentLoop:
         return None
 
     def _plan_next_action(self, task: CodexTask, session: AssistantSession) -> CodexAction | None:
+        planned_from_task_plan = plan_next_task_action(task)
+        if planned_from_task_plan is not None:
+            return planned_from_task_plan
         evaluator = self.context.services.get("output_evaluator")
         if callable(evaluator) and any(action.status == "completed" for action in task.actions):
             decision = self._normalize_evaluation_decision(
@@ -267,6 +391,55 @@ class CodexAgentLoop:
                 summary=str(decision.get("summary") or ""),
             )
         return CodexEvaluationDecision()
+
+    def _retry_limit_for_action(self, action: CodexAction) -> int:
+        configured = action.metadata.get("retry_limit")
+        if configured is None:
+            configured = self.context.application_context.config.get("codex_retry_limit", 1)
+        try:
+            return max(0, int(configured))
+        except (TypeError, ValueError):
+            return 1
+
+    def _action_allows_safe_retry(self, action: CodexAction) -> bool:
+        if bool(action.metadata.get("allow_retry")):
+            return True
+        if action.risk_class in {"high", "destructive"}:
+            return False
+        if action.kind in {"respond", "apply_patch", "create_path", "edit_text", "move_path", "delete_path"}:
+            return False
+        return action.subgoal in {"gather_evidence", "verify_changes"} or action.kind in {"call_tool", "run_verification", "locate_target"}
+
+    def _record_retry_attempt(self, action: CodexAction, *, code: str = "", reason: str = "") -> bool:
+        if not self._action_allows_safe_retry(action):
+            return False
+        retry_count = int(action.metadata.get("_retry_count") or 0)
+        retry_limit = self._retry_limit_for_action(action)
+        if retry_count >= retry_limit:
+            return False
+        action.metadata["_retry_count"] = retry_count + 1
+        if code:
+            action.metadata["_last_retry_code"] = code
+        if reason:
+            action.metadata["_last_retry_reason"] = reason
+        return True
+
+    def _maybe_retry_action_after_exception(self, action: CodexAction, exc: AppError) -> bool:
+        if not exc.retriable:
+            return False
+        return self._record_retry_attempt(action, code=exc.code, reason=exc.message)
+
+    def _maybe_retry_action_after_result(self, action: CodexAction, result: CodexActionResult) -> bool:
+        if result.status != "failed":
+            return False
+        error_payload = dict(result.metadata.get("error") or {})
+        if not bool(error_payload.get("retriable")):
+            return False
+        return self._record_retry_attempt(
+            action,
+            code=str(error_payload.get("code") or ""),
+            reason=str(result.final_output or error_payload.get("message") or ""),
+        )
 
     def _maybe_pause_for_approval(
         self,
@@ -334,6 +507,8 @@ class CodexAgentLoop:
         if callable(executor):
             result = executor(action, session, self.context)
             return self._normalize_result(result)
+        if action.kind == "locate_target":
+            return self._execute_locate_target_action(action)
         if action.kind == "call_tool":
             return self._execute_tool_action(action)
         if action.kind == "apply_patch":
@@ -363,19 +538,70 @@ class CodexAgentLoop:
             final_output=f"unsupported action kind: {action.kind}",
         )
 
+    def _execute_locate_target_action(self, action: CodexAction) -> CodexActionResult:
+        target_hint = str(action.metadata.get("target_hint") or "").strip()
+        root = Path(self.context.application_context.config.get("default_directory") or "").expanduser().resolve()
+        if not root.exists():
+            raise FileNotFoundError(root)
+        resolved = root
+        if target_hint:
+            candidate = Path(target_hint).expanduser()
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            resolved = candidate.resolve(strict=False)
+            if not resolved.exists():
+                repository = self.context.application_context.resource_repository
+                matches = repository.find_by_name(ResourceRef.for_path(root), target_hint)
+                if matches:
+                    resolved = Path(matches[0].location).expanduser().resolve()
+        if not (resolved == root or root in resolved.parents):
+            raise ValueError(f"path is outside allowed roots: {resolved}")
+        label = str(resolved.relative_to(root)) if resolved != root else root.name
+        summary = f"Located target: {label}"
+        semantics = describe_resource_semantics(
+            ResourceRef.for_path(resolved),
+            self.context.application_context.resource_repository,
+        )
+        return CodexActionResult(
+            status="completed",
+            final_output=summary,
+            metadata={
+                "tool_output": {
+                    "path": str(resolved),
+                    "resolved_path": str(resolved),
+                    "summary": summary,
+                    "text": summary,
+                    "is_directory": resolved.is_dir(),
+                    "resource_kind": semantics.resource_kind,
+                    "is_container": semantics.is_container,
+                    "allowed_actions": list(semantics.allowed_actions),
+                }
+            },
+        )
+
     def _execute_tool_action(self, action: CodexAction) -> CodexActionResult:
         tool_name = str(action.metadata.get("tool_name") or "").strip()
         arguments = dict(action.metadata.get("arguments") or {})
         if not tool_name:
             return CodexActionResult(status="failed", final_output="missing tool_name")
         tool = self.context.application_context.tools.require(tool_name)
-        result = execute_tool_call(
-            tool,
-            ToolCall(tool_name=tool_name, arguments=arguments),
-            task=action,
-            context=self.context,
-        )
+        try:
+            result = execute_tool_call(
+                tool,
+                ToolCall(tool_name=tool_name, arguments=arguments),
+                task=action,
+                context=self.context,
+            )
+        except IsADirectoryError:
+            recovered = self._recover_directory_tool_action(action, tool_name, arguments)
+            if recovered is not None:
+                return recovered
+            raise
         if not result.success:
+            if isinstance(result.exception, IsADirectoryError):
+                recovered = self._recover_directory_tool_action(action, tool_name, arguments)
+                if recovered is not None:
+                    return recovered
             if result.exception is not None:
                 raise result.exception
             return CodexActionResult(status="failed", final_output=str(result.error or "tool execution failed"))
@@ -399,6 +625,47 @@ class CodexAgentLoop:
                 metadata={"tool_output": output},
             )
         return CodexActionResult(status="completed", final_output=str(output or ""))
+
+    def _recover_directory_tool_action(
+        self,
+        action: CodexAction,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> CodexActionResult | None:
+        if tool_name not in {"read_workspace_text", "summarize_workspace_text"}:
+            return None
+        recovery_tool_name = "inspect_workspace_path" if "inspect_workspace_path" in self.context.application_context.tools.names() else ""
+        if not recovery_tool_name and "list_workspace_directory" in self.context.application_context.tools.names():
+            recovery_tool_name = "list_workspace_directory"
+        if not recovery_tool_name:
+            return None
+
+        recovery_arguments = {
+            "path": str(arguments.get("path") or ""),
+            "use_last_focus": bool(arguments.get("use_last_focus")),
+            "use_default_directory": bool(arguments.get("use_default_directory")),
+        }
+        recovery_tool = self.context.application_context.tools.require(recovery_tool_name)
+        result = execute_tool_call(
+            recovery_tool,
+            ToolCall(tool_name=recovery_tool_name, arguments=recovery_arguments),
+            task=action,
+            context=self.context,
+        )
+        if not result.success:
+            if result.exception is not None:
+                raise result.exception
+            return CodexActionResult(status="failed", final_output=str(result.error or "tool execution failed"))
+
+        action.metadata["requested_tool_name"] = tool_name
+        action.metadata["tool_name"] = recovery_tool_name
+        action.metadata["recovered_from_directory"] = True
+        action.metadata["directory_recovery_source"] = tool_name
+
+        output = dict(result.output or {})
+        final_output = str(output.get("text") or output.get("content") or output.get("stdout") or output)
+        metadata = {"tool_output": output, "directory_recovery": {"from_tool": tool_name, "to_tool": recovery_tool_name}}
+        return CodexActionResult(status="completed", final_output=final_output, metadata=metadata)
 
     def _execute_verification_action(self, action: CodexAction) -> CodexActionResult:
         command = str(action.metadata.get("command") or action.instruction or "").strip()
@@ -443,6 +710,14 @@ class CodexAgentLoop:
                 metadata=dict(result.get("metadata") or {}),
             )
         return CodexActionResult(status="completed", final_output=str(result or ""))
+
+    def _result_from_app_error(self, error: AppError) -> CodexActionResult:
+        payload = error.as_dict()
+        return CodexActionResult(
+            status="failed",
+            final_output=str(error.message or error.code or "action failed"),
+            metadata={"error": payload},
+        )
 
     def _persist_artifacts(
         self,
@@ -491,3 +766,89 @@ class CodexAgentLoop:
         if last_verification is not None:
             return last_verification
         return VerificationResult(success=True, summary="Task completed.", evidence=[final_output] if final_output else [])
+
+    def _remember_completed_task(self, task: CodexTask, final_output: str) -> None:
+        index_memory = getattr(self.context.application_context, "index_memory", None)
+        remember = getattr(index_memory, "remember", None)
+        if not callable(remember):
+            return
+        target_path = self._completed_task_target_path(task)
+        relative_path = self._relative_workspace_path(target_path) if target_path else ""
+        final_summary = final_output.strip()
+        if final_summary:
+            remember(
+                MemoryRecord(
+                    key=f"task:{task.task_id}:conclusion",
+                    text=f"{task.goal} {final_summary}".strip(),
+                    kind="task_conclusion",
+                    metadata={
+                        "path": relative_path,
+                        "task_profile": task.task_profile,
+                        "goal": task.goal,
+                    },
+                )
+            )
+        for index, fact in enumerate(task.memory.known_facts[:5]):
+            remember(
+                MemoryRecord(
+                    key=f"task:{task.task_id}:fact:{index}",
+                    text=f"{task.goal} {fact}".strip(),
+                    kind="workspace_fact",
+                    metadata={"path": relative_path, "task_profile": task.task_profile},
+                )
+            )
+        for index, claim in enumerate(task.memory.typed_claims[:5]):
+            detail = " ".join(
+                str(claim.get(field) or "").strip()
+                for field in ("subject", "detail", "kind")
+                if str(claim.get(field) or "").strip()
+            )
+            if not detail:
+                continue
+            remember(
+                MemoryRecord(
+                    key=f"task:{task.task_id}:typed:{index}",
+                    text=f"{task.goal} {detail}".strip(),
+                    kind="workspace_fact",
+                    metadata={
+                        "path": relative_path,
+                        "task_profile": task.task_profile,
+                        "claim_kind": str(claim.get("kind") or ""),
+                    },
+                )
+            )
+
+    def _completed_task_target_path(self, task: CodexTask) -> str:
+        plan = task.plan
+        if plan is not None:
+            if plan.target_semantics is not None and plan.target_semantics.path:
+                return str(plan.target_semantics.path)
+            resolved_path = str(plan.metadata.get("resolved_path") or "").strip()
+            if resolved_path:
+                return resolved_path
+        if task.memory.read_paths:
+            return str(task.memory.read_paths[-1])
+        snapshot = self.context.application_context.session_memory.snapshot()
+        if snapshot.focused_resources:
+            return str(snapshot.focused_resources[0].location)
+        return ""
+
+    def _relative_workspace_path(self, path: str) -> str:
+        if not path:
+            return ""
+        roots = getattr(self.context.application_context.resource_repository, "allowed_roots", [])
+        if not roots:
+            return path.strip()
+        root = Path(roots[0]).expanduser().resolve()
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            resolved = candidate.resolve(strict=False)
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError:
+            return path.strip()
+        return relative or "."

@@ -56,11 +56,16 @@ _WORKSPACE_NOUN_MARKERS = (
     "目录",
     "文件夹",
     "路径",
+    "模块",
+    "代码库",
+    "仓库",
     "workspace",
     "file",
     "directory",
     "folder",
     "path",
+    "package",
+    "repo",
 )
 
 _RESOURCE_PATTERN = re.compile(r"(^|[\s\"'])[\w./-]+\.[A-Za-z0-9]{1,8}($|[\s\"'])")

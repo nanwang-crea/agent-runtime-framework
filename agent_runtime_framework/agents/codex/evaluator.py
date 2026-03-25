@@ -132,7 +132,16 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
         return CodexEvaluationDecision()
     tool_name = str(last_action.metadata.get("tool_name") or "").strip()
     arguments = dict(last_action.metadata.get("arguments") or {})
-    if tool_name == "list_workspace_directory" and "inspect_workspace_path" in tool_names:
+    target_semantics = _extract_target_semantics(task, last_action)
+    if (
+        task.task_profile == "repository_explainer"
+        and target_semantics is not None
+        and target_semantics.get("resource_kind") == "directory"
+        and "inspect_workspace_path" in tool_names
+        and tool_name != "inspect_workspace_path"
+        and not _has_repository_structure_evidence(task)
+    ):
+        inspect_path = str(arguments.get("path") or target_semantics.get("path") or "").strip()
         return CodexEvaluationDecision(
             status="continue",
             next_action=CodexAction(
@@ -142,14 +151,14 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 metadata={
                     "tool_name": "inspect_workspace_path",
                     "arguments": {
-                        "path": str(arguments.get("path") or ""),
+                        "path": inspect_path,
                         "use_last_focus": True,
                     },
                     "from_evaluator": True,
-                    "evaluator_reason": "directory_listing_needs_explanation",
+                    "evaluator_reason": "directory_evidence_insufficient",
                 },
             ),
-            summary="directory listing needs deeper inspection",
+            summary="directory evidence needs deeper inspection",
         )
     if tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path"}:
         synthesized = _synthesize_knowledge_answer(task, completed)
@@ -297,3 +306,36 @@ def _extract_json_block(text: str) -> str:
             stripped = stripped[4:]
         stripped = stripped.rsplit("```", 1)[0]
     return stripped.strip()
+
+
+def _extract_target_semantics(task: CodexTask, action: CodexAction) -> dict[str, Any] | None:
+    plan = getattr(task, "plan", None)
+    plan_semantics = getattr(plan, "target_semantics", None)
+    if plan_semantics is not None and getattr(plan_semantics, "resource_kind", ""):
+        return {
+            "path": str(getattr(plan_semantics, "path", "") or ""),
+            "resource_kind": str(getattr(plan_semantics, "resource_kind", "") or ""),
+            "is_container": bool(getattr(plan_semantics, "is_container", False)),
+            "allowed_actions": list(getattr(plan_semantics, "allowed_actions", []) or []),
+        }
+    result_payload = dict(action.metadata.get("result") or {})
+    tool_output = dict(result_payload.get("tool_output") or {})
+    tool_name = str(action.metadata.get("tool_name") or "").strip()
+    path = str(tool_output.get("resolved_path") or tool_output.get("path") or action.metadata.get("arguments", {}).get("path") or "")
+    resource_kind = str(tool_output.get("resource_kind") or "").strip()
+    if not resource_kind and tool_name == "list_workspace_directory":
+        resource_kind = "directory"
+    if not resource_kind and tool_name in {"read_workspace_text", "summarize_workspace_text"}:
+        resource_kind = "file"
+    if not resource_kind:
+        return None
+    return {
+        "path": path,
+        "resource_kind": resource_kind,
+        "is_container": bool(tool_output.get("is_container") or resource_kind == "directory"),
+        "allowed_actions": [str(item).strip() for item in tool_output.get("allowed_actions") or [] if str(item).strip()],
+    }
+
+
+def _has_repository_structure_evidence(task: CodexTask) -> bool:
+    return any(claim.get("kind") == "structure" for claim in task.memory.typed_claims)

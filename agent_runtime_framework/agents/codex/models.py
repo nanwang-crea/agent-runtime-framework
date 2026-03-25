@@ -45,12 +45,42 @@ class CodexActionResult:
 
 
 @dataclass(slots=True)
+class CodexPlanTask:
+    title: str
+    kind: str
+    task_id: str = field(default_factory=lambda: str(uuid4()))
+    status: str = "pending"
+    depends_on: list[str] = field(default_factory=list)
+    action_indexes: list[int] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TargetSemantics:
+    path: str = ""
+    resource_kind: str = ""
+    is_container: bool = False
+    allowed_actions: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CodexPlan:
+    tasks: list[CodexPlanTask]
+    plan_id: str = field(default_factory=lambda: str(uuid4()))
+    status: str = "pending"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    target_semantics: TargetSemantics | None = None
+
+
+@dataclass(slots=True)
 class CodexTask:
     goal: str
     actions: list[CodexAction]
+    task_profile: str = "chat"
     task_id: str = field(default_factory=lambda: str(uuid4()))
     status: str = "pending"
     summary: str = ""
     artifact_ids: list[str] = field(default_factory=list)
     verification: VerificationResult | None = None
     memory: CodexTaskMemory = field(default_factory=CodexTaskMemory)
+    plan: CodexPlan | None = None

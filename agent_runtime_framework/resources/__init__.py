@@ -12,11 +12,16 @@ from agent_runtime_framework.resources.models import (
 from agent_runtime_framework.resources.repository import LocalFileResourceRepository, ResourceRepository
 from agent_runtime_framework.resources.resolver import (
     LocalResourceResolver,
+    ResolveHint,
     ResolveRequest,
+    ResolveState,
+    ResolvedResourceSemantics,
     ResolverPipeline,
     ResourceResolver,
+    describe_resource_semantics,
     resolve_default_directory,
     resolve_last_focus,
+    resolve_memory_hint,
 )
 
 __all__ = [
@@ -26,7 +31,10 @@ __all__ = [
     "InMemoryResourceIndex",
     "LocalFileResourceRepository",
     "LocalResourceResolver",
+    "ResolveHint",
     "ResolveRequest",
+    "ResolveState",
+    "ResolvedResourceSemantics",
     "ResolverPipeline",
     "Resource",
     "ResourceIndex",
@@ -34,6 +42,8 @@ __all__ = [
     "ResourceRef",
     "ResourceRepository",
     "ResourceResolver",
+    "describe_resource_semantics",
     "resolve_default_directory",
     "resolve_last_focus",
+    "resolve_memory_hint",
 ]

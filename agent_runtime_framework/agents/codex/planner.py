@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
@@ -19,6 +20,10 @@ def plan_codex_actions(user_input: str) -> list[CodexAction]:
 
 def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexAction | None:
     completed = [action for action in task.actions if action.status == "completed"]
+    if not completed:
+        deterministic = _plan_first_action_by_profile(task, context)
+        if deterministic is not None:
+            return deterministic
     if completed:
         last_action = completed[-1]
         if last_action.kind == "respond":
@@ -41,6 +46,30 @@ def plan_next_codex_action(task: Any, _session: Any, context: Any) -> CodexActio
         retriable=True,
         suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
     )
+
+
+def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None:
+    profile = str(getattr(task, "task_profile", "chat") or "chat")
+    tool_names = set(context.application_context.tools.names())
+    goal = str(getattr(task, "goal", "") or "")
+    if profile == "repository_explainer" and "resolve_workspace_target" in tool_names:
+        return CodexAction(
+            kind="call_tool",
+            instruction=goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "resolve_workspace_target",
+                "arguments": {
+                    "query": goal,
+                    "target_hint": _extract_repository_target(goal),
+                },
+            },
+        )
+    return None
+
+
+def _extract_repository_target(goal: str) -> str:
+    return extract_workspace_target_hint(goal)
 
 
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:
@@ -217,6 +246,7 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
     )
     user_prompt = (
         f"任务目标：{task.goal}\n"
+        f"任务模式：{getattr(task, 'task_profile', 'chat')}\n"
         f"最近动作：\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
         f"可用工具：\n{chr(10).join(tool_lines)}\n"
         f"工作区根目录：{context.application_context.config.get('default_directory', '')}\n"
@@ -226,7 +256,11 @@ def _plan_next_action_with_llm(task: Any, context: Any) -> CodexAction | None:
         "- destructive_write 对应 destructive\n"
         "- safe_write 对应 high\n"
         "- content_read / metadata_read 对应 low\n"
+        "- repository_explainer 模式优先 resolve_workspace_target，再决定 inspect / read / list，最后综合回答\n"
+        "- change_and_verify 模式优先 edit / patch / write，然后运行验证，再总结\n"
+        "- chat 模式优先直接回答，除非用户明确要求查看工作区或修改代码\n"
         "示例：\n"
+        '- 如果用户说“memory 文件夹下面有什么”，优先输出 {"kind":"call_tool","tool_name":"resolve_workspace_target","arguments":{"query":"memory 文件夹下面有什么","target_hint":"memory"}}\n'
         '- 如果要运行 shell 命令 pwd，输出 {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'
         '- 如果要读取 README.md，输出 {"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"README.md"},"risk_class":"low"}\n'
         '- 如果只是直接回复用户，输出 {"kind":"respond","instruction":"..."}\n'

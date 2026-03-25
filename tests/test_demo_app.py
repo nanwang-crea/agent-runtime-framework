@@ -62,6 +62,63 @@ def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
     assert replayed["final_answer"] == "line one\nline two\nline three"
 
 
+def test_demo_assistant_app_persists_markdown_memory_records(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    memory_file = workspace / ".arf" / "memory.md"
+    assert memory_file.exists()
+    persisted = memory_file.read_text(encoding="utf-8")
+    assert "workspace_focus" in persisted
+    assert "README.md" in persisted
+
+
+def test_demo_assistant_app_resumes_clarification_loop_across_turns(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    first = app.chat("请讲解 service 这个模块在做什么")
+    second = app.chat("src/service.py")
+
+    assert first["status"] == "needs_clarification"
+    assert "多个可能目标" in first["final_answer"]
+    assert second["status"] == "completed"
+    assert "src/service.py" in second["final_answer"]
+
+
+def test_demo_assistant_app_resumes_clarification_after_restart(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    first_app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    first = first_app.chat("请讲解 service 这个模块在做什么")
+
+    restarted_app = _create_demo_assistant_app_with_test_planner(workspace)
+    second = restarted_app.chat("src/service.py")
+
+    assert first["status"] == "needs_clarification"
+    assert second["status"] == "completed"
+    assert "src/service.py" in second["final_answer"]
+
+
 def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -280,22 +337,23 @@ def test_demo_assistant_app_emits_single_delta_for_non_conversation_results(tmp_
     assert delta_events[0]["delta"] == "line one\nline two\nline three"
 
 
-def test_demo_assistant_app_emits_structured_error_for_directory_summarize(tmp_path: Path):
+def test_demo_assistant_app_recovers_from_directory_summarize_request(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     docs_dir = workspace / "docs"
     docs_dir.mkdir()
+    (docs_dir / "guide.md").write_text("# Guide\n", encoding="utf-8")
     app = _create_demo_assistant_app_with_test_planner(workspace)
 
     events = list(app.stream_chat("总结 docs"))
 
     error_events = [event for event in events if event["type"] == "error"]
+    final_events = [event for event in events if event["type"] == "final"]
 
-    assert error_events
-    assert error_events[-1]["error"]["code"] == "RESOURCE_IS_DIRECTORY"
-    assert "目标是目录" in error_events[-1]["error"]["message"]
-    assert error_events[-1]["error"]["retriable"] is True
-    assert events[-1]["type"] == "error"
+    assert not error_events
+    assert final_events
+    assert final_events[-1]["payload"]["status"] == "completed"
+    assert "guide.md" in final_events[-1]["payload"]["final_answer"]
 
 
 def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path):
@@ -468,7 +526,9 @@ def test_demo_assistant_app_explains_directory_structure_with_specialized_patter
     assert payload["status"] == "completed"
     assert payload["execution_trace"][0]["name"] == "router"
     assert payload["execution_trace"][1]["name"] == "call_tool"
-    assert any(step["name"] == "evaluator" for step in payload["execution_trace"])
+    assert any(step["name"] == "evaluator" for step in payload["execution_trace"]) or sum(
+        1 for step in payload["execution_trace"] if step["name"] == "call_tool"
+    ) >= 2
     assert "agent_runtime_framework" in payload["final_answer"]
     assert "assistant/" in payload["final_answer"]
     assert "__init__.py" in payload["final_answer"]

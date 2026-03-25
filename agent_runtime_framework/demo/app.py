@@ -10,7 +10,7 @@ from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, Co
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
-from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
+from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.models import (
     CodexCliDriver,
     InMemoryCredentialStore,
@@ -48,10 +48,13 @@ class DemoAssistantApp:
             if self._active_agent == "qa_only":
                 self._last_route_decision = {"route": "conversation", "source": "profile"}
                 return self._conversation_payload(message)
-            route_decision = get_route_decision(message, self.context)
-            self._last_route_decision = route_decision
-            if route_decision["route"] == "conversation":
-                return self._conversation_payload(message)
+            if self.loop.has_pending_clarification(self.context.session):
+                self._last_route_decision = {"route": "codex", "source": "clarification"}
+            else:
+                route_decision = get_route_decision(message, self.context)
+                self._last_route_decision = route_decision
+                if route_decision["route"] == "conversation":
+                    return self._conversation_payload(message)
             self._ensure_codex_planner_available()
             result = self.loop.run(message)
             self._task_history.insert(0, result.task)
@@ -353,6 +356,9 @@ class DemoAssistantApp:
         if self._active_agent == "qa_only":
             self._last_route_decision = {"route": "conversation", "source": "profile"}
             return True
+        if self.loop.has_pending_clarification(self.context.session):
+            self._last_route_decision = {"route": "codex", "source": "clarification"}
+            return False
         self._last_route_decision = get_route_decision(message, self.context)
         return self._last_route_decision["route"] == "conversation"
 
@@ -552,7 +558,6 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     app_context = ApplicationContext(
         resource_repository=LocalFileResourceRepository([workspace_path]),
         session_memory=InMemorySessionMemory(),
-        index_memory=InMemoryIndexMemory(),
         policy=SimpleDesktopPolicy(),
         tools=ToolRegistry(),
         config={"default_directory": str(workspace_path)},

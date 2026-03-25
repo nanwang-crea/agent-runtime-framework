@@ -9,6 +9,8 @@ from agent_runtime_framework.agents.codex import (
     CodexAction,
     CodexActionResult,
     CodexAgentLoop,
+    CodexPlan,
+    CodexPlanTask,
     CodexContext,
     CodexTask,
     CodexTaskMemory,
@@ -18,13 +20,21 @@ from agent_runtime_framework.agents.codex import (
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
+from agent_runtime_framework.agents.codex.task_plans import (
+    advance_task_plan,
+    attach_action_to_plan,
+    build_task_plan,
+    plan_next_task_action,
+)
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.artifacts import InMemoryArtifactStore
 from agent_runtime_framework.assistant import AssistantSession
-from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
+from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory, MemoryRecord
 from agent_runtime_framework.policy import SimpleDesktopPolicy
-from agent_runtime_framework.resources import LocalFileResourceRepository
+from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
+from agent_runtime_framework.tools.executor import execute_tool_call
+from agent_runtime_framework.tools.models import ToolCall
 from agent_runtime_framework.tools import ToolRegistry
 
 
@@ -79,6 +89,34 @@ def _attach_test_next_action_planner(context: CodexContext) -> CodexContext:
     return context
 
 
+def _benchmark_context(workspace: Path, *, llm_contents: list[str] | None = None) -> tuple[CodexContext, _SequenceLLM | None]:
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["model_first_task_profile_classifier"] = True
+    llm = _SequenceLLM(llm_contents or []) if llm_contents is not None else None
+    if llm is not None:
+        context.application_context.llm_client = llm
+        context.application_context.llm_model = "test-model"
+    return context, llm
+
+
+def _score_workspace_question(result, *, expected_profile: str, expected_refs: list[str], expected_tokens: list[str]) -> int:
+    score = 0
+    if result.status == "completed":
+        score += 1
+    if result.task.task_profile == expected_profile:
+        score += 1
+    if any(action.metadata.get("tool_name") == "resolve_workspace_target" for action in result.task.actions):
+        score += 1
+    if all(token in result.final_output for token in expected_tokens):
+        score += 1
+    if "引用：" in result.final_output and all(ref in result.final_output for ref in expected_refs):
+        score += 1
+    return score
+
+
 def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     context = _context(tmp_path / "workspace")
     context.application_context.resource_repository.allowed_roots[0].mkdir(parents=True, exist_ok=True)
@@ -97,6 +135,184 @@ def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     assert task.verification is verification
     assert task.memory.known_facts == []
     assert result.artifacts[0]["artifact_type"] == "command_log"
+
+
+def test_codex_models_support_task_level_plan_defaults():
+    plan = CodexPlan(tasks=[CodexPlanTask(title="List target", kind="list_target")])
+    task = CodexTask(goal="Explain pkg", actions=[], task_profile="repository_explainer", plan=plan)
+
+    assert task.plan is plan
+    assert task.plan.tasks[0].status == "pending"
+    assert task.plan.tasks[0].action_indexes == []
+
+
+def test_codex_loop_retries_retriable_action_error_once(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    attempts = {"count": 0}
+
+    def _executor(_action, _session, _ctx):
+        if _action.kind == "respond":
+            return CodexActionResult(status="completed", final_output=_action.instruction)
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise AppError(
+                code="TEMPORARY_FAILURE",
+                message="temporary failure",
+                stage="execute",
+                retriable=True,
+            )
+        return CodexActionResult(status="completed", final_output="done")
+
+    context.services["action_executor"] = _executor
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(kind="call_tool", instruction="probe"),
+    ]
+
+    result = CodexAgentLoop(context).run("probe")
+
+    assert result.status == "completed"
+    assert result.final_output == "done"
+    assert attempts["count"] == 2
+    assert result.task.actions[0].metadata["_retry_count"] == 1
+
+
+def test_codex_loop_does_not_retry_high_risk_action_error(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    attempts = {"count": 0}
+
+    def _executor(_action, _session, _ctx):
+        attempts["count"] += 1
+        raise AppError(
+            code="TEMPORARY_FAILURE",
+            message="temporary failure",
+            stage="execute",
+            retriable=True,
+        )
+
+    context.services["action_executor"] = _executor
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(kind="apply_patch", instruction="modify", risk_class="high", metadata={"_approval_granted": True}),
+    ]
+
+    result = CodexAgentLoop(context).run("modify")
+
+    assert result.status == "failed"
+    assert result.final_output == "temporary failure"
+    assert attempts["count"] == 1
+
+
+def test_codex_loop_retries_failed_result_marked_retriable(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    attempts = {"count": 0}
+
+    def _executor(_action, _session, _ctx):
+        if _action.kind == "respond":
+            return CodexActionResult(status="completed", final_output=_action.instruction)
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return CodexActionResult(
+                status="failed",
+                final_output="temporary failure",
+                metadata={"error": {"retriable": True, "code": "TEMPORARY_FAILURE"}},
+            )
+        return CodexActionResult(status="completed", final_output="done")
+
+    context.services["action_executor"] = _executor
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(kind="call_tool", instruction="probe"),
+    ]
+
+    result = CodexAgentLoop(context).run("probe")
+
+    assert result.status == "completed"
+    assert result.final_output == "done"
+    assert attempts["count"] == 2
+    assert result.task.actions[0].metadata["_retry_count"] == 1
+
+
+def test_codex_loop_inserts_recovery_task_after_retriable_error_exhausts_retries(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.config["codex_retry_limit"] = 0
+    llm = _SequenceLLM(
+        [
+            (
+                '{"tasks":[{"kind":"recover_failed_action","title":"Inspect directory instead",'
+                '"tool_name":"inspect_workspace_path","arguments":{"path":"repo"},"risk_class":"low"}]}'
+            )
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    gather_task = CodexPlanTask(
+        title="Gather repository context",
+        kind="gather_context",
+        metadata={"path": "repo"},
+    )
+    plan = CodexPlan(
+        tasks=[
+            gather_task,
+            CodexPlanTask(
+                title="Synthesize repository overview",
+                kind="synthesize_answer",
+                depends_on=[gather_task.task_id],
+            ),
+        ],
+        metadata={"workspace_root": str(workspace)},
+    )
+
+    context.services["action_planner"] = lambda user_input, _session, _ctx: CodexTask(
+        goal=user_input,
+        actions=[],
+        task_profile="repository_explainer",
+        plan=plan,
+    )
+
+    attempts = {"gather": 0, "recover": 0}
+
+    def _executor(action, _session, _ctx):
+        if action.kind == "respond":
+            return CodexActionResult(status="completed", final_output=action.instruction)
+        if action.metadata.get("tool_name") == "list_workspace_directory":
+            attempts["gather"] += 1
+            raise AppError(
+                code="TEMPORARY_FAILURE",
+                message="temporary failure",
+                stage="execute",
+                retriable=True,
+            )
+        if action.metadata.get("tool_name") == "inspect_workspace_path":
+            attempts["recover"] += 1
+            return CodexActionResult(status="completed", final_output="repo structure")
+        return CodexActionResult(status="failed", final_output="unexpected action")
+
+    context.services["action_executor"] = _executor
+
+    result = CodexAgentLoop(context).run("repo 这个目录下面都在讲什么")
+
+    assert result.status == "completed"
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "gather_context",
+        "recover_failed_action",
+        "synthesize_answer",
+    ]
+    assert [action.metadata.get("tool_name") for action in result.task.actions if action.kind == "call_tool"] == [
+        "list_workspace_directory",
+        "inspect_workspace_path",
+    ]
+    assert result.task.actions[0].status == "failed"
+    assert attempts == {"gather": 1, "recover": 1}
+    assert llm.completions.calls
 
 
 def test_codex_loop_executes_planned_actions_in_order(tmp_path: Path):
@@ -123,6 +339,110 @@ def test_codex_loop_executes_planned_actions_in_order(tmp_path: Path):
     assert executed == ["read_resource", "respond"]
 
 
+def test_memory_aware_target_resolution_prefers_relevant_remembered_path(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="focus:src/service.py",
+            text="service module business logic",
+            kind="workspace_focus",
+            metadata={"path": "src/service.py"},
+        )
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "continue with the service module", "target_hint": "service"},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "src/service.py"
+
+
+def test_memory_aware_target_resolution_uses_task_conclusion_records(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    (docs / "auth.md").write_text("# auth docs\n", encoding="utf-8")
+    (src / "auth.py").write_text("def login():\n    return True\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="task:auth-module",
+            text="auth package module login business logic conclusion",
+            kind="task_conclusion",
+            metadata={"path": "src/auth.py"},
+        )
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "continue with the auth business logic", "target_hint": ""},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "src/auth.py"
+
+
+def test_follow_up_target_resolution_prefers_session_focus_for_pronouns(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.session_memory.remember_focus(
+        [ResourceRef.for_path(package)],
+        summary="pkg package overview",
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "继续说刚才那个模块", "target_hint": ""},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "pkg"
+
+
 def test_codex_loop_falls_back_to_single_respond_action(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -133,6 +453,7 @@ def test_codex_loop_falls_back_to_single_respond_action(tmp_path: Path):
     assert result.status == "completed"
     assert "你好" in result.final_output
     assert result.task.actions[0].kind == "respond"
+    assert result.task.task_profile == "chat"
 
 
 def test_codex_loop_persists_inline_artifacts(tmp_path: Path):
@@ -730,11 +1051,24 @@ def test_codex_complex_task_advances_across_subgoals(tmp_path: Path):
     result = CodexAgentLoop(context).run("介绍 pkg 目录结构并总结 service.py 的作用")
 
     assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
     assert len(result.task.actions) >= 3
     subgoals = [action.subgoal for action in result.task.actions]
     assert "gather_evidence" in subgoals
     assert "synthesize_answer" in subgoals
     assert "service.py" in result.final_output
+
+
+def test_codex_task_profile_routes_change_and_verify_requests(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("编辑 draft.txt 内容 new text 并运行验证 pytest -q")
+
+    assert result.task.task_profile == "change_and_verify"
 
 
 def test_codex_task_memory_extracts_claims_from_inspect_output(tmp_path: Path):
@@ -851,6 +1185,582 @@ def test_codex_complex_task_combines_structure_and_role_claims(tmp_path: Path):
     assert "目录结构" in result.final_output
     assert "service.py 的作用" in result.final_output
     assert "utils.py" in result.final_output
+
+
+def test_repository_explainer_profile_prefers_repository_style_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pkg" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "pkg"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+
+    assert result.task.task_profile == "repository_explainer"
+    assert "目录结构" in result.final_output
+    assert "关键文件" in result.final_output or "作用" in result.final_output
+
+
+def test_evidence_sufficiency_uses_resource_semantics_instead_of_tool_name(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    task = CodexTask(
+        goal="请讲解 pkg 这个 package 的结构",
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="custom probe",
+                status="completed",
+                observation="下面一共有 1 个条目。\n文件：__init__.py",
+                metadata={
+                    "tool_name": "custom_workspace_probe",
+                    "arguments": {"path": "pkg"},
+                    "result": {
+                        "tool_output": {
+                            "path": str(package),
+                            "resolved_path": str(package),
+                            "resource_kind": "directory",
+                            "is_container": True,
+                            "allowed_actions": ["list", "inspect"],
+                        }
+                    },
+                },
+            )
+        ],
+        task_profile="repository_explainer",
+    )
+
+    decision = evaluate_codex_output(task, None, context, list(context.application_context.tools.names()))
+
+    assert decision.status == "continue"
+    assert decision.next_action is not None
+    assert decision.next_action.metadata["tool_name"] == "inspect_workspace_path"
+    assert decision.next_action.metadata["arguments"]["path"] == "pkg"
+
+
+def test_repository_explainer_profile_has_default_strategy_without_custom_planner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "assistant.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("agent_runtime_framework 下面主要都有哪些文件都是在做什么")
+
+    assert result.task.task_profile == "repository_explainer"
+    assert len(result.task.actions) >= 2
+    assert result.task.actions[0].kind == "call_tool"
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[1].kind == "call_tool"
+    assert result.task.actions[1].metadata["tool_name"] == "list_workspace_directory"
+    assert "agent_runtime_framework" in result.final_output
+
+
+def test_codex_loop_persists_task_conclusion_into_index_memory(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Package entry."""\n', encoding="utf-8")
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+    matches = context.application_context.index_memory.search("pkg package structure", kind="task_conclusion")
+
+    assert result.status == "completed"
+    assert matches
+    assert matches[0].metadata["path"] == "pkg"
+    assert "pkg" in matches[0].text
+
+
+def test_repository_explainer_profile_handles_natural_directory_question(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Runtime package entry."""\n', encoding="utf-8")
+    (package / "assistant.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("agent_runtime_framework这个目录下面都是在讲什么呢？")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[1].metadata["tool_name"] == "list_workspace_directory"
+    assert any(item.kind == "inspect_target" for item in (result.task.plan.tasks if result.task.plan else []))
+    assert "assistant.py" in result.final_output
+
+
+def test_repository_explainer_asks_for_clarification_when_target_is_ambiguous(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("请讲解 service 这个模块在做什么")
+
+    assert result.status == "needs_clarification"
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[-1].kind == "respond"
+    assert "多个可能目标" in result.final_output
+    assert "src/service.py" in result.final_output
+    assert "docs/service.md" in result.final_output
+
+
+def test_repository_explainer_can_resume_after_target_clarification(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    loop = CodexAgentLoop(context)
+    first = loop.run("请讲解 service 这个模块在做什么")
+    second = loop.run("src/service.py")
+
+    assert first.status == "needs_clarification"
+    assert second.status == "completed"
+    assert second.task.task_profile == "repository_explainer"
+    assert "src/service.py" in second.final_output
+    assert "多个可能目标" not in second.final_output
+
+
+def test_repository_explainer_can_resume_after_restart_with_persisted_clarification(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+
+    first_context = CodexContext(
+        application_context=ApplicationContext(
+            resource_repository=LocalFileResourceRepository([workspace]),
+            session_memory=InMemorySessionMemory(),
+            policy=SimpleDesktopPolicy(),
+            tools=ToolRegistry(),
+            config={"default_directory": str(workspace)},
+        ),
+        session=AssistantSession(session_id="codex-first"),
+    )
+    for tool in build_default_codex_tools():
+        first_context.application_context.tools.register(tool)
+    first_context.services["output_evaluator"] = evaluate_codex_output
+
+    first = CodexAgentLoop(first_context).run("请讲解 service 这个模块在做什么")
+
+    restarted_context = CodexContext(
+        application_context=ApplicationContext(
+            resource_repository=LocalFileResourceRepository([workspace]),
+            session_memory=InMemorySessionMemory(),
+            policy=SimpleDesktopPolicy(),
+            tools=ToolRegistry(),
+            config={"default_directory": str(workspace)},
+        ),
+        session=AssistantSession(session_id="codex-restarted"),
+    )
+    for tool in build_default_codex_tools():
+        restarted_context.application_context.tools.register(tool)
+    restarted_context.services["output_evaluator"] = evaluate_codex_output
+
+    second = CodexAgentLoop(restarted_context).run("src/service.py")
+
+    assert first.status == "needs_clarification"
+    assert second.status == "completed"
+    assert "src/service.py" in second.final_output
+
+
+def test_repository_explainer_profile_creates_task_level_plan(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "assistant.py").write_text("def run():\n    pass\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("agent_runtime_framework 下面主要都有哪些文件都是在做什么")
+
+    assert result.task.plan is not None
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "inspect_target",
+        "synthesize_answer",
+    ]
+    assert all(item.status == "completed" for item in result.task.plan.tasks)
+    assert result.task.plan.tasks[0].action_indexes == [0]
+    assert result.task.plan.tasks[1].action_indexes == [1]
+    assert result.task.plan.tasks[2].action_indexes == [2]
+    assert result.task.plan.tasks[3].action_indexes == [3]
+
+
+def test_repository_explainer_plan_uses_shared_task_kinds(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+
+    assert result.task.plan is not None
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "inspect_target",
+        "synthesize_answer",
+    ]
+
+
+def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    task = CodexTask(goal="请讲解 pkg 这个 package 的结构", actions=[], task_profile="repository_explainer")
+    task.plan = build_task_plan(task, context)
+
+    assert task.plan is not None
+    assert [item.kind for item in task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "synthesize_answer",
+    ]
+
+    result = CodexAgentLoop(context).run(task.goal)
+
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "inspect_target",
+        "synthesize_answer",
+    ]
+
+
+def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    readme = workspace / "README.md"
+    readme.write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    task = CodexTask(goal="解释 README.md 在讲什么", actions=[], task_profile="repository_explainer")
+    task.plan = build_task_plan(task, context)
+    assert task.plan is not None
+
+    locate_task_id = task.plan.tasks[0].task_id
+    locate_action = CodexAction(
+        kind="call_tool",
+        instruction=task.goal,
+        status="completed",
+        metadata={
+            "tool_name": "resolve_workspace_target",
+            "plan_task_id": locate_task_id,
+        },
+    )
+    task.actions.append(locate_action)
+    attach_action_to_plan(task, locate_action, 0)
+
+    locate_result = CodexActionResult(
+        status="completed",
+        final_output="Resolved target: README.md",
+        metadata={
+            "tool_output": {
+                "path": str(readme),
+                "resolved_path": str(readme),
+                "resource_kind": "file",
+                "is_container": False,
+                "allowed_actions": ["read", "summarize", "inspect"],
+            }
+        },
+    )
+
+    advance_task_plan(task, locate_action, locate_result, context)
+    next_action = plan_next_task_action(task)
+
+    assert task.plan.target_semantics is not None
+    assert task.plan.target_semantics.resource_kind == "file"
+    assert [item.kind for item in task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "synthesize_answer",
+    ]
+    assert next_action is not None
+    assert next_action.metadata["tool_name"] == "read_workspace_text"
+    assert next_action.metadata["arguments"]["path"] == str(readme)
+
+
+def test_repository_explainer_uses_llm_to_insert_read_entrypoint(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Package entry."""\n', encoding="utf-8")
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"best_match":"pkg","candidates":["pkg"]}',
+            '{"tasks":[{"kind":"read_entrypoint","path":"pkg/__init__.py","title":"Read package entrypoint"}]}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+
+    assert result.status == "completed"
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "inspect_target",
+        "read_entrypoint",
+        "synthesize_answer",
+    ]
+    assert [action.kind for action in result.task.actions] == [
+        "call_tool",
+        "call_tool",
+        "call_tool",
+        "call_tool",
+        "respond",
+    ]
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[3].metadata["tool_name"] == "read_workspace_text"
+    assert llm.completions.calls
+
+
+def test_repository_explainer_entrypoint_read_improves_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Package entry."""\n', encoding="utf-8")
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.llm_client = _SequenceLLM(
+        ['{"tasks":[{"kind":"read_entrypoint","path":"pkg/__init__.py","title":"Read package entrypoint"}]}']
+    )
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+
+    assert result.status == "completed"
+    assert "Package entry." in result.final_output
+    assert "引用：" in result.final_output
+
+
+def test_change_and_verify_uses_llm_to_insert_repair_after_failed_verification(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"best_match":"draft.txt","candidates":["draft.txt"]}',
+            '{"tasks":[{"kind":"repair_after_failed_verification","title":"Repair failing draft","tool_name":"edit_workspace_text","path":"draft.txt","content":"fixed text"}]}'
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    loop = CodexAgentLoop(context)
+    pending = loop.run("编辑 draft.txt 内容 broken text 并运行验证 false")
+    result = loop.resume(pending.resume_token, approved=True)
+    if result.status == "needs_approval":
+        result = loop.resume(result.resume_token, approved=True)
+
+    assert result.status == "completed"
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "modify_target",
+        "run_verification",
+        "repair_after_failed_verification",
+        "synthesize_answer",
+    ]
+    assert target.read_text(encoding="utf-8") == "fixed text"
+    assert llm.completions.calls
+    assert "引用：" in result.final_output
+
+
+def test_repository_explainer_summary_lists_reference_paths(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Package entry."""\n', encoding="utf-8")
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.llm_client = _SequenceLLM(
+        [
+            '{"best_match":"pkg","candidates":["pkg"]}',
+            '{"tasks":[{"kind":"read_entrypoint","path":"pkg/__init__.py","title":"Read package entrypoint"}]}',
+        ]
+    )
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
+
+    assert result.status == "completed"
+    assert "pkg/__init__.py" in result.final_output
+
+
+def test_benchmark_memory_folder_question_scores_high(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    memory_dir = package / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "__init__.py").write_text("", encoding="utf-8")
+    (memory_dir / "index.py").write_text("class IndexMemory:\n    pass\n", encoding="utf-8")
+    (memory_dir / "session.py").write_text("class SessionMemory:\n    pass\n", encoding="utf-8")
+    (memory_dir / "working.py").write_text("class WorkingMemory:\n    pass\n", encoding="utf-8")
+    context, llm = _benchmark_context(
+        workspace,
+        llm_contents=[
+            '{"profile":"repository_explainer"}',
+            '{"best_match":"agent_runtime_framework/memory","candidates":["agent_runtime_framework/memory"]}',
+        ],
+    )
+
+    result = CodexAgentLoop(context).run("memory文件夹下面都有什么内容呢？")
+
+    assert llm is not None
+    assert _score_workspace_question(
+        result,
+        expected_profile="repository_explainer",
+        expected_refs=["agent_runtime_framework/memory"],
+        expected_tokens=["index.py", "session.py", "working.py"],
+    ) >= 4
+
+
+def test_benchmark_current_directory_question_scores_high(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (workspace / "tests").mkdir()
+    context, llm = _benchmark_context(
+        workspace,
+        llm_contents=[
+            '{"profile":"repository_explainer"}',
+            '{"best_match":".","candidates":["."]}',
+        ],
+    )
+
+    result = CodexAgentLoop(context).run("我当前目录下都有哪些文件呢？")
+
+    assert llm is not None
+    assert _score_workspace_question(
+        result,
+        expected_profile="repository_explainer",
+        expected_refs=["."],
+        expected_tokens=["README.md", "pyproject.toml", "tests"],
+    ) >= 4
+
+
+def test_change_and_verify_profile_creates_task_level_plan(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    loop = CodexAgentLoop(context)
+    pending = loop.run("编辑 draft.txt 内容 new text 并运行验证 pwd")
+
+    assert pending.status == "needs_approval"
+    assert pending.task.task_profile == "change_and_verify"
+    assert pending.task.plan is not None
+    assert [item.kind for item in pending.task.plan.tasks] == [
+        "locate_target",
+        "modify_target",
+        "run_verification",
+        "synthesize_answer",
+    ]
+    assert pending.task.plan.tasks[0].status == "completed"
+    assert pending.task.plan.tasks[1].status == "in_progress"
+
+    result = loop.resume(pending.resume_token, approved=True)
+
+    assert result.status == "completed"
+    assert all(item.status == "completed" for item in result.task.plan.tasks)
+    assert result.task.plan.tasks[0].action_indexes == [0]
+    assert result.task.plan.tasks[1].action_indexes == [1]
+    assert result.task.plan.tasks[2].action_indexes == [2]
+    assert result.task.plan.tasks[3].action_indexes == [3]
 
 
 def test_codex_loop_creates_workspace_file_via_default_tooling(tmp_path: Path):

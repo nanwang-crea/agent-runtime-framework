@@ -14,7 +14,7 @@ class CodexSessionRuntime:
         self.events.append({"type": event_type, **payload})
 
     def on_task_started(self, task: Any) -> None:
-        self.emit("task_started", goal=getattr(task, "goal", ""))
+        self.emit("task_started", goal=getattr(task, "goal", ""), task_profile=getattr(task, "task_profile", "chat"))
 
     def before_tool_call(self, tool: Any, call: Any, task: Any) -> Any:
         self.emit(

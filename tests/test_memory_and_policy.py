@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.memory import (
     InMemoryIndexMemory,
     InMemorySessionMemory,
+    MarkdownIndexMemory,
+    MemoryRecord,
     WorkingMemory,
 )
 from agent_runtime_framework.policy import (
@@ -12,7 +15,7 @@ from agent_runtime_framework.policy import (
     PolicyDecision,
     SimpleDesktopPolicy,
 )
-from agent_runtime_framework.resources import ResourceRef
+from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
 
 
 def test_session_memory_tracks_recent_focus():
@@ -43,6 +46,92 @@ def test_index_memory_caches_values():
     memory.put("summary:/tmp/a", {"text": "cached"})
 
     assert memory.get("summary:/tmp/a") == {"text": "cached"}
+
+
+def test_index_memory_supports_relevance_search():
+    memory = InMemoryIndexMemory()
+    memory.remember(
+        MemoryRecord(
+            key="focus:src/service.py",
+            text="service module handles billing workflows",
+            kind="workspace_focus",
+            metadata={"path": "src/service.py"},
+        )
+    )
+    memory.remember(
+        MemoryRecord(
+            key="focus:docs/service.md",
+            text="service documentation overview and usage notes",
+            kind="workspace_focus",
+            metadata={"path": "docs/service.md"},
+        )
+    )
+
+    matches = memory.search("service billing module", limit=2)
+
+    assert [match.metadata["path"] for match in matches] == [
+        "src/service.py",
+        "docs/service.md",
+    ]
+
+
+def test_markdown_index_memory_persists_records_and_searches_them(tmp_path: Path):
+    memory_file = tmp_path / "agent-memory.md"
+    memory = MarkdownIndexMemory(memory_file)
+    memory.remember(
+        MemoryRecord(
+            key="focus:src/service.py",
+            text="service module handles billing workflows",
+            kind="workspace_focus",
+            metadata={"path": "src/service.py", "summary": "service focus"},
+        )
+    )
+    memory.remember(
+        MemoryRecord(
+            key="fact:docs/service.md",
+            text="service documentation overview and usage notes",
+            kind="workspace_fact",
+            metadata={"path": "docs/service.md", "summary": "service docs"},
+        )
+    )
+
+    assert memory_file.exists()
+    persisted = memory_file.read_text(encoding="utf-8")
+    assert "workspace_focus" in persisted
+    assert "src/service.py" in persisted
+
+    reloaded = MarkdownIndexMemory(memory_file)
+    matches = reloaded.search("service billing module", limit=2)
+
+    assert [match.metadata["path"] for match in matches] == [
+        "src/service.py",
+        "docs/service.md",
+    ]
+
+
+def test_markdown_index_memory_persists_values_across_reloads(tmp_path: Path):
+    memory_file = tmp_path / "agent-memory.md"
+    memory = MarkdownIndexMemory(memory_file)
+    payload = {"goal": "请讲解 service 模块", "task_profile": "repository_explainer"}
+
+    memory.put("codex:pending_clarification", payload)
+
+    reloaded = MarkdownIndexMemory(memory_file)
+
+    assert reloaded.get("codex:pending_clarification") == payload
+
+
+def test_application_context_uses_markdown_index_memory_for_workspace_defaults(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    context = ApplicationContext(
+        resource_repository=LocalFileResourceRepository([workspace]),
+        config={"default_directory": str(workspace)},
+    )
+
+    assert isinstance(context.index_memory, MarkdownIndexMemory)
+    assert context.index_memory.path == workspace / ".arf" / "memory.md"
 
 
 def test_simple_desktop_policy_requires_confirmation_for_safe_write():
