@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 _REPOSITORY_EXPLAINER_MARKERS = (
@@ -54,6 +55,21 @@ _CHANGE_AND_VERIFY_MARKERS = (
     "运行测试",
 )
 
+_FILE_READER_MARKERS = (
+    "读取",
+    "读一下",
+    "看看",
+    "看下",
+    "总结",
+    "概括",
+    "summarize",
+    "summary",
+    "read",
+    "file",
+    "文件内容",
+    "主要内容",
+)
+
 _REPOSITORY_EXPLANATION_MARKERS = (
     "是什么",
     "做什么",
@@ -94,8 +110,8 @@ _GENERIC_TARGET_TOKENS = {
 _TARGET_HINT_PATTERN = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
 
 
-def classify_task_profile(user_input: str, context: Any | None = None) -> str:
-    llm_profile = _classify_task_profile_with_model(user_input, context)
+def classify_task_profile(user_input: str, context: Any | None = None, session: Any | None = None) -> str:
+    llm_profile = _classify_task_profile_with_model(user_input, context, session=session)
     if llm_profile is not None:
         return llm_profile
     return _classify_task_profile_fallback(user_input)
@@ -143,7 +159,7 @@ def extract_workspace_target_hint(user_input: str) -> str:
     return ""
 
 
-def _classify_task_profile_with_model(user_input: str, context: Any | None = None) -> str | None:
+def _classify_task_profile_with_model(user_input: str, context: Any | None = None, *, session: Any | None = None) -> str | None:
     if context is None:
         return None
     if not bool(getattr(context, "services", {}).get("model_first_task_profile_classifier")):
@@ -161,16 +177,19 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
-                            "你是 Codex task-profile classifier。"
-                            "只输出 JSON，格式为 {\"profile\":\"chat|repository_explainer|change_and_verify\"}。"
+                        content=build_codex_system_prompt(
+                            "你负责做 task-profile classifier。只输出 JSON，格式为 "
+                            '{"profile":"chat|repository_explainer|file_reader|change_and_verify"}。'
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
                             f"用户请求：{user_input}\n"
+                            + (build_follow_up_context(session=session, context=context) + "\n" if context is not None else "")
+                            + 
                             "如果是在问代码库结构、目录内容、文件分布，用 repository_explainer。"
+                            "如果是在读取、总结、解释某个具体文件内容，用 file_reader。"
                             "如果是在要求修改、创建、删除、验证，用 change_and_verify。"
                             "其他用 chat。"
                         ),
@@ -187,7 +206,7 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
     except Exception:
         return None
     profile = str(parsed.get("profile") or "").strip()
-    return profile if profile in {"chat", "repository_explainer", "change_and_verify"} else None
+    return profile if profile in {"chat", "repository_explainer", "file_reader", "change_and_verify"} else None
 
 
 def _classify_task_profile_fallback(user_input: str) -> str:
@@ -201,6 +220,8 @@ def _classify_task_profile_fallback(user_input: str) -> str:
     ):
         return "repository_explainer"
     target_hint = extract_workspace_target_hint(user_input)
+    if _looks_like_file_target(target_hint) and any(marker.lower() in text for marker in _FILE_READER_MARKERS):
+        return "file_reader"
     if target_hint and not _looks_like_file_target(target_hint) and any(
         marker.lower() in text for marker in _REPOSITORY_EXPLANATION_MARKERS
     ):

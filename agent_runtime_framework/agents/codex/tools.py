@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
 from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.resources import ResolveHint, ResolveRequest, ResourceRef, describe_resource_semantics
@@ -400,7 +401,7 @@ def _resolve_target_with_model(query: str, target_hint: str, candidates: list[st
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
+                        content=build_codex_system_prompt(
                             "你是 workspace target resolver。"
                             "只输出 JSON，格式为 {\"best_match\":\"...\",\"candidates\":[...]}。"
                             "best_match 必须从候选列表中选择，若当前目录最合适则返回 ."
@@ -410,6 +411,7 @@ def _resolve_target_with_model(query: str, target_hint: str, candidates: list[st
                         role="user",
                         content=(
                             f"用户问题：{query}\n"
+                            f"{build_follow_up_context(session=None, context=context) or '近期对话：\n(none)'}\n"
                             f"目标提示：{target_hint}\n"
                             f"候选路径：{json.dumps(candidates[:80], ensure_ascii=False)}"
                         ),

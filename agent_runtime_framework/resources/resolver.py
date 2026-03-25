@@ -112,7 +112,7 @@ def resolve_last_focus(request: ResolveRequest, _repository: ResourceRepository)
 
 def resolve_default_directory(request: ResolveRequest, _repository: ResourceRepository) -> list[ResourceRef]:
     text = request.user_input.strip()
-    if "当前目录" in text or "这个目录" in text:
+    if "当前目录" in text or "这个目录" in text or "当前工作区" in text or "workspace root" in text or "根目录" in text:
         return [request.default_directory]
     return []
 

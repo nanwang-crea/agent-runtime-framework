@@ -136,7 +136,7 @@ class CodexAgentLoop:
             task.memory = pending.memory
             task.plan = build_task_plan(task, self.context)
             return task
-        task_profile = classify_task_profile(user_input, self.context)
+        task_profile = classify_task_profile(user_input, self.context, session=session)
         planner = self.context.services.get("action_planner")
         if callable(planner):
             planned = planner(user_input, session, self.context)

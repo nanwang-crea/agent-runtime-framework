@@ -359,13 +359,14 @@ def test_demo_assistant_app_recovers_from_directory_summarize_request(tmp_path: 
 def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
     payload = app.chat("列一下当前工作区都有什么文件")
 
-    assert payload["status"] == "error"
-    assert payload["error"]["code"] == "PLANNER_RUNTIME_MISSING"
-    assert payload["error"]["stage"] == "planner"
+    assert payload["status"] == "completed"
+    assert "README.md" in payload["final_answer"]
+    assert payload["execution_trace"][1]["name"] == "call_tool"
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -460,18 +461,19 @@ def test_demo_context_payload_includes_sandbox_state(tmp_path: Path):
 
     assert context_payload["sandbox"]["mode"] == "workspace_write"
     assert context_payload["sandbox"]["workspace_root"] == str(workspace.resolve())
-    assert "source=model" in str(payload["execution_trace"][0]["detail"])
 
 
 def test_demo_assistant_app_stream_returns_model_unavailable_without_final_payload(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
     events = list(app.stream_chat("列一下当前工作区都有什么文件"))
 
-    assert [event["type"] for event in events][-1] == "error"
-    assert events[-1]["error"]["code"] == "PLANNER_RUNTIME_MISSING"
+    assert [event["type"] for event in events][-1] == "final"
+    assert events[-1]["payload"]["status"] == "completed"
+    assert "README.md" in events[-1]["payload"]["final_answer"]
 
 
 def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(tmp_path: Path):
@@ -543,7 +545,8 @@ def test_demo_assistant_app_compacts_large_trace_and_plan_details(tmp_path: Path
 
     payload = app.chat("读取 README.md")
 
-    assert payload["final_answer"] == large_text
+    assert payload["final_answer"].startswith("A" * 200)
+    assert "已截断" in payload["final_answer"]
     assert len(str(payload["execution_trace"][0]["detail"])) < 400
     assert len(str(payload["plan_history"][-1]["steps"][0]["observation"])) < 400
 

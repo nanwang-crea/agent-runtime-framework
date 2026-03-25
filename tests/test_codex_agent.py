@@ -520,7 +520,9 @@ def test_codex_loop_reads_workspace_file_via_default_tooling(tmp_path: Path):
     assert result.status == "completed"
     assert result.action_kind == "respond"
     assert result.final_output == "hello from codex agent"
-    assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
+    assert [action.kind for action in result.task.actions] == ["call_tool", "call_tool", "respond"]
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[1].metadata["tool_name"] == "read_workspace_text"
 
 
 def test_codex_output_evaluator_promotes_directory_explanation_into_inspect_then_summary(tmp_path: Path):
@@ -955,6 +957,101 @@ def test_codex_loop_llm_planner_includes_tool_prompt_metadata(tmp_path: Path):
     assert "Prefer read_workspace_text over shell cat" in planner_prompt
 
 
+def test_codex_llm_system_prompts_share_runtime_header(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta\ngamma\ndelta", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+    context.services["model_first_task_profile_classifier"] = True
+    llm = _SequenceLLM(
+        [
+            '{"profile":"file_reader"}',
+            '{"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"note.md"}}',
+            '{"decision":"finish"}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("总结 note.md 主要内容")
+
+    assert result.status == "completed"
+    classifier_prompt = llm.completions.calls[0]["messages"][0]["content"]
+    planner_prompt = llm.completions.calls[1]["messages"][0]["content"]
+    evaluator_prompt = llm.completions.calls[2]["messages"][0]["content"]
+    for prompt in (classifier_prompt, planner_prompt, evaluator_prompt):
+        assert "你是 Codex runtime agent。" in prompt
+        assert "共享运行时规则" in prompt
+        assert "工具使用原则" in prompt
+
+
+def test_codex_llm_planner_injects_resource_semantics_and_follow_up_context(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.session_memory.remember_focus(
+        [ResourceRef.for_path(docs / "guide.md")],
+        summary="recently explained guide.md",
+    )
+    context.session.add_turn("assistant", "刚刚已经介绍过 docs/guide.md 的背景。")
+    llm = _SequenceLLM(['{"kind":"respond","instruction":"ok"}'])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    task = CodexTask(
+        goal="继续总结刚才那个文件",
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="resolve target",
+                status="completed",
+                metadata={
+                    "tool_name": "resolve_workspace_target",
+                    "arguments": {"query": "继续总结刚才那个文件", "target_hint": ""},
+                    "result": {
+                        "tool_output": {
+                            "path": str(docs / "guide.md"),
+                            "resolved_path": str(docs / "guide.md"),
+                            "resource_kind": "file",
+                            "is_container": False,
+                            "allowed_actions": ["read", "summarize", "inspect"],
+                        }
+                    },
+                },
+                observation="Resolved target: docs/guide.md",
+            )
+        ],
+        task_profile="file_reader",
+    )
+
+    action = context.services.get("next_action_planner")
+    if not callable(action):
+        planned = None
+    else:
+        planned = action(task, context.session, context, list(context.application_context.tools.names()))
+    if planned is None:
+        from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
+
+        planned = plan_next_codex_action(task, context.session, context)
+
+    assert planned is not None
+    planner_prompt = llm.completions.calls[0]["messages"][-1]["content"]
+    assert "资源语义：" in planner_prompt
+    assert "resource_kind: file" in planner_prompt
+    assert "allowed_actions: read, summarize, inspect" in planner_prompt
+    assert "最近焦点资源：" in planner_prompt
+    assert "guide.md" in planner_prompt
+    assert "近期对话：" in planner_prompt
+
+
 def test_codex_read_tool_returns_agent_friendly_metadata(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1069,6 +1166,19 @@ def test_codex_task_profile_routes_change_and_verify_requests(tmp_path: Path):
     result = CodexAgentLoop(context).run("编辑 draft.txt 内容 new text 并运行验证 pytest -q")
 
     assert result.task.task_profile == "change_and_verify"
+
+
+def test_codex_task_profile_routes_file_reader_requests(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("总结 README.md 主要内容")
+
+    assert result.task.task_profile == "file_reader"
 
 
 def test_codex_task_memory_extracts_claims_from_inspect_output(tmp_path: Path):
@@ -1254,6 +1364,49 @@ def test_evidence_sufficiency_uses_resource_semantics_instead_of_tool_name(tmp_p
     assert decision.next_action is not None
     assert decision.next_action.metadata["tool_name"] == "inspect_workspace_path"
     assert decision.next_action.metadata["arguments"]["path"] == "pkg"
+
+
+def test_file_reader_evidence_sufficiency_requests_file_content_when_only_target_is_resolved(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    readme = workspace / "README.md"
+    readme.write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    task = CodexTask(
+        goal="总结 README.md 主要内容",
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="resolve target",
+                status="completed",
+                observation="Resolved target: README.md",
+                metadata={
+                    "tool_name": "resolve_workspace_target",
+                    "arguments": {"query": "总结 README.md 主要内容", "target_hint": "README.md"},
+                    "result": {
+                        "tool_output": {
+                            "path": str(readme),
+                            "resolved_path": str(readme),
+                            "resource_kind": "file",
+                            "is_container": False,
+                            "allowed_actions": ["read", "summarize", "inspect"],
+                        }
+                    },
+                },
+            )
+        ],
+        task_profile="file_reader",
+    )
+
+    decision = evaluate_codex_output(task, None, context, list(context.application_context.tools.names()))
+
+    assert decision.status == "continue"
+    assert decision.next_action is not None
+    assert decision.next_action.metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
+    assert decision.next_action.metadata["arguments"]["path"] == "README.md"
 
 
 def test_repository_explainer_profile_has_default_strategy_without_custom_planner(tmp_path: Path):
@@ -1495,6 +1648,28 @@ def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: P
         "inspect_target",
         "synthesize_answer",
     ]
+
+
+def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("总结 README.md 主要内容")
+
+    assert result.status == "completed"
+    assert result.task.plan is not None
+    assert result.task.task_profile == "file_reader"
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "gather_context",
+        "synthesize_answer",
+    ]
+    assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
+    assert result.task.actions[1].metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
 
 
 def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path: Path):
@@ -1833,7 +2008,7 @@ def test_codex_loop_surfaces_planner_invalid_json(tmp_path: Path):
     context.application_context.llm_model = "test-model"
 
     with pytest.raises(AppError) as exc_info:
-        CodexAgentLoop(context).run("读取 note.md")
+        CodexAgentLoop(context).run("please inspect the note for me")
 
     assert exc_info.value.code == "PLANNER_INVALID_JSON"
 
@@ -1849,7 +2024,7 @@ def test_codex_loop_surfaces_planner_normalization_failed(tmp_path: Path):
     context.application_context.llm_model = "test-model"
 
     with pytest.raises(AppError) as exc_info:
-        CodexAgentLoop(context).run("读取 note.md")
+        CodexAgentLoop(context).run("please inspect the note for me")
 
     assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
     assert "tool_name 'missing_tool' is not in available tools" in exc_info.value.detail

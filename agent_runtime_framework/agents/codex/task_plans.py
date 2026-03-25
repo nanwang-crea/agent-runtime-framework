@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
 from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_task_resource_semantics
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
@@ -36,6 +37,37 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
                 metadata={"path": target},
             )
         )
+        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root})
+    if task.task_profile == "file_reader":
+        if "resolve_workspace_target" not in tool_names:
+            return None
+        target = _extract_repository_target(task.goal)
+        locate_step = CodexPlanTask(
+            title="Locate file target",
+            kind="locate_target",
+            metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
+        )
+        gather_step = CodexPlanTask(
+            title="Gather file contents",
+            kind="gather_context",
+            depends_on=[locate_step.task_id],
+            metadata={
+                "path": target,
+                "use_default_directory": not target,
+                "use_resolved_target": True,
+                "preferred_read_tool": "summarize_workspace_text" if _goal_prefers_summary(task.goal) else "read_workspace_text",
+            },
+        )
+        tasks = [
+            locate_step,
+            gather_step,
+            CodexPlanTask(
+                title="Synthesize file summary",
+                kind="synthesize_answer",
+                depends_on=[gather_step.task_id],
+                metadata={"path": target},
+            ),
+        ]
         return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root})
     if task.task_profile == "change_and_verify":
         locate_step = CodexPlanTask(
@@ -152,7 +184,13 @@ def plan_next_task_action(task: CodexTask) -> CodexAction | None:
         )
     if next_task.kind == "gather_context":
         resource_kind = str(next_task.metadata.get("resource_kind") or "")
-        tool_name = "read_workspace_text" if resource_kind == "file" else "list_workspace_directory"
+        preferred_read_tool = str(next_task.metadata.get("preferred_read_tool") or "read_workspace_text")
+        if resource_kind == "file":
+            tool_name = preferred_read_tool
+        elif getattr(task, "task_profile", "") == "file_reader":
+            tool_name = "inspect_workspace_path"
+        else:
+            tool_name = "list_workspace_directory"
         arguments = {"path": _resolved_plan_path(next_task)}
         if tool_name == "list_workspace_directory":
             arguments["use_default_directory"] = bool(next_task.metadata.get("use_default_directory"))
@@ -468,6 +506,16 @@ def _extract_change_target(goal: str) -> str:
     return ""
 
 
+def _goal_prefers_summary(goal: str) -> bool:
+    lowered = goal.strip().lower()
+    return any(marker in lowered for marker in ("总结", "概括", "summarize", "summary", "主要内容"))
+
+
+def _goal_is_raw_read(goal: str) -> bool:
+    lowered = goal.strip().lower()
+    return any(lowered.startswith(prefix) for prefix in ("读取", "read ")) and not _goal_prefers_summary(goal)
+
+
 def _resolved_plan_path(plan_task: CodexPlanTask) -> str:
     return str(plan_task.metadata.get("resolved_path") or plan_task.metadata.get("path") or "")
 
@@ -515,6 +563,8 @@ def _target_semantics_from_tool_output(tool_output: dict[str, Any]) -> TargetSem
 def _build_synthesized_answer(task: CodexTask) -> str:
     if task.task_profile == "repository_explainer":
         return _build_repository_overview(task)
+    if task.task_profile == "file_reader":
+        return _build_file_reader_summary(task)
     if task.task_profile == "change_and_verify":
         return _build_change_summary(task)
     return next((action.observation or "" for action in reversed(task.actions) if action.observation), task.goal)
@@ -581,6 +631,25 @@ def _build_change_summary(task: CodexTask) -> str:
     return _append_references(body, task)
 
 
+def _build_file_reader_summary(task: CodexTask) -> str:
+    latest = next(
+        (
+            action.observation.strip()
+            for action in reversed(task.actions)
+            if action.kind == "call_tool"
+            and str(action.metadata.get("tool_name") or "") in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path"}
+            and (action.observation or "").strip()
+        ),
+        "",
+    )
+    target = _extract_repository_target(task.goal) or "目标文件"
+    if latest:
+        if _goal_is_raw_read(task.goal):
+            return latest
+        return _append_references(f"关于 `{target}`，我整理出的主要内容如下：\n{latest}", task)
+    return _append_references(f"关于 `{target}`，暂时还没有足够内容形成总结。", task)
+
+
 def _action_kind_for_tool(tool_name: str) -> str:
     return {
         "edit_workspace_text": "edit_text",
@@ -617,7 +686,7 @@ def _suggest_follow_up_tasks_with_llm(task: CodexTask, action: CodexAction, resu
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
+                        content=build_codex_system_prompt(
                             "你是 Codex task-plan expander。"
                             "请判断 repository_explainer 是否需要在 synthesize_answer 前插入额外任务。"
                             "只输出 JSON，格式为 {\"tasks\":[{\"kind\":\"read_entrypoint\",\"path\":\"...\",\"title\":\"...\"}]} 或 {\"tasks\":[]}。"
@@ -684,7 +753,7 @@ def _suggest_failed_verification_recovery_with_llm(task: CodexTask, action: Code
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
+                        content=build_codex_system_prompt(
                             "你是 Codex change-recovery planner。"
                             "当验证失败时，判断是否需要在 synthesize_answer 前插入修复任务。"
                             "只输出 JSON，格式为 {\"tasks\":[{\"kind\":\"repair_after_failed_verification\",\"title\":\"...\",\"tool_name\":\"edit_workspace_text|apply_text_patch\",\"path\":\"...\",\"content\":\"...\",\"search_text\":\"...\",\"replace_text\":\"...\"}]} 或 {\"tasks\":[]}。"
@@ -770,7 +839,7 @@ def _suggest_failed_action_recovery_with_llm(task: CodexTask, action: CodexActio
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
+                        content=build_codex_system_prompt(
                             "你是 Codex failure-recovery planner。"
                             "当某个 plan 动作失败后，判断是否需要在 synthesize_answer 前插入一个恢复动作。"
                             "只输出 JSON，格式为 "

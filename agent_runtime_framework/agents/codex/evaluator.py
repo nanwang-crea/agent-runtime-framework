@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
@@ -79,7 +81,7 @@ def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
+                        content=build_codex_system_prompt(
                             "你是 Codex agent 的 output evaluator。"
                             "判断当前任务是否应该 finish、continue 或 abstain。"
                             "只输出 JSON。"
@@ -92,6 +94,7 @@ def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -
                         role="user",
                         content=(
                             f"任务目标：{task.goal}\n"
+                            f"{build_follow_up_context(session=None, context=context) or '近期对话：\n(none)'}\n"
                             f"最近已完成动作：\n{chr(10).join(action_lines)}\n"
                             f"可用工具：{tool_list}\n"
                             "如果当前结果已经回答了用户目标，输出 finish。"
@@ -134,6 +137,30 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     arguments = dict(last_action.metadata.get("arguments") or {})
     target_semantics = _extract_target_semantics(task, last_action)
     if (
+        task.task_profile == "file_reader"
+        and target_semantics is not None
+        and target_semantics.get("resource_kind") == "file"
+        and tool_name == "resolve_workspace_target"
+    ):
+        follow_up_tool = "summarize_workspace_text" if _goal_prefers_summary(task.goal) and "summarize_workspace_text" in tool_names else "read_workspace_text"
+        if follow_up_tool in tool_names:
+            follow_up_path = _relative_target_path(target_semantics, _context)
+            return CodexEvaluationDecision(
+                status="continue",
+                next_action=CodexAction(
+                    kind="call_tool",
+                    instruction=task.goal,
+                    subgoal="gather_evidence",
+                    metadata={
+                        "tool_name": follow_up_tool,
+                        "arguments": {"path": follow_up_path},
+                        "from_evaluator": True,
+                        "evaluator_reason": "file_evidence_insufficient",
+                    },
+                ),
+                summary="resolved file target still needs content evidence",
+            )
+    if (
         task.task_profile == "repository_explainer"
         and target_semantics is not None
         and target_semantics.get("resource_kind") == "directory"
@@ -160,7 +187,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             ),
             summary="directory evidence needs deeper inspection",
         )
-    if tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path"}:
+    if tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory"}:
         synthesized = _synthesize_knowledge_answer(task, completed)
         if synthesized:
             return CodexEvaluationDecision(
@@ -271,6 +298,20 @@ def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[d
 
 def _goal_target_tokens(goal: str) -> list[str]:
     return [token for token in re.split(r"[\s，。,:：]+", goal) if token and ("/" in token or "." in token or "_" in token)]
+
+
+def _goal_prefers_summary(goal: str) -> bool:
+    lowered = goal.strip().lower()
+    return any(marker in lowered for marker in ("总结", "概括", "summarize", "summary", "主要内容"))
+
+
+def _relative_target_path(target_semantics: dict[str, Any], context: Any) -> str:
+    path = str(target_semantics.get("path") or "").strip()
+    root = str(context.application_context.config.get("default_directory") or "").strip()
+    if path and root and path.startswith(root):
+        relative = path[len(root) :].lstrip("/").lstrip("\\")
+        return relative or Path(path).name
+    return path
 
 
 def _extract_claims_from_observation(observation: str) -> list[str]:
