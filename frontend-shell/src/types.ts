@@ -48,6 +48,8 @@ export type AssistantError = {
   stage: string | null;
   retriable: boolean;
   suggestion: string | null;
+  trace_id?: string | null;
+  context?: Record<string, unknown> | null;
 };
 
 export type ResourceMemory = {

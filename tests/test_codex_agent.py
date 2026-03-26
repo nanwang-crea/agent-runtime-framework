@@ -1068,6 +1068,23 @@ def test_codex_read_tool_returns_agent_friendly_metadata(tmp_path: Path):
     assert output["entities"]["path"] == str(workspace / "note.md")
 
 
+def test_codex_inspect_tool_handles_non_utf8_files_gracefully(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (package / "cache.pyc").write_bytes(b"\x80\x04\x95binary-data")
+    context = _context(workspace)
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "inspect_workspace_path")
+
+    output = tool.executor(None, context, {"path": "pkg"})
+
+    assert "service.py" in output["text"]
+    assert "cache.pyc" in output["text"]
+    assert "二进制" in output["text"] or "非文本" in output["text"] or "无法按 UTF-8 读取" in output["text"]
+
+
 def test_codex_edit_tool_returns_change_summary_metadata(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

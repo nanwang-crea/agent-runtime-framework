@@ -592,7 +592,9 @@ def _summarize_file(path: Path) -> str:
         return "文件不存在。"
     if path.suffix == ".py":
         return _summarize_python_file(path)
-    text = path.read_text(encoding="utf-8")
+    text = _read_text_for_summary(path)
+    if text is None:
+        return "二进制或非 UTF-8 文本文件。"
     for line in text.splitlines():
         stripped = line.strip().strip("#").strip()
         if stripped:
@@ -601,7 +603,9 @@ def _summarize_file(path: Path) -> str:
 
 
 def _summarize_python_file(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
+    text = _read_text_for_summary(path)
+    if text is None:
+        return "Python 相关文件，但无法按 UTF-8 读取。"
     try:
         module = ast.parse(text)
     except SyntaxError:
@@ -613,6 +617,13 @@ def _summarize_python_file(path: Path) -> str:
     if symbols:
         return f"定义了 {', '.join(symbols[:4])}"
     return "Python 模块。"
+
+
+def _read_text_for_summary(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:

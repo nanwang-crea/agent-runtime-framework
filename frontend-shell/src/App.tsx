@@ -1,5 +1,6 @@
 import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiRequestError,
   fetchModelCenter,
   fetchSession,
   respondApproval,
@@ -67,6 +68,7 @@ function App() {
   const [approvalText, setApprovalText] = useState("");
   const [activeView, setActiveView] = useState<ViewId>("chat");
   const [pendingUserMessage, setPendingUserMessage] = useState("");
+  const [uiError, setUiError] = useState<AssistantError | null>(null);
   const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
   const [instanceDrafts, setInstanceDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
   const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
@@ -79,31 +81,43 @@ function App() {
   }, []);
 
   async function loadSession() {
-    const payload = await fetchSession();
-    setWorkspace(payload.workspace);
-    setContextState(payload.context);
-    setSession(payload.session);
-    setPlans(payload.plan_history);
+    try {
+      const payload = await fetchSession();
+      setWorkspace(payload.workspace);
+      setContextState(payload.context);
+      setSession(payload.session);
+      setPlans(payload.plan_history);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "加载会话失败。"));
+      setStatus("error");
+    }
   }
 
   async function loadModelCenter() {
-    const payload = await fetchModelCenter();
-    setModelCenter(payload);
-    setInstanceDrafts((current) => {
-      const next = { ...current };
-      for (const [instanceName, instanceCfg] of Object.entries(payload.config.instances || {})) {
-        const baseUrl = String((instanceCfg.connection || {})["base_url"] || "");
-        if (!next[instanceName]) {
-          next[instanceName] = { apiKey: "", baseUrl };
-        } else if (!next[instanceName].baseUrl) {
-          next[instanceName] = {
-            ...next[instanceName],
-            baseUrl,
-          };
+    try {
+      const payload = await fetchModelCenter();
+      setModelCenter(payload);
+      setInstanceDrafts((current) => {
+        const next = { ...current };
+        for (const [instanceName, instanceCfg] of Object.entries(payload.config.instances || {})) {
+          const baseUrl = String((instanceCfg.connection || {})["base_url"] || "");
+          if (!next[instanceName]) {
+            next[instanceName] = { apiKey: "", baseUrl };
+          } else if (!next[instanceName].baseUrl) {
+            next[instanceName] = {
+              ...next[instanceName],
+              baseUrl,
+            };
+          }
         }
-      }
-      return next;
-    });
+        return next;
+      });
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "加载模型配置失败。"));
+      setStatus("error");
+    }
   }
 
   const models = useMemo<ModelsResponse>(() => {
@@ -185,22 +199,34 @@ function App() {
   }
 
   async function handleAgentSwitch(agentProfile: string) {
-    const payload = await updateContext({ agent_profile: agentProfile });
-    setWorkspace(payload.workspace);
-    setContextState(payload.context);
-    setSession(payload.session);
-    setPlans(payload.plan_history);
+    try {
+      const payload = await updateContext({ agent_profile: agentProfile });
+      setWorkspace(payload.workspace);
+      setContextState(payload.context);
+      setSession(payload.session);
+      setPlans(payload.plan_history);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "切换 Agent 失败。"));
+      setStatus("error");
+    }
   }
 
   async function handleWorkspaceSwitch(nextWorkspace: string) {
     if (!nextWorkspace.trim()) {
       return;
     }
-    const payload = await updateContext({ workspace: nextWorkspace.trim() });
-    setWorkspace(payload.workspace);
-    setContextState(payload.context);
-    setSession(payload.session);
-    setPlans(payload.plan_history);
+    try {
+      const payload = await updateContext({ workspace: nextWorkspace.trim() });
+      setWorkspace(payload.workspace);
+      setContextState(payload.context);
+      setSession(payload.session);
+      setPlans(payload.plan_history);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "切换工作区失败。"));
+      setStatus("error");
+    }
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -288,6 +314,7 @@ function App() {
       if (finalPayload !== null) {
         setPendingUserMessage("");
       }
+      setUiError(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
@@ -346,30 +373,42 @@ function App() {
   }
 
   async function handleAuth(instanceId: string) {
-    const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
-    const updated = await updateModelCenter({
-      instances: {
-        [instanceId]: {
-          credentials: { api_key: draft.apiKey },
-          connection: { base_url: draft.baseUrl },
+    try {
+      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
+      const updated = await updateModelCenter({
+        instances: {
+          [instanceId]: {
+            credentials: { api_key: draft.apiKey },
+            connection: { base_url: draft.baseUrl },
+          },
         },
-      },
-    });
-    setModelCenter(updated);
-    const payload = await runModelCenterAction({ action: "authenticate_instance", instance: instanceId });
-    setModelCenter(payload);
-    updateDraft(instanceId, "apiKey", "");
+      });
+      setModelCenter(updated);
+      const payload = await runModelCenterAction({ action: "authenticate_instance", instance: instanceId });
+      setModelCenter(payload);
+      updateDraft(instanceId, "apiKey", "");
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, `认证实例 ${instanceId} 失败。`));
+      setStatus("error");
+    }
   }
 
   async function handleDefaultModelSelect(instanceId: string, modelName: string) {
     if (!instanceId || !modelName) {
       return;
     }
-    const routes = Object.fromEntries(
-      routedRoles.map((role) => [role, { instance: instanceId, model: modelName }]),
-    );
-    const payload = await updateModelCenter({ routes });
-    setModelCenter(payload);
+    try {
+      const routes = Object.fromEntries(
+        routedRoles.map((role) => [role, { instance: instanceId, model: modelName }]),
+      );
+      const payload = await updateModelCenter({ routes });
+      setModelCenter(payload);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, `切换默认模型到 ${instanceId}/${modelName} 失败。`));
+      setStatus("error");
+    }
   }
 
   function preferredModelForInstance(instanceId: string): string {
@@ -384,19 +423,25 @@ function App() {
   }
 
   async function handleSaveConfig(instanceId: string) {
-    const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
-    const payload = await updateModelCenter(
-      {
-        instances: {
-          [instanceId]: {
-            credentials: { api_key: draft.apiKey },
-            connection: { base_url: draft.baseUrl },
+    try {
+      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
+      const payload = await updateModelCenter(
+        {
+          instances: {
+            [instanceId]: {
+              credentials: { api_key: draft.apiKey },
+              connection: { base_url: draft.baseUrl },
+            },
           },
         },
-      },
-    );
-    setModelCenter(payload);
-    updateDraft(instanceId, "apiKey", "");
+      );
+      setModelCenter(payload);
+      updateDraft(instanceId, "apiKey", "");
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, `保存实例 ${instanceId} 配置失败。`));
+      setStatus("error");
+    }
   }
 
   const selectedGlobalInstance = models.active_model.instance || models.default_instance || models.instances[0]?.instance || "";
@@ -616,6 +661,19 @@ function App() {
             <span className={`pill ${status}`}>{status}</span>
           </div>
         </header>
+
+        {uiError ? (
+          <section className="panel">
+            <div className="run-error-card">
+              <strong>{uiError.code} · {uiError.message}</strong>
+              {uiError.suggestion ? <p>{uiError.suggestion}</p> : null}
+              <code>
+                {uiError.stage ? `${uiError.stage} · ` : ""}
+                {uiError.trace_id ? `trace_id=${uiError.trace_id}` : "trace_id=unknown"}
+              </code>
+            </div>
+          </section>
+        ) : null}
 
         {activeView === "chat" ? (
           <section className="chat-layout">
@@ -1026,6 +1084,23 @@ function normalizeDetail(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function extractAssistantError(error: unknown, fallbackMessage: string): AssistantError {
+  if (error instanceof ApiRequestError && error.assistantError) {
+    return error.assistantError;
+  }
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  return {
+    code: "UI_REQUEST_ERROR",
+    message: fallbackMessage,
+    detail: message,
+    stage: "ui",
+    retriable: true,
+    suggestion: "可以重试一次；如果持续失败，请检查后端返回的 trace_id 和日志。",
+    trace_id: null,
+    context: null,
+  };
 }
 
 function compactText(value: string | null | undefined, limit = 120): string {

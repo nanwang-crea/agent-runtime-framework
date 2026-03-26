@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -24,7 +25,9 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
-from agent_runtime_framework.core.errors import AppError
+from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -368,13 +371,20 @@ class DemoAssistantApp:
         runtime = resolve_model_runtime(self.context.application_context, "planner")
         if runtime is not None:
             return
+        route = getattr(self.model_router, "get_route", lambda _role: None)("planner")
+        default_route = getattr(self.model_router, "get_route", lambda _role: None)("default")
         raise AppError(
             code="MODEL_UNAVAILABLE",
             message="未配置可用的大模型，Codex Agent 无法规划下一步动作。",
-            detail="planner model runtime is unavailable",
+            detail=f"planner model runtime is unavailable; planner_route={route}; default_route={default_route}",
             stage="planner",
             retriable=True,
             suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
+            context={
+                **self._error_context(),
+                "planner_route": route or {},
+                "default_route": default_route or {},
+            },
         )
 
     def _compact_text(self, value: Any, *, limit: int = 240) -> str | None:
@@ -425,6 +435,7 @@ class DemoAssistantApp:
 
     def _error_payload(self, exc: Exception) -> dict[str, Any]:
         error = self._normalize_error(exc)
+        log_app_error(logger, error, exc=exc, event="demo_app_error")
         return {
             "status": "error",
             "final_answer": error.message,
@@ -450,8 +461,9 @@ class DemoAssistantApp:
         }
 
     def _normalize_error(self, exc: Exception) -> AppError:
+        base_context = self._error_context()
         if isinstance(exc, AppError):
-            return exc
+            return normalize_app_error(exc, context=base_context)
         if isinstance(exc, FileNotFoundError):
             return AppError(
                 code="RESOURCE_NOT_FOUND",
@@ -460,6 +472,7 @@ class DemoAssistantApp:
                 stage="resolve",
                 retriable=True,
                 suggestion="请检查路径或文件名是否正确。",
+                context=base_context,
             )
         if isinstance(exc, IsADirectoryError):
             return AppError(
@@ -469,6 +482,7 @@ class DemoAssistantApp:
                 stage="execute",
                 retriable=True,
                 suggestion="可以先列出目录内容，或指定目录下的某个文件。",
+                context=base_context,
             )
         if isinstance(exc, NotADirectoryError):
             return AppError(
@@ -478,6 +492,7 @@ class DemoAssistantApp:
                 stage="execute",
                 retriable=True,
                 suggestion="请改为读取文件，或重新指定目录。",
+                context=base_context,
             )
         if isinstance(exc, ValueError) and "outside allowed roots" in str(exc):
             return AppError(
@@ -487,15 +502,25 @@ class DemoAssistantApp:
                 stage="resolve",
                 retriable=False,
                 suggestion="请只操作当前工作区内的文件或目录。",
+                context=base_context,
             )
-        return AppError(
+        return normalize_app_error(
+            exc,
             code="INTERNAL_ERROR",
             message="处理请求时发生了未预期错误。",
-            detail=f"{type(exc).__name__}: {exc}",
             stage="run",
             retriable=False,
             suggestion="可以重试一次；如果持续出现，请检查后端日志。",
+            context={**base_context, "exception_type": type(exc).__name__},
         )
+
+    def _error_context(self) -> dict[str, Any]:
+        return {
+            "workspace": str(self.workspace),
+            "active_agent": self._active_agent,
+            "route": str((self._last_route_decision or {}).get("route") or ""),
+            "route_source": str((self._last_route_decision or {}).get("source") or ""),
+        }
 
     def _resource_payload(self, resource: Any) -> dict[str, Any]:
         return {

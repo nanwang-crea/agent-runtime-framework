@@ -8,6 +8,18 @@ import type {
   SessionResponse,
 } from "./types";
 
+export class ApiRequestError extends Error {
+  status: number;
+  assistantError: AssistantError | null;
+
+  constructor(message: string, status: number, assistantError: AssistantError | null = null) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.assistantError = assistantError;
+  }
+}
+
 /**
  * 后端 API 根地址。
  * - 未设置时：若页面是 file://（如 Electron 打包/dist），则用 http://127.0.0.1:8765，否则用空（相对路径，依赖 Vite 代理）。
@@ -24,7 +36,18 @@ const API_BASE = (() => {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    const assistantError = payload && typeof payload === "object" && payload.error ? (payload.error as AssistantError) : null;
+    const traceSuffix = assistantError?.trace_id ? ` [trace_id=${assistantError.trace_id}]` : "";
+    const message = assistantError
+      ? `${assistantError.code} · ${assistantError.message}${traceSuffix}`
+      : `Request failed: ${response.status}`;
+    throw new ApiRequestError(message, response.status, assistantError);
   }
   return response.json() as Promise<T>;
 }

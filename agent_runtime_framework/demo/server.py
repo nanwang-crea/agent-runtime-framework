@@ -9,6 +9,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.demo.app import DemoAssistantApp, create_demo_assistant_app
 
 logging.basicConfig(
@@ -42,90 +43,96 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
         protocol_version = "HTTP/1.1"
 
         def do_GET(self) -> None:
-            if self.path == "/":
-                self._send_text(_load_asset("index.html"), content_type="text/html; charset=utf-8")
-                return
-            if self.path == "/app.js":
-                self._send_text(_load_asset("app.js"), content_type="application/javascript; charset=utf-8")
-                return
-            if self.path == "/styles.css":
-                self._send_text(_load_asset("styles.css"), content_type="text/css; charset=utf-8")
-                return
-            if self.path == "/api/session":
-                self._send_json(
-                    {
-                        "workspace": str(app.workspace),
-                        "session": app.session_payload(),
-                        "plan_history": app.plan_history_payload(),
-                        "run_history": app.run_history_payload(),
-                        "memory": app.memory_payload(),
-                        "context": app.context_payload(),
-                    }
-                )
-                return
-            if self.path == "/api/model-center":
-                self._send_json(app.model_center_payload())
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            try:
+                if self.path == "/":
+                    self._send_text(_load_asset("index.html"), content_type="text/html; charset=utf-8")
+                    return
+                if self.path == "/app.js":
+                    self._send_text(_load_asset("app.js"), content_type="application/javascript; charset=utf-8")
+                    return
+                if self.path == "/styles.css":
+                    self._send_text(_load_asset("styles.css"), content_type="text/css; charset=utf-8")
+                    return
+                if self.path == "/api/session":
+                    self._send_json(
+                        {
+                            "workspace": str(app.workspace),
+                            "session": app.session_payload(),
+                            "plan_history": app.plan_history_payload(),
+                            "run_history": app.run_history_payload(),
+                            "memory": app.memory_payload(),
+                            "context": app.context_payload(),
+                        }
+                    )
+                    return
+                if self.path == "/api/model-center":
+                    self._send_json(app.model_center_payload())
+                    return
+                self.send_error(HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._send_exception(exc, operation="GET")
 
         def do_POST(self) -> None:
-            if self.path == "/api/chat":
-                payload = self._read_json()
-                message = str(payload.get("message") or "").strip()
-                logging.getLogger("demo.server").info("POST /api/chat message=%r", message[:80] if message else "")
-                if not message:
-                    self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+            try:
+                if self.path == "/api/chat":
+                    payload = self._read_json()
+                    message = str(payload.get("message") or "").strip()
+                    logging.getLogger("demo.server").info("POST /api/chat message=%r", message[:80] if message else "")
+                    if not message:
+                        self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self._send_json(app.chat(message))
                     return
-                self._send_json(app.chat(message))
-                return
-            if self.path == "/api/chat/stream":
-                payload = self._read_json()
-                message = str(payload.get("message") or "").strip()
-                logging.getLogger("demo.server").info("POST /api/chat/stream message=%r", message[:80] if message else "")
-                if not message:
-                    self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+                if self.path == "/api/chat/stream":
+                    payload = self._read_json()
+                    message = str(payload.get("message") or "").strip()
+                    logging.getLogger("demo.server").info("POST /api/chat/stream message=%r", message[:80] if message else "")
+                    if not message:
+                        self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self._send_event_stream(app.stream_chat(message))
                     return
-                self._send_event_stream(app.stream_chat(message))
-                return
-            if self.path == "/api/approve":
-                payload = self._read_json()
-                token_id = str(payload.get("token_id") or "").strip()
-                approved = bool(payload.get("approved"))
-                if not token_id:
-                    self._send_json({"error": "token_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                if self.path == "/api/approve":
+                    payload = self._read_json()
+                    token_id = str(payload.get("token_id") or "").strip()
+                    approved = bool(payload.get("approved"))
+                    if not token_id:
+                        self._send_json({"error": "token_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self._send_json(app.approve(token_id, approved))
                     return
-                self._send_json(app.approve(token_id, approved))
-                return
-            if self.path == "/api/replay":
-                payload = self._read_json()
-                run_id = str(payload.get("run_id") or "").strip()
-                if not run_id:
-                    self._send_json({"error": "run_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                if self.path == "/api/replay":
+                    payload = self._read_json()
+                    run_id = str(payload.get("run_id") or "").strip()
+                    if not run_id:
+                        self._send_json({"error": "run_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self._send_json(app.replay(run_id))
                     return
-                self._send_json(app.replay(run_id))
-                return
-            if self.path == "/api/model-center":
-                payload = self._read_json()
-                self._send_json(app.update_model_center(payload))
-                return
-            if self.path == "/api/context":
-                payload = self._read_json()
-                self._send_json(
-                    app.switch_context(
-                        agent_profile=str(payload.get("agent_profile") or "").strip() or None,
-                        workspace=str(payload.get("workspace") or "").strip() or None,
+                if self.path == "/api/model-center":
+                    payload = self._read_json()
+                    self._send_json(app.update_model_center(payload))
+                    return
+                if self.path == "/api/context":
+                    payload = self._read_json()
+                    self._send_json(
+                        app.switch_context(
+                            agent_profile=str(payload.get("agent_profile") or "").strip() or None,
+                            workspace=str(payload.get("workspace") or "").strip() or None,
+                        )
                     )
-                )
-                return
-            if self.path == "/api/model-center/actions":
-                payload = self._read_json()
-                action = str(payload.get("action") or "").strip()
-                if not action:
-                    self._send_json({"error": "action is required"}, status=HTTPStatus.BAD_REQUEST)
                     return
-                self._send_json(app.run_model_center_action(action, payload))
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+                if self.path == "/api/model-center/actions":
+                    payload = self._read_json()
+                    action = str(payload.get("action") or "").strip()
+                    if not action:
+                        self._send_json({"error": "action is required"}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    self._send_json(app.run_model_center_action(action, payload))
+                    return
+                self.send_error(HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._send_exception(exc, operation="POST")
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -146,6 +153,17 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        def _send_exception(self, exc: Exception, *, operation: str) -> None:
+            error = normalize_app_error(
+                exc,
+                code="HTTP_HANDLER_ERROR",
+                message="请求处理失败。",
+                stage="http",
+                context={"method": operation, "path": self.path},
+            )
+            log_app_error(logging.getLogger("demo.server"), error, exc=exc, event="http_handler_error")
+            self._send_json({"error": error.as_dict()}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def _send_text(self, content: str, *, content_type: str) -> None:
             data = content.encode("utf-8")

@@ -4,7 +4,10 @@ from pathlib import Path
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.demo import create_demo_assistant_app
@@ -174,6 +177,40 @@ def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path
     assert before["runtime"]["instances"]
     assert auth_payload["runtime"]["instances"]["openai"]["authenticated"] is True
     assert selected["config"]["routes"]["conversation"]["model"] == "gpt-5.4"
+
+
+def test_demo_assistant_app_logs_unknown_errors_with_trace_id(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    def _boom(_message: str):
+        raise RuntimeError("boom")
+
+    app.loop.run = _boom  # type: ignore[method-assign]
+
+    with caplog.at_level("ERROR"):
+        payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "INTERNAL_ERROR"
+    assert payload["error"]["trace_id"]
+    assert payload["error"]["context"]["workspace"] == str(workspace)
+    assert payload["error"]["context"]["active_agent"] == "codex"
+    assert any(payload["error"]["trace_id"] in record.message for record in caplog.records)
+
+
+def test_demo_assistant_app_model_center_action_raises_structured_error(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    with pytest.raises(AppError) as exc_info:
+        app.run_model_center_action("unknown_action")
+
+    assert exc_info.value.code == "MODEL_CENTER_ACTION_UNKNOWN"
+    assert exc_info.value.stage == "model_center"
+    assert exc_info.value.context["action"] == "unknown_action"
 
 
 def test_demo_assistant_app_exposes_minimax_and_codex_models(tmp_path: Path):

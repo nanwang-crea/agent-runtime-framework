@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.models import ModelRegistry, ModelRouter
+
+logger = logging.getLogger(__name__)
 
 
 MODEL_ROLES = (
@@ -123,38 +127,75 @@ class ModelCenterService:
         self.router = router
 
     def load(self) -> dict[str, Any]:
-        config = self.store.load_or_create()
-        return self._apply_and_project(config)
+        try:
+            config = self.store.load_or_create()
+            return self._apply_and_project(config)
+        except Exception as exc:
+            error = normalize_app_error(exc, code="MODEL_CENTER_LOAD_FAILED", message="加载模型中心配置失败。", stage="model_center", context={"operation": "load"})
+            log_app_error(logger, error, exc=exc, event="model_center_load_failed")
+            raise error
 
     def payload(self, *, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        active_config = config or self.store.load_or_create()
-        return self._apply_and_project(active_config)
+        try:
+            active_config = config or self.store.load_or_create()
+            return self._apply_and_project(active_config)
+        except Exception as exc:
+            error = normalize_app_error(exc, code="MODEL_CENTER_PAYLOAD_FAILED", message="读取模型中心运行时状态失败。", stage="model_center", context={"operation": "payload"})
+            log_app_error(logger, error, exc=exc, event="model_center_payload_failed")
+            raise error
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
-        updated = self.store.update(patch)
-        return self._apply_and_project(updated)
+        try:
+            updated = self.store.update(patch)
+            return self._apply_and_project(updated)
+        except Exception as exc:
+            error = normalize_app_error(exc, code="MODEL_CENTER_UPDATE_FAILED", message="更新模型中心配置失败。", stage="model_center", context={"operation": "update"})
+            log_app_error(logger, error, exc=exc, event="model_center_update_failed")
+            raise error
 
     def run_action(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = payload or {}
-        normalized_action = action.strip()
-        if normalized_action not in {"authenticate_instance", "refresh_catalog"}:
-            raise ValueError(f"unknown model center action: {action}")
-        config = self.store.load_or_create()
-        if normalized_action == "authenticate_instance":
-            target = str(body.get("instance") or "").strip()
-            if target:
-                runtime = self._runtime_state(config)
-                if target in runtime["instances"]:
-                    runtime["instances"][target] = self._runtime_state_for_instance(
-                        target,
-                        dict(config["instances"].get(target) or {}),
-                    )
-                    return {
-                        "config": config,
-                        "runtime": runtime,
-                        "runtime_checks": {"config_path": str(self.store.path)},
-                    }
-        return self._apply_and_project(config)
+        try:
+            body = payload or {}
+            normalized_action = action.strip()
+            if normalized_action not in {"authenticate_instance", "refresh_catalog"}:
+                raise AppError(
+                    code="MODEL_CENTER_ACTION_UNKNOWN",
+                    message="未知的模型中心动作。",
+                    detail=f"unknown model center action: {action}",
+                    stage="model_center",
+                    retriable=False,
+                    suggestion="请检查前端传入的 action 是否受支持。",
+                    context={
+                        "action": normalized_action or action,
+                        "allowed_actions": ["authenticate_instance", "refresh_catalog"],
+                    },
+                )
+            config = self.store.load_or_create()
+            if normalized_action == "authenticate_instance":
+                target = str(body.get("instance") or "").strip()
+                if target:
+                    runtime = self._runtime_state(config)
+                    if target in runtime["instances"]:
+                        runtime["instances"][target] = self._runtime_state_for_instance(
+                            target,
+                            dict(config["instances"].get(target) or {}),
+                        )
+                        return {
+                            "config": config,
+                            "runtime": runtime,
+                            "runtime_checks": {"config_path": str(self.store.path)},
+                        }
+            return self._apply_and_project(config)
+        except Exception as exc:
+            error = normalize_app_error(
+                exc,
+                code="MODEL_CENTER_ACTION_FAILED",
+                message="执行模型中心动作失败。",
+                stage="model_center",
+                context={"operation": "run_action", "action": action.strip() or action},
+            )
+            log_app_error(logger, error, exc=exc, event="model_center_action_failed")
+            raise error
 
     def _apply_and_project(self, config: dict[str, Any]) -> dict[str, Any]:
         normalized = normalize_config_v3(config)
