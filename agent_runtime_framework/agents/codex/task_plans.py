@@ -7,6 +7,7 @@ from typing import Any
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
 from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_task_resource_semantics
+from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
@@ -37,7 +38,7 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
                 metadata={"path": target},
             )
         )
-        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root})
+        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile)})
     if task.task_profile == "file_reader":
         if "resolve_workspace_target" not in tool_names:
             return None
@@ -55,7 +56,7 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
                 "path": target,
                 "use_default_directory": not target,
                 "use_resolved_target": True,
-                "preferred_read_tool": "summarize_workspace_text" if _goal_prefers_summary(task.goal) else "read_workspace_text",
+                "preferred_read_tool": "read_workspace_excerpt" if _goal_prefers_summary(task.goal) else "read_workspace_text",
             },
         )
         tasks = [
@@ -68,7 +69,7 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
                 metadata={"path": target},
             ),
         ]
-        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root})
+        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile)})
     if task.task_profile == "change_and_verify":
         locate_step = CodexPlanTask(
             title="Locate change target",
@@ -92,7 +93,7 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
                 depends_on=[tasks[-1].task_id],
             )
         )
-        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root})
+        return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile)})
     return None
 
 
@@ -113,6 +114,30 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
                     "search_text": search_text,
                     "replace_text": replace_text,
                 },
+                "risk_class": "high",
+            },
+        )
+    replace_match = re.search(r'替换\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+(?:为|成)\s+"([^"]+)"', goal)
+    if replace_match and "replace_workspace_text" in tool_names:
+        path, search_text, replace_text = replace_match.groups()
+        return CodexPlanTask(
+            title="Replace target contents",
+            kind="modify_target",
+            metadata={
+                "tool_name": "replace_workspace_text",
+                "arguments": {"path": path, "search_text": search_text, "replace_text": replace_text},
+                "risk_class": "high",
+            },
+        )
+    append_match = re.search(r'在\s+([^\s]+)\s+末尾追加\s+"([^"]+)"', goal)
+    if append_match and "append_workspace_text" in tool_names:
+        path, content = append_match.groups()
+        return CodexPlanTask(
+            title="Append target contents",
+            kind="modify_target",
+            metadata={
+                "tool_name": "append_workspace_text",
+                "arguments": {"path": path, "content": bytes(content, "utf-8").decode("unicode_escape")},
                 "risk_class": "high",
             },
         )
@@ -216,6 +241,33 @@ def plan_next_task_action(task: CodexTask) -> CodexAction | None:
                     "path": _resolved_plan_path(next_task),
                     "use_last_focus": bool(next_task.metadata.get("use_last_focus", True)),
                 },
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "rank_representative_files":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "rank_workspace_entries",
+                "arguments": {
+                    "path": _resolved_plan_path(next_task),
+                    "query": task.goal,
+                },
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "extract_outline":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "extract_workspace_outline",
+                "arguments": {"path": _resolved_plan_path(next_task)},
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },
@@ -377,11 +429,67 @@ def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context
                     metadata={"path": resolved_path, "use_last_focus": False},
                 ),
             )
+    if (
+        action.kind == "call_tool"
+        and str(action.metadata.get("tool_name") or "") == "inspect_workspace_path"
+        and task.task_profile == "repository_explainer"
+        and str(plan.metadata.get("workflow") or "") == "repository_overview"
+        and _find_task_by_kind(plan, "rank_representative_files") is None
+        and "rank_workspace_entries" in set(context.application_context.tools.names())
+    ):
+        _insert_task_before_kind(
+            plan,
+            before_kind="synthesize_answer",
+            new_task=CodexPlanTask(
+                title="Rank representative files",
+                kind="rank_representative_files",
+                depends_on=[plan_task.task_id] if plan_task is not None else [],
+                metadata={"path": _resolved_plan_path(plan_task) if plan_task is not None else ""},
+            ),
+        )
+    if (
+        action.kind == "call_tool"
+        and str(action.metadata.get("tool_name") or "") == "rank_workspace_entries"
+        and task.task_profile == "repository_explainer"
+        and str(plan.metadata.get("workflow") or "") == "repository_overview"
+        and "extract_workspace_outline" in set(context.application_context.tools.names())
+    ):
+        ranked_paths = [
+            str(item).strip()
+            for item in (getattr(result, "metadata", {}).get("tool_output") or {}).get("ranked_paths") or []
+            if str(item).strip()
+        ]
+        rank_task_id = plan_task.task_id if plan_task is not None else ""
+        for ranked_path in ranked_paths[:2]:
+            if _has_extract_outline_for_path(plan, ranked_path):
+                continue
+            _insert_task_before_kind(
+                plan,
+                before_kind="synthesize_answer",
+                new_task=CodexPlanTask(
+                    title=f"Extract outline for {ranked_path}",
+                    kind="extract_outline",
+                    depends_on=[rank_task_id] if rank_task_id else [],
+                    metadata={"path": ranked_path},
+                ),
+            )
     if action.kind == "run_verification" and getattr(result, "status", "") == "failed":
         for suggested in _suggest_failed_verification_recovery_with_llm(task, action, result, context):
             if _find_task_by_kind(plan, suggested.kind) is not None:
                 continue
             _insert_task_before_kind(plan, before_kind="synthesize_answer", new_task=suggested)
+            command = str(action.metadata.get("command") or action.instruction or "").strip()
+            if command:
+                _insert_task_before_kind(
+                    plan,
+                    before_kind="synthesize_answer",
+                    new_task=CodexPlanTask(
+                        title="Re-run verification",
+                        kind="run_verification",
+                        depends_on=[suggested.task_id],
+                        metadata={"command": command},
+                    ),
+                )
     if getattr(result, "status", "") == "failed" and action.kind != "run_verification":
         for suggested in _suggest_failed_action_recovery_with_llm(task, action, result, context):
             if _find_task_by_kind(plan, suggested.kind) is not None:
@@ -457,6 +565,16 @@ def _find_task_by_kind(plan: CodexPlan, kind: str) -> CodexPlanTask | None:
         if plan_task.kind == kind:
             return plan_task
     return None
+
+
+def _has_extract_outline_for_path(plan: CodexPlan, path: str) -> bool:
+    normalized = str(path).strip()
+    for plan_task in plan.tasks:
+        if plan_task.kind != "extract_outline":
+            continue
+        if str(plan_task.metadata.get("path") or "").strip() == normalized:
+            return True
+    return False
 
 
 def _insert_task_before_kind(plan: CodexPlan, *, before_kind: str, new_task: CodexPlanTask) -> None:
@@ -653,6 +771,8 @@ def _build_file_reader_summary(task: CodexTask) -> str:
 def _action_kind_for_tool(tool_name: str) -> str:
     return {
         "edit_workspace_text": "edit_text",
+        "replace_workspace_text": "edit_text",
+        "append_workspace_text": "edit_text",
         "apply_text_patch": "apply_patch",
         "create_workspace_path": "create_path",
         "move_workspace_path": "move_path",

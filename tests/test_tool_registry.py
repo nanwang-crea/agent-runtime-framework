@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -160,3 +162,26 @@ def test_agent_spec_allows_minimal_callable_components():
 
     assert spec.name == "demo"
     assert spec.tools == []
+
+
+def test_tool_spec_can_load_prompt_assets(tmp_path: Path):
+    asset = tmp_path / "tool.md"
+    asset.write_text(
+        "snippet: Read bounded excerpts.\n"
+        "- Prefer excerpts for summary tasks.\n"
+        "- Only read full text when the user explicitly asks for it.\n",
+        encoding="utf-8",
+    )
+
+    tool = ToolSpec(
+        name="excerpt",
+        description="read excerpt",
+        executor=_echo_tool,
+        prompt_asset_path=str(asset),
+    )
+
+    assert tool.prompt_snippet == "Read bounded excerpts."
+    assert tool.prompt_guidelines == [
+        "Prefer excerpts for summary tasks.",
+        "Only read full text when the user explicitly asks for it.",
+    ]

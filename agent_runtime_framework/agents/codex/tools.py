@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
@@ -11,6 +12,8 @@ from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.resources import ResolveHint, ResolveRequest, ResourceRef, describe_resource_semantics
 from agent_runtime_framework.sandbox import run_sandboxed_command
+
+_TOOL_ASSETS_DIR = Path(__file__).with_name("tool_assets")
 
 
 def _output_limit(context: Any, key: str, default: int) -> int:
@@ -81,6 +84,14 @@ def build_default_codex_tools() -> list[ToolSpec]:
             prompt_guidelines=["Prefer read_workspace_text over shell cat for normal file inspection."],
         ),
         ToolSpec(
+            name="read_workspace_excerpt",
+            description="Read a short excerpt from a text file inside the current workspace.",
+            executor=_read_workspace_excerpt,
+            input_schema={"path": "string", "max_lines": "integer"},
+            permission_level="content_read",
+            prompt_asset_path=str(_TOOL_ASSETS_DIR / "read_workspace_excerpt.md"),
+        ),
+        ToolSpec(
             name="summarize_workspace_text",
             description="Summarize a text file inside the current workspace.",
             executor=_summarize_workspace_text,
@@ -96,7 +107,43 @@ def build_default_codex_tools() -> list[ToolSpec]:
             input_schema={"path": "string"},
             permission_level="content_read",
             prompt_snippet="Inspect a path and explain its structure.",
-            prompt_guidelines=["Use inspect_workspace_path after a directory listing when the user asks for architecture or module roles."],
+            prompt_guidelines=["Use inspect_workspace_path after a directory listing when you need structure only, not deep file semantics."],
+        ),
+        ToolSpec(
+            name="rank_workspace_entries",
+            description="Rank representative files for repository overview or directory explanation.",
+            executor=_rank_workspace_entries,
+            input_schema={"path": "string", "query": "string"},
+            permission_level="metadata_read",
+            prompt_snippet="Select the most representative files under a directory.",
+            prompt_guidelines=["Use rank_workspace_entries after structure inspection to choose which files deserve deeper reading."],
+        ),
+        ToolSpec(
+            name="extract_workspace_outline",
+            description="Extract a concise role-oriented outline for a workspace file.",
+            executor=_extract_workspace_outline,
+            input_schema={"path": "string"},
+            permission_level="content_read",
+            prompt_snippet="Extract symbols, entrypoints, or short role summaries from a file.",
+            prompt_guidelines=["Use extract_workspace_outline on representative files before writing a repository overview."],
+        ),
+        ToolSpec(
+            name="replace_workspace_text",
+            description="Replace a known text fragment in a workspace file.",
+            executor=_replace_workspace_text,
+            input_schema={"path": "string", "search_text": "string", "replace_text": "string"},
+            permission_level="safe_write",
+            prompt_asset_path=str(_TOOL_ASSETS_DIR / "replace_workspace_text.md"),
+            serialize_by_argument="path",
+        ),
+        ToolSpec(
+            name="append_workspace_text",
+            description="Append text to the end of a workspace file.",
+            executor=_append_workspace_text,
+            input_schema={"path": "string", "content": "string"},
+            permission_level="safe_write",
+            prompt_asset_path=str(_TOOL_ASSETS_DIR / "append_workspace_text.md"),
+            serialize_by_argument="path",
         ),
         ToolSpec(
             name="run_shell_command",
@@ -505,6 +552,32 @@ def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> 
     )
 
 
+def _read_workspace_excerpt(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    ref = _resolve_resource_ref(
+        context,
+        str(arguments.get("path") or ""),
+        use_last_focus=bool(arguments.get("use_last_focus")),
+    )
+    content = context.application_context.resource_repository.load_text(ref)
+    try:
+        max_lines = max(1, int(arguments.get("max_lines") or 12))
+    except (TypeError, ValueError):
+        max_lines = 12
+    excerpt = "\n".join(content.splitlines()[:max_lines]).strip()
+    if not excerpt:
+        excerpt = content[: _output_limit(context, "codex_max_summary_chars", 1000)].strip()
+    excerpt = _truncate_text(excerpt, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="摘录")
+    summary = "\n".join(line.strip() for line in excerpt.splitlines()[:2] if line.strip()) or f"Excerpt of {Path(ref.location).name}"
+    _remember_focus(context, ref, summary)
+    return _build_agent_output(
+        path=ref.location,
+        text=excerpt,
+        summary=summary,
+        truncated=excerpt != content.strip(),
+        next_hint="如果 excerpt 不够，再读取全文或继续提取结构化大纲。",
+    )
+
+
 def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     ref = _resolve_resource_ref(
         context,
@@ -549,12 +622,12 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
     if directories:
         lines.append("子目录：")
         for item in directories[:8]:
-            lines.append(f"- {item.title}/：模块目录。")
+            lines.append(f"- {item.title}/")
     if files:
-        lines.append("关键文件：")
+        lines.append("可见文件：")
         for item in files[:8]:
             file_path = Path(item.location)
-            lines.append(f"- {item.title}：{_summarize_file(file_path)}")
+            lines.append(f"- {item.title}（{_structure_label_for_file(file_path)}）")
     text = "\n".join(lines)
     text = _truncate_text(text, limit=_output_limit(context, "codex_max_inspect_chars", 2000))
     _remember_focus(context, ref, text)
@@ -564,6 +637,62 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
         summary=lines[0],
         next_hint="如果需要细化模块作用，继续读取关键文件。",
         items=[item.title for item in items],
+    )
+
+
+def _rank_workspace_entries(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    ref = _resolve_resource_ref(
+        context,
+        str(arguments.get("path") or ""),
+        use_last_focus=bool(arguments.get("use_last_focus")),
+        use_default_directory=not bool(arguments.get("path")),
+    )
+    path = Path(ref.location)
+    if path.is_file():
+        relative = _relative_workspace_path(context, str(path))
+        summary = f"代表文件：{relative}"
+        _remember_focus(context, ref, summary)
+        return {
+            **_build_agent_output(path=str(path), text=summary, summary=summary, next_hint="下一步提取该文件的大纲。", items=[relative]),
+            "ranked_paths": [relative],
+        }
+    ranked = _rank_representative_files(path, query=str(arguments.get("query") or ""), context=context)
+    relative_ranked = [_relative_workspace_path(context, str(item)) for item in ranked]
+    lines = ["代表文件候选："]
+    for candidate in ranked[:5]:
+        relative = _relative_workspace_path(context, str(candidate))
+        lines.append(f"- {relative}：{_summarize_file(candidate)}")
+    text = "\n".join(lines)
+    _remember_focus(context, ref, text)
+    return {
+        **_build_agent_output(
+            path=str(path),
+            text=text,
+            summary="已选择代表文件。",
+            next_hint="下一步对这些代表文件提取大纲或读取入口内容。",
+            items=relative_ranked,
+        ),
+        "ranked_paths": relative_ranked,
+    }
+
+
+def _extract_workspace_outline(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    ref = _resolve_resource_ref(
+        context,
+        str(arguments.get("path") or ""),
+        use_last_focus=bool(arguments.get("use_last_focus")),
+    )
+    path = Path(ref.location)
+    relative = _relative_workspace_path(context, str(path))
+    detail = _outline_file(path)
+    text = f"- {relative}：{detail}"
+    _remember_focus(context, ref, text)
+    return _build_agent_output(
+        path=str(path),
+        text=text,
+        summary=detail,
+        next_hint="如果还不够，可以继续读取原文或选择下一个代表文件。",
+        items=[relative],
     )
 
 
@@ -619,11 +748,84 @@ def _summarize_python_file(path: Path) -> str:
     return "Python 模块。"
 
 
+def _outline_file(path: Path) -> str:
+    if not path.exists():
+        return "文件不存在。"
+    if path.suffix == ".py":
+        return _outline_python_file(path)
+    return _summarize_file(path)
+
+
+def _outline_python_file(path: Path) -> str:
+    text = _read_text_for_summary(path)
+    if text is None:
+        return "Python 相关文件，但无法按 UTF-8 读取。"
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return "Python 文件。"
+    docstring = ast.get_docstring(module)
+    symbols = [node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    if docstring and symbols:
+        return f"{docstring.strip().splitlines()[0][:80]}；定义了 {', '.join(symbols[:4])}"
+    if docstring:
+        return docstring.strip().splitlines()[0][:120]
+    if symbols:
+        return f"定义了 {', '.join(symbols[:4])}"
+    return "Python 文件。"
+
+
 def _read_text_for_summary(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def _structure_label_for_file(path: Path) -> str:
+    if _read_text_for_summary(path) is None:
+        return "二进制或非 UTF-8 文件"
+    return "文本文件"
+
+
+def _rank_representative_files(root: Path, *, query: str, context: Any, limit: int = 4) -> list[Path]:
+    candidates: list[tuple[tuple[int, int, str], Path]] = []
+    query_tokens = {token.lower() for token in re.split(r"[\s/_.\-，。,:：]+", query) if len(token.strip()) >= 2}
+    for file_path in _iter_candidate_files(root, max_depth=2):
+        relative = file_path.relative_to(root).as_posix()
+        name = file_path.name.lower()
+        score = 0
+        if name in {"readme.md", "readme", "pyproject.toml", "package.json", "cargo.toml"}:
+            score += 100
+        if name in {"__init__.py", "main.py", "app.py", "index.ts", "index.tsx", "service.py"}:
+            score += 90
+        if file_path.suffix in {".py", ".md", ".ts", ".tsx", ".js", ".json", ".toml"}:
+            score += 20
+        if any(token in relative.lower() for token in query_tokens):
+            score += 30
+        depth = len(file_path.relative_to(root).parts)
+        score -= max(0, depth - 1) * 5
+        candidates.append(((-score, depth, relative), file_path))
+    candidates.sort(key=lambda item: item[0])
+    return [path for _, path in candidates[:limit]]
+
+
+def _iter_candidate_files(root: Path, *, max_depth: int) -> list[Path]:
+    ignored_dirs = {"__pycache__", ".git", "node_modules", "dist", "build", ".arf"}
+    results: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if len(relative.parts) > max_depth:
+            continue
+        if any(part in ignored_dirs or part.startswith(".") for part in relative.parts[:-1]):
+            continue
+        results.append(path)
+    return results
 
 
 def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -650,6 +852,38 @@ def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dic
             summary=f"Patched {path.name}",
             truncated=truncated != updated.strip(),
             next_hint="下一步应运行验证或重新读取文件确认修改。",
+            changed_paths=[path.name],
+        ),
+        "before_text": original,
+        "after_text": updated,
+    }
+
+
+def _replace_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    return _apply_text_patch(task, context, arguments)
+
+
+def _append_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    path = _resolve_workspace_path(context, str(arguments.get("path") or ""))
+    if not path.exists():
+        raise FileNotFoundError(path)
+    content = str(arguments.get("content") or "")
+    if not content:
+        raise ValueError("missing content")
+    original = path.read_text(encoding="utf-8")
+    updated = original + content
+    path.write_text(updated, encoding="utf-8")
+    ref = ResourceRef.for_path(path)
+    summary = "\n".join(updated.splitlines()[-3:]) if updated.strip() else ""
+    _remember_focus(context, ref, summary)
+    truncated = _truncate_text(updated, limit=_output_limit(context, "codex_max_write_chars", 2000))
+    return {
+        **_build_agent_output(
+            path=str(path),
+            text=truncated,
+            summary=f"Appended to {path.name}",
+            truncated=truncated != updated.strip(),
+            next_hint="下一步应运行验证或重新读取文件确认追加内容。",
             changed_paths=[path.name],
         ),
         "before_text": original,

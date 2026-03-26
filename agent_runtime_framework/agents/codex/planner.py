@@ -14,6 +14,7 @@ from agent_runtime_framework.agents.codex.prompting import (
     extract_task_resource_semantics,
 )
 from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
+from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
@@ -44,7 +45,7 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
                 subgoal="synthesize_answer",
                 metadata={"direct_output": True},
             )
-        if last_action.observation and profile == "file_reader" and tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path"}:
+        if last_action.observation and profile == "file_reader" and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path"}:
             return CodexAction(
                 kind="respond",
                 instruction=_direct_file_reader_response(str(getattr(task, "goal", "") or ""), last_action.observation),
@@ -121,6 +122,44 @@ def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | N
                     "path": path,
                     "search_text": search_text,
                     "replace_text": replace_text,
+                },
+            },
+        )
+
+    replace_match = re.search(
+        r'替换\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+(?:为|成)\s+"([^"]+)"',
+        text,
+    )
+    if replace_match and "replace_workspace_text" in tool_names:
+        path, search_text, replace_text = replace_match.groups()
+        return CodexAction(
+            kind="edit_text",
+            instruction=text,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "replace_workspace_text",
+                "arguments": {
+                    "path": path,
+                    "search_text": search_text,
+                    "replace_text": replace_text,
+                },
+            },
+        )
+
+    append_match = re.search(r"在\s+([^\s]+)\s+末尾追加\s+\"([^\"]+)\"", text)
+    if append_match and "append_workspace_text" in tool_names:
+        path, content = append_match.groups()
+        return CodexAction(
+            kind="edit_text",
+            instruction=text,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "append_workspace_text",
+                "arguments": {
+                    "path": path,
+                    "content": bytes(content, "utf-8").decode("unicode_escape"),
                 },
             },
         )
@@ -250,6 +289,8 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         "只输出合法 JSON，字段允许为 kind、instruction、tool_name、arguments、risk_class、direct_output。"
         "kind 只能是 call_tool、apply_patch、move_path、delete_path、run_verification、respond。"
         "不要输出 action、tool、task、conversation 等其他 kind。"
+        ,
+        workflow_name=workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or "")),
     )
     follow_up_block = build_follow_up_context(session=session, context=context) or "近期对话：\n(none)"
     semantics = extract_task_resource_semantics(task)

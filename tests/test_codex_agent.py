@@ -19,6 +19,8 @@ from agent_runtime_framework.agents.codex import (
     evaluate_codex_output,
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
+from agent_runtime_framework.agents.codex.workflows import WorkflowRegistry
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.agents.codex.task_plans import (
     advance_task_plan,
@@ -144,6 +146,38 @@ def test_codex_models_support_task_level_plan_defaults():
     assert task.plan is plan
     assert task.plan.tasks[0].status == "pending"
     assert task.plan.tasks[0].action_indexes == []
+
+
+def test_codex_system_prompt_loads_external_markdown_sections():
+    prompt = build_codex_system_prompt("你负责做 planner。")
+
+    assert "你是 Codex runtime agent。" in prompt
+    assert "共享运行时规则" in prompt
+    assert "工具使用原则" in prompt
+    assert "你负责做 planner。" in prompt
+
+
+def test_codex_system_prompt_loads_file_reader_workflow_markdown():
+    prompt = build_codex_system_prompt("你负责做 file reader planner。", workflow_name="file_reader")
+
+    assert "file_reader workflow" in prompt
+    assert "excerpt" in prompt or "片段" in prompt
+
+
+def test_codex_system_prompt_loads_change_and_verify_workflow_markdown():
+    prompt = build_codex_system_prompt("你负责做 change planner。", workflow_name="change_and_verify")
+
+    assert "change_and_verify workflow" in prompt
+    assert "验证" in prompt
+
+
+def test_workflow_registry_loads_markdown_definitions():
+    registry = WorkflowRegistry.default()
+
+    workflow = registry.require_for_task_profile("change_and_verify")
+
+    assert workflow.name == "change_and_verify"
+    assert "验证" in workflow.instructions
 
 
 def test_codex_loop_retries_retriable_action_error_once(tmp_path: Path):
@@ -549,8 +583,12 @@ def test_codex_output_evaluator_promotes_directory_explanation_into_inspect_then
     result = CodexAgentLoop(context).run("介绍 agent_runtime_framework 目录结构和功能")
 
     assert result.status == "completed"
-    assert [action.kind for action in result.task.actions] == ["call_tool", "call_tool", "respond"]
-    assert result.task.actions[1].metadata["tool_name"] == "inspect_workspace_path"
+    assert [action.metadata.get("tool_name") for action in result.task.actions if action.kind == "call_tool"][:3] == [
+        "list_workspace_directory",
+        "inspect_workspace_path",
+        "rank_workspace_entries",
+    ]
+    assert any(action.metadata.get("tool_name") == "extract_workspace_outline" for action in result.task.actions if action.kind == "call_tool")
     assert "assistant/" in result.final_output
     assert "__init__.py" in result.final_output
 
@@ -860,6 +898,52 @@ def test_codex_loop_applies_text_patch_via_default_tooling(tmp_path: Path):
     assert "hello new world" in result.final_output
 
 
+def test_codex_loop_replaces_workspace_text_via_default_tooling(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "note.md"
+    target.write_text("hello old world", encoding="utf-8")
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    loop = CodexAgentLoop(context)
+
+    pending = loop.run('替换 note.md 里的 "old" 为 "new"')
+
+    assert pending.status == "needs_approval"
+    assert pending.action_kind in {"apply_patch", "edit_text"}
+    assert pending.resume_token is not None
+
+    result = loop.resume(pending.resume_token, approved=True)
+
+    assert result.status == "completed"
+    assert target.read_text(encoding="utf-8") == "hello new world"
+
+
+def test_codex_loop_appends_workspace_text_via_default_tooling(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "note.md"
+    target.write_text("hello", encoding="utf-8")
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    loop = CodexAgentLoop(context)
+
+    pending = loop.run('在 note.md 末尾追加 "\\nworld"')
+
+    assert pending.status == "needs_approval"
+    assert pending.action_kind in {"edit_text", "apply_patch"}
+    assert pending.resume_token is not None
+
+    result = loop.resume(pending.resume_token, approved=True)
+
+    assert result.status == "completed"
+    assert target.read_text(encoding="utf-8") == "hello\nworld"
+
+
 def test_codex_loop_moves_workspace_file_via_default_tooling(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1066,6 +1150,55 @@ def test_codex_read_tool_returns_agent_friendly_metadata(tmp_path: Path):
     assert output["truncated"] is True
     assert output["next_hint"]
     assert output["entities"]["path"] == str(workspace / "note.md")
+
+
+def test_codex_excerpt_tool_returns_agent_friendly_excerpt(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("alpha\nbeta\ngamma\ndelta", encoding="utf-8")
+    context = _context(workspace)
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "read_workspace_excerpt")
+
+    output = tool.executor(None, context, {"path": "note.md", "max_lines": 2})
+
+    assert output["text"].splitlines()[:2] == ["alpha", "beta"]
+    assert output["summary"]
+    assert output["next_hint"]
+
+
+def test_codex_rank_workspace_entries_prefers_representative_files(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Package entry."""\n', encoding="utf-8")
+    (package / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (package / "helpers.py").write_text("def helper():\n    return 'x'\n", encoding="utf-8")
+    context = _context(workspace)
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "rank_workspace_entries")
+
+    output = tool.executor(None, context, {"path": "pkg", "query": "请讲解 pkg 这个 package 的结构和主要职责"})
+
+    assert output["ranked_paths"][0] == "pkg/__init__.py"
+    assert "pkg/service.py" in output["ranked_paths"]
+
+
+def test_codex_extract_workspace_outline_summarizes_python_symbols(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "pkg"
+    package.mkdir()
+    (package / "service.py").write_text(
+        '"""Service module."""\n\nclass Service:\n    pass\n\ndef run():\n    return "ok"\n',
+        encoding="utf-8",
+    )
+    context = _context(workspace)
+    tool = next(tool for tool in build_default_codex_tools() if tool.name == "extract_workspace_outline")
+
+    output = tool.executor(None, context, {"path": "pkg/service.py"})
+
+    assert "pkg/service.py" in output["text"]
+    assert "Service module." in output["text"] or "定义了 Service, run" in output["text"]
 
 
 def test_codex_inspect_tool_handles_non_utf8_files_gracefully(tmp_path: Path):
@@ -1601,17 +1734,20 @@ def test_repository_explainer_profile_creates_task_level_plan(tmp_path: Path):
     result = CodexAgentLoop(context).run("agent_runtime_framework 下面主要都有哪些文件都是在做什么")
 
     assert result.task.plan is not None
-    assert [item.kind for item in result.task.plan.tasks] == [
+    assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
         "gather_context",
         "inspect_target",
-        "synthesize_answer",
+        "rank_representative_files",
     ]
+    assert result.task.plan.tasks[-1].kind == "synthesize_answer"
+    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
     assert all(item.status == "completed" for item in result.task.plan.tasks)
     assert result.task.plan.tasks[0].action_indexes == [0]
     assert result.task.plan.tasks[1].action_indexes == [1]
     assert result.task.plan.tasks[2].action_indexes == [2]
     assert result.task.plan.tasks[3].action_indexes == [3]
+    assert all(item.action_indexes for item in result.task.plan.tasks[4:])
 
 
 def test_repository_explainer_plan_uses_shared_task_kinds(tmp_path: Path):
@@ -1628,12 +1764,14 @@ def test_repository_explainer_plan_uses_shared_task_kinds(tmp_path: Path):
     result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
 
     assert result.task.plan is not None
-    assert [item.kind for item in result.task.plan.tasks] == [
+    assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
         "gather_context",
         "inspect_target",
-        "synthesize_answer",
+        "rank_representative_files",
     ]
+    assert result.task.plan.tasks[-1].kind == "synthesize_answer"
+    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
 
 
 def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: Path):
@@ -1659,12 +1797,41 @@ def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: P
 
     result = CodexAgentLoop(context).run(task.goal)
 
-    assert [item.kind for item in result.task.plan.tasks] == [
+    assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
         "gather_context",
         "inspect_target",
-        "synthesize_answer",
+        "rank_representative_files",
     ]
+    assert result.task.plan.tasks[-1].kind == "synthesize_answer"
+    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
+
+
+def test_repository_overview_workflow_reads_representative_outline_before_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    package.mkdir()
+    (package / "__init__.py").write_text('"""Runtime package entry."""\n', encoding="utf-8")
+    (package / "assistant.py").write_text("class Assistant:\n    pass\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("agent_runtime_framework这个目录下面主要都有什么呢？给我简单讲解一下")
+
+    assert result.status == "completed"
+    tool_names = [action.metadata.get("tool_name") for action in result.task.actions if action.kind == "call_tool"]
+    assert tool_names[:4] == [
+        "resolve_workspace_target",
+        "list_workspace_directory",
+        "inspect_workspace_path",
+        "rank_workspace_entries",
+    ]
+    assert tool_names.count("extract_workspace_outline") >= 1
+    assert "assistant.py" in result.final_output
+    assert "Runtime package entry." in result.final_output or "Assistant" in result.final_output
 
 
 def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
@@ -1686,7 +1853,22 @@ def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
         "synthesize_answer",
     ]
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
-    assert result.task.actions[1].metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
+    assert result.task.actions[1].metadata["tool_name"] in {"read_workspace_excerpt", "read_workspace_text"}
+
+
+def test_file_reader_summary_requests_prefer_excerpt_primitive(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nalpha\nbeta\ngamma\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("总结 README.md 主要内容")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "file_reader"
+    assert result.task.actions[1].metadata["tool_name"] == "read_workspace_excerpt"
 
 
 def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path: Path):
@@ -1766,22 +1948,24 @@ def test_repository_explainer_uses_llm_to_insert_read_entrypoint(tmp_path: Path)
     result = CodexAgentLoop(context).run("请讲解 pkg 这个 package 的结构")
 
     assert result.status == "completed"
-    assert [item.kind for item in result.task.plan.tasks] == [
+    assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
         "gather_context",
         "inspect_target",
-        "read_entrypoint",
-        "synthesize_answer",
+        "rank_representative_files",
     ]
-    assert [action.kind for action in result.task.actions] == [
+    assert result.task.plan.tasks[-1].kind == "synthesize_answer"
+    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
+    assert [action.kind for action in result.task.actions[:5]] == [
         "call_tool",
         "call_tool",
         "call_tool",
         "call_tool",
-        "respond",
+        "call_tool",
     ]
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
-    assert result.task.actions[3].metadata["tool_name"] == "read_workspace_text"
+    assert result.task.actions[3].metadata["tool_name"] == "rank_workspace_entries"
+    assert any(action.metadata.get("tool_name") == "extract_workspace_outline" for action in result.task.actions if action.kind == "call_tool")
     assert llm.completions.calls
 
 
@@ -1817,16 +2001,59 @@ def test_change_and_verify_uses_llm_to_insert_repair_after_failed_verification(t
         context.application_context.tools.register(tool)
     llm = _SequenceLLM(
         [
-            '{"best_match":"draft.txt","candidates":["draft.txt"]}',
             '{"tasks":[{"kind":"repair_after_failed_verification","title":"Repair failing draft","tool_name":"edit_workspace_text","path":"draft.txt","content":"fixed text"}]}'
         ]
     )
     context.application_context.llm_client = llm
     context.application_context.llm_model = "test-model"
+    verification_attempts = {"count": 0}
+
+    def _executor(action, _session, _ctx):
+        if action.kind == "call_tool" and action.metadata.get("tool_name") == "resolve_workspace_target":
+            return {
+                "status": "completed",
+                "final_output": "Resolved target: draft.txt",
+                "metadata": {
+                    "tool_output": {
+                        "path": str(target),
+                        "resolved_path": str(target),
+                        "resource_kind": "file",
+                        "is_container": False,
+                        "allowed_actions": ["read", "summarize", "inspect"],
+                    }
+                },
+            }
+        if action.kind == "run_verification":
+            verification_attempts["count"] += 1
+            if verification_attempts["count"] == 1:
+                return {
+                    "status": "failed",
+                    "final_output": "verification failed",
+                    "metadata": {"verification": {"success": False, "summary": "verification failed", "command": "false"}},
+                }
+            return {
+                "status": "completed",
+                "final_output": "verification passed",
+                "metadata": {"verification": {"success": True, "summary": "verification passed", "command": "false"}},
+            }
+        if action.kind == "edit_text":
+            target.write_text("fixed text", encoding="utf-8")
+            return {
+                "status": "completed",
+                "final_output": "fixed text",
+                "metadata": {"tool_output": {"path": "draft.txt", "changed_paths": ["draft.txt"], "text": "fixed text"}},
+            }
+        if action.kind == "respond":
+            return {"status": "completed", "final_output": action.instruction}
+        raise AssertionError(f"unexpected action: {action.kind}")
+
+    context.services["action_executor"] = _executor
 
     loop = CodexAgentLoop(context)
     pending = loop.run("编辑 draft.txt 内容 broken text 并运行验证 false")
     result = loop.resume(pending.resume_token, approved=True)
+    if result.status == "needs_approval":
+        result = loop.resume(result.resume_token, approved=True)
     if result.status == "needs_approval":
         result = loop.resume(result.resume_token, approved=True)
 
@@ -1836,11 +2063,95 @@ def test_change_and_verify_uses_llm_to_insert_repair_after_failed_verification(t
         "modify_target",
         "run_verification",
         "repair_after_failed_verification",
+        "run_verification",
         "synthesize_answer",
     ]
     assert target.read_text(encoding="utf-8") == "fixed text"
     assert llm.completions.calls
-    assert "引用：" in result.final_output
+    assert verification_attempts["count"] == 2
+    assert "verification passed" in result.final_output
+
+
+def test_change_and_verify_re_runs_verification_after_repair(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"tasks":[{"kind":"repair_after_failed_verification","title":"Repair failing draft","tool_name":"edit_workspace_text","path":"draft.txt","content":"fixed text"}]}'
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    verification_attempts = {"count": 0}
+    original_executor = context.services.get("action_executor")
+
+    def _executor(action, session, ctx):
+        if action.kind == "call_tool" and action.metadata.get("tool_name") == "resolve_workspace_target":
+            return {
+                "status": "completed",
+                "final_output": "Resolved target: draft.txt",
+                "metadata": {
+                    "tool_output": {
+                        "path": str(target),
+                        "resolved_path": str(target),
+                        "resource_kind": "file",
+                        "is_container": False,
+                        "allowed_actions": ["read", "summarize", "inspect"],
+                    }
+                },
+            }
+        if action.kind == "run_verification":
+            verification_attempts["count"] += 1
+            if verification_attempts["count"] == 1:
+                return {
+                    "status": "failed",
+                    "final_output": "verification failed",
+                    "metadata": {"verification": {"success": False, "summary": "verification failed", "command": "false"}},
+                }
+            return {
+                "status": "completed",
+                "final_output": "verification passed",
+                "metadata": {"verification": {"success": True, "summary": "verification passed", "command": "false"}},
+            }
+        if action.kind == "edit_text":
+            return {
+                "status": "completed",
+                "final_output": "fixed text",
+                "metadata": {"tool_output": {"path": "draft.txt", "changed_paths": ["draft.txt"], "text": "fixed text"}},
+            }
+        if action.kind == "respond":
+            return {"status": "completed", "final_output": action.instruction}
+        if callable(original_executor):
+            return original_executor(action, session, ctx)
+        raise AssertionError(f"unexpected action: {action.kind}")
+
+    context.services["action_executor"] = _executor
+
+    loop = CodexAgentLoop(context)
+    pending = loop.run("编辑 draft.txt 内容 broken text 并运行验证 false")
+    result = loop.resume(pending.resume_token, approved=True)
+    if result.status == "needs_approval":
+        result = loop.resume(result.resume_token, approved=True)
+    if result.status == "needs_approval":
+        result = loop.resume(result.resume_token, approved=True)
+
+    assert result.status == "completed"
+    assert verification_attempts["count"] == 2
+    assert "verification passed" in result.final_output
+    assert [item.kind for item in result.task.plan.tasks] == [
+        "locate_target",
+        "modify_target",
+        "run_verification",
+        "repair_after_failed_verification",
+        "run_verification",
+        "synthesize_answer",
+    ]
 
 
 def test_repository_explainer_summary_lists_reference_paths(tmp_path: Path):

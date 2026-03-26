@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 
-def build_codex_system_prompt(role_instruction: str) -> str:
+_PROMPTS_DIR = Path(__file__).with_name("prompts")
+
+
+def build_codex_system_prompt(role_instruction: str, *, workflow_name: str = "") -> str:
     role = role_instruction.strip()
-    sections = [
-        "你是 Codex runtime agent。",
-        "共享运行时规则：先理解任务语义，再根据资源语义、最近历史和可用工具决定下一步；不要把原始工具输出误当成最终回答；优先给出单一、可执行、证据充分的下一步。",
-        "工具使用原则：优先使用工作区工具而不是泛化 shell；写操作要匹配 risk_class；在证据不足时继续收集，在证据充足时再综合回答。",
-        role,
-    ]
+    sections = [_load_prompt_doc("runtime_system"), build_workflow_guidance(workflow_name), role]
     return "\n".join(section for section in sections if section)
+
+
+def build_workflow_guidance(workflow_name: str) -> str:
+    normalized = str(workflow_name or "").strip()
+    if not normalized:
+        return ""
+    try:
+        return _load_prompt_doc(normalized)
+    except FileNotFoundError:
+        return ""
 
 
 def build_tool_guidance_lines(context: Any, tool_names: list[str]) -> list[str]:
@@ -117,3 +126,9 @@ def _risk_hint_for_permission(permission_level: str) -> str:
         "safe_write": "high",
         "destructive_write": "destructive",
     }.get(permission_level, "low")
+
+
+@lru_cache(maxsize=16)
+def _load_prompt_doc(name: str) -> str:
+    path = _PROMPTS_DIR / f"{name}.md"
+    return path.read_text(encoding="utf-8").strip()

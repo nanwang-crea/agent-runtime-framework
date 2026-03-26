@@ -8,6 +8,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,8 @@ def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -
                             '格式一：{"decision":"finish"}。'
                             '格式二：{"decision":"continue","kind":"call_tool|respond","instruction":"...","tool_name":"...","arguments":{},"direct_output":true|false}。'
                             '格式三：{"decision":"abstain"}。'
+                            ,
+                            workflow_name=workflow_name_for_task_profile(task.task_profile),
                         ),
                     ),
                     ChatMessage(
@@ -187,7 +190,51 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             ),
             summary="directory evidence needs deeper inspection",
         )
-    if tool_name in {"read_workspace_text", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory"}:
+    if (
+        task.task_profile == "repository_explainer"
+        and tool_name == "inspect_workspace_path"
+        and "rank_workspace_entries" in tool_names
+        and not _has_completed_tool(task, "rank_workspace_entries")
+    ):
+        inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
+        return CodexEvaluationDecision(
+            status="continue",
+            next_action=CodexAction(
+                kind="call_tool",
+                instruction=task.goal,
+                subgoal="gather_evidence",
+                metadata={
+                    "tool_name": "rank_workspace_entries",
+                    "arguments": {"path": inspect_path, "query": task.goal},
+                    "from_evaluator": True,
+                    "evaluator_reason": "representative_files_needed",
+                },
+            ),
+            summary="need representative files before repository summary",
+        )
+    next_outline_path = _next_ranked_outline_path(task)
+    if (
+        task.task_profile == "repository_explainer"
+        and next_outline_path
+        and "extract_workspace_outline" in tool_names
+        and tool_name in {"rank_workspace_entries", "extract_workspace_outline"}
+    ):
+        return CodexEvaluationDecision(
+            status="continue",
+            next_action=CodexAction(
+                kind="call_tool",
+                instruction=task.goal,
+                subgoal="gather_evidence",
+                metadata={
+                    "tool_name": "extract_workspace_outline",
+                    "arguments": {"path": next_outline_path},
+                    "from_evaluator": True,
+                    "evaluator_reason": "representative_outline_needed",
+                },
+            ),
+            summary="need representative file outline before repository summary",
+        )
+    if tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory", "extract_workspace_outline"}:
         synthesized = _synthesize_knowledge_answer(task, completed)
         if synthesized:
             return CodexEvaluationDecision(
@@ -208,6 +255,34 @@ def _last_completed_action(task: CodexTask) -> CodexAction | None:
         if action.status == "completed":
             return action
     return None
+
+
+def _has_completed_tool(task: CodexTask, tool_name: str) -> bool:
+    return any(
+        action.status == "completed" and str(action.metadata.get("tool_name") or "") == tool_name
+        for action in task.actions
+    )
+
+
+def _next_ranked_outline_path(task: CodexTask) -> str:
+    ranked_paths: list[str] = []
+    outlined_paths: set[str] = set()
+    for action in task.actions:
+        if action.status != "completed":
+            continue
+        tool_name = str(action.metadata.get("tool_name") or "")
+        if tool_name == "rank_workspace_entries":
+            result = dict(action.metadata.get("result") or {})
+            tool_output = dict(result.get("tool_output") or {})
+            ranked_paths = [str(item).strip() for item in tool_output.get("ranked_paths") or [] if str(item).strip()]
+        elif tool_name == "extract_workspace_outline":
+            path = str(dict(action.metadata.get("arguments") or {}).get("path") or "").strip()
+            if path:
+                outlined_paths.add(path)
+    for path in ranked_paths:
+        if path not in outlined_paths:
+            return path
+    return ""
 
 
 def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str]) -> CodexEvaluationDecision:
@@ -260,6 +335,10 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
     observation = (last.observation or "").strip()
     if not observation:
         return ""
+    if task.task_profile == "repository_explainer":
+        repository_summary = _build_repository_claim_summary(task)
+        if repository_summary:
+            return repository_summary
     role_summary = _build_claim_based_answer(
         task.goal,
         task.memory.claims or _extract_claims_from_observation(observation),
@@ -271,9 +350,27 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
         return f"关于 `{_extract_target_label(task.goal)}`，我先整理了目录结构和关键文件职责：\n{observation}"
     if tool_name == "summarize_workspace_text":
         return f"按你的问题，我先概括如下：\n{observation}"
+    if tool_name == "read_workspace_excerpt":
+        return f"我先基于关键片段做一个简要说明：\n{observation}"
     if tool_name == "read_workspace_text":
         return f"我先基于已读取内容做一个简要说明：\n{_summarize_read_content(observation)}"
     return observation
+
+
+def _build_repository_claim_summary(task: CodexTask) -> str:
+    structure_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "structure"]
+    role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
+    lines: list[str] = []
+    if structure_claims:
+        lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
+    for claim in role_claims[:4]:
+        subject = str(claim.get("subject") or "").strip()
+        detail = str(claim.get("detail") or "").strip()
+        if subject and detail:
+            lines.append(f"{subject} 的作用是{detail}")
+    if not lines:
+        return ""
+    return "基于已收集的信息，我的总结是：\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[dict[str, str]]) -> str:

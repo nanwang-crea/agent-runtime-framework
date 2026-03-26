@@ -55,7 +55,16 @@ def _extract_claims(tool_name: str, text: str) -> tuple[list[str], list[dict[str
             detail = match.group(2).strip()
             claims.append(f"{target} 的作用是{detail}")
             typed_claims.append({"kind": "role", "subject": target, "detail": detail})
-    elif tool_name == "read_workspace_text":
+    elif tool_name == "extract_workspace_outline":
+        for line in stripped.splitlines():
+            match = re.match(r"-\s+([^:：]+)[:：](.+)", line.strip())
+            if not match:
+                continue
+            target = match.group(1).strip()
+            detail = match.group(2).strip()
+            claims.append(f"{target} 的作用是{detail}")
+            typed_claims.append({"kind": "role", "subject": target, "detail": detail})
+    elif tool_name in {"read_workspace_text", "read_workspace_excerpt"}:
         preview = [line.strip() for line in stripped.splitlines() if line.strip()][:2]
         for line in preview:
             claims.append(line)
@@ -95,8 +104,10 @@ def update_task_memory(task: Any, action: Any, result: Any) -> None:
 
     if action.kind in {"call_tool", "run_verification"} and tool_name in {
         "read_workspace_text",
+        "read_workspace_excerpt",
         "summarize_workspace_text",
         "inspect_workspace_path",
+        "extract_workspace_outline",
         "list_workspace_directory",
     }:
         _append_unique(memory.open_questions, f"answer user goal: {task.goal}")
