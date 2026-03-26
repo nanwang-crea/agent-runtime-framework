@@ -8,6 +8,7 @@ from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
 from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.resources import ResolveHint, ResolveRequest, ResourceRef, describe_resource_semantics
@@ -254,6 +255,7 @@ def _resolve_resource_ref(
 
 def _remember_focus(context: Any, ref: ResourceRef, summary: str) -> None:
     context.application_context.session_memory.remember_focus([ref], summary=summary)
+    update_loaded_instructions(context, str(ref.location))
     index_memory = getattr(context.application_context, "index_memory", None)
     remember = getattr(index_memory, "remember", None)
     if not callable(remember):

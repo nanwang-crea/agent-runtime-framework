@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext, build_default_codex_tools, evaluate_codex_output, plan_next_codex_action
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
@@ -209,6 +210,7 @@ class DemoAssistantApp:
     def context_payload(self) -> dict[str, Any]:
         return {
             "active_agent": self._active_agent,
+            "active_persona": self._active_persona_name(),
             "available_agents": [
                 {"id": "codex", "label": "Codex Agent", "kind": "agent"},
                 {"id": "qa_only", "label": "Q&A", "kind": "chat"},
@@ -223,6 +225,9 @@ class DemoAssistantApp:
             if agent_profile not in {"codex", "qa_only"}:
                 raise ValueError(f"unknown agent profile: {agent_profile}")
             self._active_agent = agent_profile
+            self.context.services["active_agent"] = agent_profile
+            if agent_profile == "qa_only" and self.context.session is not None:
+                self.context.session.active_persona = "general"
         if workspace:
             next_workspace = Path(workspace).expanduser().resolve()
             if not next_workspace.exists():
@@ -243,6 +248,14 @@ class DemoAssistantApp:
             "memory": self.memory_payload(),
             "context": self.context_payload(),
         }
+
+    def _active_persona_name(self) -> str:
+        session = self.context.session
+        if session is not None and session.active_persona:
+            return session.active_persona
+        if self._active_agent == "qa_only":
+            return "general"
+        return resolve_runtime_persona(self.context).name
 
     def session_payload(self) -> dict[str, Any]:
         session = self.context.session
@@ -601,7 +614,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         app_context.tools.register(tool)
     context = CodexContext(
         application_context=app_context,
-        services={},
+        services={"active_agent": "codex"},
         session=AssistantSession(session_id=str(uuid4())),
     )
     context.services["next_action_planner"] = _build_demo_next_action_planner(workspace_path)

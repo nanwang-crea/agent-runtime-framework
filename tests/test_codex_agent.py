@@ -20,6 +20,7 @@ from agent_runtime_framework.agents.codex import (
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
+from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context
 from agent_runtime_framework.agents.codex.workflows import WorkflowRegistry
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.agents.codex.task_plans import (
@@ -178,6 +179,178 @@ def test_workflow_registry_loads_markdown_definitions():
 
     assert workflow.name == "change_and_verify"
     assert "验证" in workflow.instructions
+
+
+def test_run_context_builder_collects_workspace_memory_and_plan_state(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    file_path = workspace / "note.md"
+    file_path.write_text("hello", encoding="utf-8")
+    context = _context(workspace)
+    context.application_context.config["instructions"] = ["workspace:AGENTS.md"]
+    context.application_context.services["loaded_instructions"] = ["user:~/.config/agent/instructions.md"]
+    context.application_context.session_memory.remember_focus([ResourceRef.for_path(file_path)], summary="note summary")
+    context.application_context.index_memory.put("loaded_instructions", ["memory:MEMORY.md"])
+    task = CodexTask(
+        goal="读取 note.md",
+        actions=[CodexAction(kind="call_tool", instruction="read note", status="completed", observation="note content")],
+        task_profile="file_reader",
+        runtime_persona="explore",
+        plan=CodexPlan(tasks=[CodexPlanTask(title="Read note", kind="gather_context", status="in_progress")]),
+    )
+    task.memory.known_facts.append("note exists")
+    task.memory.open_questions.append("what changed?")
+
+    snapshot = build_run_context(context, task=task, session=context.session, user_input=task.goal)
+
+    assert snapshot.identity["active_agent"] == "codex"
+    assert snapshot.identity["persona"] == "explore"
+    assert snapshot.identity["task_profile"] == "file_reader"
+    assert snapshot.workspace["cwd"] == str(workspace)
+    assert "workspace:AGENTS.md" in snapshot.loaded_instructions
+    assert "user:~/.config/agent/instructions.md" in snapshot.loaded_instructions
+    assert "memory:MEMORY.md" in snapshot.loaded_instructions
+    assert any("note.md" in item for item in snapshot.focused_resources)
+    assert any("read note" in item or "call_tool" in item for item in snapshot.recent_completed_actions)
+    assert snapshot.current_plan_state["tasks"] == ["Read note [in_progress] kind=gather_context"]
+    assert snapshot.memory_snapshot["known_facts"] == ["note exists"]
+    assert snapshot.memory_snapshot["open_questions"] == ["what changed?"]
+
+
+def test_available_tool_names_hide_write_tools_for_explore_persona(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["codex_runtime_persona"] = "explore"
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    names = available_tool_names(context)
+
+    assert "read_workspace_text" in names
+    assert "list_workspace_directory" in names
+    assert "edit_workspace_text" not in names
+    assert "delete_workspace_path" not in names
+
+
+def test_plan_persona_denies_write_tool_execution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    context.services["codex_runtime_persona"] = "plan"
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(
+            kind="edit_text",
+            instruction="edit file",
+            risk_class="high",
+            metadata={
+                "_approval_granted": True,
+                "tool_name": "edit_workspace_text",
+                "arguments": {"path": "draft.txt", "content": "new text"},
+            },
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("编辑 draft.txt 内容 new text")
+
+    assert result.status == "failed"
+    assert "does not allow tool" in result.final_output
+    assert target.read_text(encoding="utf-8") == "old text"
+
+
+def test_explore_persona_asks_approval_for_shell_tool_even_when_action_is_low_risk(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["codex_runtime_persona"] = "explore"
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="pwd",
+            risk_class="low",
+            metadata={"tool_name": "run_shell_command", "arguments": {"command": "pwd"}},
+        )
+    ]
+
+    pending = CodexAgentLoop(context).run("执行 pwd")
+
+    assert pending.status == "needs_approval"
+    assert pending.approval_request is not None
+    assert "requires confirmation" in pending.approval_request.reason
+
+
+def test_run_context_builder_discovers_path_local_instructions(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    note = docs / "note.md"
+    note.write_text("hello", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("root rules", encoding="utf-8")
+    (docs / "AGENTS.md").write_text("docs rules", encoding="utf-8")
+    context = _context(workspace)
+    task = CodexTask(
+        goal="读取 docs/note.md",
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="resolve target",
+                status="completed",
+                metadata={"result": {"tool_output": {"resolved_path": str(note), "path": str(note)}}},
+            )
+        ],
+        task_profile="file_reader",
+    )
+
+    snapshot = build_run_context(context, task=task, session=context.session, user_input=task.goal)
+
+    assert str(workspace / "AGENTS.md") in snapshot.loaded_instructions
+    assert str(docs / "AGENTS.md") in snapshot.loaded_instructions
+
+
+def test_reading_nested_file_tracks_loaded_instructions_for_follow_up(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    note = docs / "note.md"
+    note.write_text("hello", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("root rules", encoding="utf-8")
+    (docs / "AGENTS.md").write_text("docs rules", encoding="utf-8")
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("读取 docs/note.md")
+
+    assert result.status == "completed"
+    loaded = context.application_context.services.get("loaded_instructions")
+    assert isinstance(loaded, list)
+    assert str(workspace / "AGENTS.md") in loaded
+    assert str(docs / "AGENTS.md") in loaded
+    persisted = context.application_context.index_memory.get("loaded_instructions")
+    assert str(docs / "AGENTS.md") in persisted
+
+
+def test_summary_persona_enforces_step_budget(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["codex_runtime_persona"] = "summary"
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(kind="respond", instruction=f"step {index}") for index in range(5)
+    ]
+
+    result = CodexAgentLoop(context).run("请整理一下")
+
+    assert result.status == "failed"
+    assert "step budget exceeded" in result.final_output
 
 
 def test_codex_loop_retries_retriable_action_error_once(tmp_path: Path):

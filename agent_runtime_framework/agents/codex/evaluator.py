@@ -7,7 +7,9 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
+from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
@@ -49,7 +51,7 @@ def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_name
         )
     if task.memory.open_questions and _last_completed_action(task) and _last_completed_action(task).kind == "respond":
         return CodexEvaluationDecision(status="continue", summary="cannot finish while open questions remain")
-    llm_decision = _evaluate_with_model(task, context, tool_names)
+    llm_decision = _evaluate_with_model(task, session, context, tool_names)
     if llm_decision.status != "abstain":
         if llm_decision.next_action is not None:
             llm_decision.next_action.metadata["evaluation_source"] = "model"
@@ -60,7 +62,7 @@ def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_name
     return fallback
 
 
-def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
+def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
     runtime = resolve_model_runtime(context.application_context, "evaluator")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
@@ -74,6 +76,7 @@ def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -
         for action in completed[-4:]
     ]
     tool_list = ", ".join(tool_names)
+    persona = resolve_runtime_persona(context, task=task)
     try:
         response = chat_once(
             llm_client,
@@ -91,15 +94,17 @@ def _evaluate_with_model(task: CodexTask, context: Any, tool_names: list[str]) -
                             '格式三：{"decision":"abstain"}。'
                             ,
                             workflow_name=workflow_name_for_task_profile(task.task_profile),
+                            persona=persona,
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
                             f"任务目标：{task.goal}\n"
-                            f"{build_follow_up_context(session=None, context=context) or '近期对话：\n(none)'}\n"
+                            f"{build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona)}\n"
                             f"最近已完成动作：\n{chr(10).join(action_lines)}\n"
                             f"可用工具：{tool_list}\n"
+                            f"当前 persona evidence_threshold：{persona.evidence_threshold}\n"
                             "如果当前结果已经回答了用户目标，输出 finish。"
                             "如果当前结果只是原始工具输出，还需要补一步工具调用或综合回答，输出 continue。"
                             "如果你不确定，输出 abstain。"

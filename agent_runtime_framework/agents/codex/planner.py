@@ -6,14 +6,15 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import (
     build_codex_system_prompt,
-    build_follow_up_context,
     build_resource_semantics_block,
     build_tool_guidance_lines,
     extract_task_resource_semantics,
 )
 from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
+from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -67,7 +68,8 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
 
 def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None:
     profile = str(getattr(task, "task_profile", "chat") or "chat")
-    tool_names = set(context.application_context.tools.names())
+    persona = resolve_runtime_persona(context, task=task)
+    tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
     if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
         return CodexAction(
@@ -276,7 +278,8 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
     runtime = resolve_model_runtime(context.application_context, "planner")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
-    tool_names = list(context.application_context.tools.names())
+    persona = resolve_runtime_persona(context, task=task)
+    tool_names = available_tool_names(context, persona=persona)
     if llm_client is None or not tool_names:
         return None
     tool_lines = build_tool_guidance_lines(context, tool_names)
@@ -291,15 +294,23 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         "不要输出 action、tool、task、conversation 等其他 kind。"
         ,
         workflow_name=workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or "")),
+        persona=persona,
     )
-    follow_up_block = build_follow_up_context(session=session, context=context) or "近期对话：\n(none)"
+    run_context_block = build_run_context_block(
+        context,
+        task=task,
+        session=session,
+        user_input=str(getattr(task, "goal", "") or ""),
+        persona=persona,
+    )
     semantics = extract_task_resource_semantics(task)
     preferred_file_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) else "read_workspace_text"
     user_prompt = (
         f"任务目标：{task.goal}\n"
         f"任务模式：{getattr(task, 'task_profile', 'chat')}\n"
+        f"runtime persona：{persona.name}\n"
         f"{build_resource_semantics_block(task)}\n"
-        f"{follow_up_block}\n"
+        f"{run_context_block}\n"
         f"最近动作：\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
         f"可用工具：\n{chr(10).join(tool_lines)}\n"
         f"工作区根目录：{context.application_context.config.get('default_directory', '')}\n"
@@ -313,6 +324,7 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         f"- file_reader 模式优先 resolve_workspace_target；当 resource_kind=file 且 allowed_actions={', '.join(semantics.get('allowed_actions') or []) or '(unknown)'} 时，优先 {preferred_file_tool}，再综合回答\n"
         "- change_and_verify 模式优先 edit / patch / write，然后运行验证，再总结\n"
         "- chat 模式优先直接回答，除非用户明确要求查看工作区或修改代码\n"
+        f"- 当前 persona 的 evidence_threshold 是 {persona.evidence_threshold}，证据不足时优先继续收集而不是过早结束\n"
         "示例：\n"
         '- 如果用户说“memory 文件夹下面有什么”，优先输出 {"kind":"call_tool","tool_name":"resolve_workspace_target","arguments":{"query":"memory 文件夹下面有什么","target_hint":"memory"}}\n'
         '- 如果要运行 shell 命令 pwd，输出 {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'

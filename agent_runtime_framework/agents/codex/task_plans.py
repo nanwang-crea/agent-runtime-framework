@@ -5,14 +5,17 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_task_resource_semantics
+from agent_runtime_framework.agents.codex.run_context import available_tool_names
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
 def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
-    tool_names = set(context.application_context.tools.names())
+    persona = resolve_runtime_persona(context, task=task)
+    tool_names = set(available_tool_names(context, persona=persona))
     workspace_root = str(context.application_context.config.get("default_directory") or "")
     if task.task_profile == "repository_explainer":
         if "inspect_workspace_path" not in tool_names:

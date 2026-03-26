@@ -4,7 +4,9 @@ import json
 import re
 from typing import Any
 
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 _REPOSITORY_EXPLAINER_MARKERS = (
@@ -170,6 +172,7 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
     if llm_client is None or not model_name:
         return None
     try:
+        persona = resolve_runtime_persona(context, user_input=user_input)
         response = chat_once(
             llm_client,
             ChatRequest(
@@ -179,15 +182,16 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
                         role="system",
                         content=build_codex_system_prompt(
                             "你负责做 task-profile classifier。只输出 JSON，格式为 "
-                            '{"profile":"chat|repository_explainer|file_reader|change_and_verify"}。'
+                            '{"profile":"chat|repository_explainer|file_reader|change_and_verify"}。',
+                            persona=persona,
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
                             f"用户请求：{user_input}\n"
-                            + (build_follow_up_context(session=session, context=context) + "\n" if context is not None else "")
-                            + 
+                            + (build_run_context_block(context, session=session, user_input=user_input, persona=persona) + "\n" if context is not None else "")
+                            +
                             "如果是在问代码库结构、目录内容、文件分布，用 repository_explainer。"
                             "如果是在读取、总结、解释某个具体文件内容，用 file_reader。"
                             "如果是在要求修改、创建、删除、验证，用 change_and_verify。"

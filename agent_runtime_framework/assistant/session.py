@@ -15,6 +15,7 @@ class AssistantSession:
     session_id: str
     turns: list[AssistantTurn] = field(default_factory=list)
     focused_capability: str | None = None
+    active_persona: str | None = None
     plan_history: list["ExecutionPlan"] = field(default_factory=list)
     confirmed_steps: set[tuple[str, int]] = field(default_factory=set)
 

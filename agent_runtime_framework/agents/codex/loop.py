@@ -19,7 +19,9 @@ from agent_runtime_framework.agents.codex.models import (
 )
 from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
+from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
+from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.agents.codex.task_plans import (
     advance_task_plan,
@@ -132,8 +134,15 @@ class CodexAgentLoop:
             pending = self._restore_persisted_pending_clarification()
         if pending is not None:
             self._clear_persisted_pending_clarification()
-            task = CodexTask(goal=_merge_clarification_goal(pending.goal, user_input), actions=[], task_profile=pending.task_profile)
+            task = CodexTask(
+                goal=_merge_clarification_goal(pending.goal, user_input),
+                actions=[],
+                task_profile=pending.task_profile,
+                runtime_persona=str(getattr(pending, "runtime_persona", "") or ""),
+            )
             task.memory = pending.memory
+            task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=task.goal).name
+            session.active_persona = task.runtime_persona
             task.plan = build_task_plan(task, self.context)
             return task
         task_profile = classify_task_profile(user_input, self.context, session=session)
@@ -142,6 +151,8 @@ class CodexAgentLoop:
             planned = planner(user_input, session, self.context)
             if isinstance(planned, CodexTask):
                 planned.task_profile = task_profile
+                planned.runtime_persona = resolve_runtime_persona(self.context, task=planned, user_input=user_input).name
+                session.active_persona = planned.runtime_persona
                 for action in planned.actions:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
@@ -153,8 +164,13 @@ class CodexAgentLoop:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
                         action.metadata["direct_output"] = True
-                return CodexTask(goal=user_input, actions=actions, task_profile=task_profile)
+                task = CodexTask(goal=user_input, actions=actions, task_profile=task_profile)
+                task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=user_input).name
+                session.active_persona = task.runtime_persona
+                return task
         task = CodexTask(goal=user_input, actions=[], task_profile=task_profile)
+        task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=user_input).name
+        session.active_persona = task.runtime_persona
         task.plan = build_task_plan(task, self.context)
         return task
 
@@ -198,12 +214,32 @@ class CodexAgentLoop:
         last_kind = ""
         task.status = "running"
         action_index = max(0, start_index)
+        step_budget = resolve_runtime_persona(self.context, task=task, user_input=task.goal).default_step_budget
         while True:
+            completed_actions = sum(1 for item in task.actions if item.status == "completed")
+            if completed_actions >= step_budget and self._next_action_index(task, start_index=action_index) is not None:
+                task.status = "failed"
+                return CodexAgentLoopResult(
+                    status="failed",
+                    final_output=f"step budget exceeded for persona '{task.runtime_persona or 'general'}'",
+                    task=task,
+                    action_kind="step_budget_exceeded",
+                    run_id=run_id,
+                )
             next_index = self._next_action_index(task, start_index=action_index)
             if next_index is None:
                 planned = self._plan_next_action(task, session)
                 if planned is None:
                     break
+                if completed_actions + 1 > step_budget:
+                    task.status = "failed"
+                    return CodexAgentLoopResult(
+                        status="failed",
+                        final_output=f"step budget exceeded for persona '{task.runtime_persona or 'general'}'",
+                        task=task,
+                        action_kind="step_budget_exceeded",
+                        run_id=run_id,
+                    )
                 task.actions.append(planned)
                 next_index = len(task.actions) - 1
                 attach_action_to_plan(task, planned, next_index)
@@ -319,6 +355,7 @@ class CodexAgentLoop:
             goal=goal,
             actions=[],
             task_profile=str(payload.get("task_profile") or "chat").strip() or "chat",
+            runtime_persona=str(payload.get("runtime_persona") or "").strip(),
         )
         memory_payload = dict(payload.get("memory") or {})
         for field_name, value in memory_payload.items():
@@ -337,6 +374,7 @@ class CodexAgentLoop:
             {
                 "goal": task.goal,
                 "task_profile": task.task_profile,
+                "runtime_persona": task.runtime_persona,
                 "message": message,
                 "memory": asdict(task.memory),
             },
@@ -558,6 +596,7 @@ class CodexAgentLoop:
             raise ValueError(f"path is outside allowed roots: {resolved}")
         label = str(resolved.relative_to(root)) if resolved != root else root.name
         summary = f"Located target: {label}"
+        update_loaded_instructions(self.context, str(resolved))
         semantics = describe_resource_semantics(
             ResourceRef.for_path(resolved),
             self.context.application_context.resource_repository,
@@ -585,6 +624,9 @@ class CodexAgentLoop:
         if not tool_name:
             return CodexActionResult(status="failed", final_output="missing tool_name")
         tool = self.context.application_context.tools.require(tool_name)
+        access_result = self._enforce_persona_tool_access(action, tool, session=self.context.session)
+        if access_result is not None:
+            return access_result
         try:
             result = execute_tool_call(
                 tool,
@@ -670,6 +712,9 @@ class CodexAgentLoop:
     def _execute_verification_action(self, action: CodexAction) -> CodexActionResult:
         command = str(action.metadata.get("command") or action.instruction or "").strip()
         tool = self.context.application_context.tools.require("run_shell_command")
+        access_result = self._enforce_persona_tool_access(action, tool, session=self.context.session)
+        if access_result is not None:
+            return access_result
         result = execute_tool_call(
             tool,
             ToolCall(tool_name="run_shell_command", arguments={"command": command}),
@@ -710,6 +755,39 @@ class CodexAgentLoop:
                 metadata=dict(result.get("metadata") or {}),
             )
         return CodexActionResult(status="completed", final_output=str(result or ""))
+
+    def _enforce_persona_tool_access(self, action: CodexAction, tool: Any, *, session: AssistantSession | None) -> CodexActionResult | None:
+        from agent_runtime_framework.agents.codex.personas import tool_access_for_persona
+
+        persona = resolve_runtime_persona(self.context, task=None, user_input=action.instruction)
+        access = tool_access_for_persona(persona, tool)
+        if session is not None:
+            session.active_persona = persona.name
+        action.metadata["runtime_persona"] = persona.name
+        action.metadata["persona_tool_access"] = access
+        tool_name = str(getattr(tool, "name", "") or action.metadata.get("tool_name") or "")
+        if access == "deny":
+            return CodexActionResult(
+                status="failed",
+                final_output=f"persona '{persona.name}' does not allow tool '{tool_name}'",
+                metadata={
+                    "error": {
+                        "code": "PERSONA_TOOL_DENIED",
+                        "message": f"persona '{persona.name}' denied tool '{tool_name}'",
+                        "retriable": False,
+                    }
+                },
+            )
+        if access == "ask" and not bool(action.metadata.get("_approval_granted")):
+            return CodexActionResult(
+                status="pending",
+                final_output=f"persona '{persona.name}' requires confirmation for tool '{tool_name}'",
+                needs_approval=True,
+                approval_reason=f"persona '{persona.name}' requires confirmation for tool '{tool_name}'",
+                risk_class=action.risk_class or "high",
+                metadata={"persona_tool_access": access, "runtime_persona": persona.name},
+            )
+        return None
 
     def _result_from_app_error(self, error: AppError) -> CodexActionResult:
         payload = error.as_dict()

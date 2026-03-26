@@ -28,7 +28,7 @@ from agent_runtime_framework.assistant.conversation import _build_messages
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.core.specs import ToolSpec
-from agent_runtime_framework.resources import LocalFileResourceRepository
+from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
 from agent_runtime_framework.tools import ToolRegistry
 
 
@@ -281,6 +281,27 @@ def test_conversation_message_builder_does_not_duplicate_current_user_turn():
     user_messages = [message.content for message in messages if message.role == "user"]
 
     assert user_messages.count("帮我看看 docs") == 1
+
+
+def test_conversation_message_builder_can_include_run_context(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    note = workspace / "note.md"
+    note.write_text("hello", encoding="utf-8")
+    context = _assistant_context(workspace)
+    context.application_context.config["instructions"] = ["workspace:AGENTS.md"]
+    context.application_context.session_memory.remember_focus(
+        [ResourceRef.for_path(note)],
+        summary="recent note",
+    )
+    session = AssistantSession(session_id="demo", active_persona="general")
+    session.add_turn("assistant", "你好")
+
+    messages = _build_messages("继续聊这个项目", session, context=context)
+
+    assert "运行时上下文：" in messages[0].content
+    assert "loaded_instructions:" in messages[0].content
+    assert "最近焦点资源：" in messages[0].content
 
 
 def test_agent_loop_falls_back_to_triggered_skill_when_llm_not_available(tmp_path: Path):

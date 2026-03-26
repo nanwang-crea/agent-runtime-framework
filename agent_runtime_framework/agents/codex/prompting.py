@@ -4,13 +4,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from agent_runtime_framework.agents.codex.personas import RuntimePersona
+from agent_runtime_framework.agents.codex.run_context import build_run_context_block
+
 
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
 
 
-def build_codex_system_prompt(role_instruction: str, *, workflow_name: str = "") -> str:
+def build_codex_system_prompt(role_instruction: str, *, workflow_name: str = "", persona: RuntimePersona | None = None) -> str:
     role = role_instruction.strip()
-    sections = [_load_prompt_doc("runtime_system"), build_workflow_guidance(workflow_name), role]
+    persona_prompt = persona.prompt_preamble if persona is not None else ""
+    sections = [_load_prompt_doc("runtime_system"), persona_prompt, build_workflow_guidance(workflow_name), role]
     return "\n".join(section for section in sections if section)
 
 
@@ -63,22 +67,8 @@ def build_follow_up_context(*, session: Any | None, context: Any) -> str:
         if recent_turns:
             lines = [f"- {turn.role}: {turn.content}" for turn in recent_turns]
             sections.append("近期对话：\n" + "\n".join(lines))
-    snapshot = context.application_context.session_memory.snapshot()
-    if getattr(snapshot, "focused_resources", None):
-        focus_lines = []
-        for ref in snapshot.focused_resources[:3]:
-            location = str(getattr(ref, "location", "") or "")
-            try:
-                label = Path(location).name or location
-            except Exception:
-                label = location
-            focus_lines.append(f"- {label}: {location}")
-        summary = str(getattr(snapshot, "last_summary", "") or "").strip()
-        body = "最近焦点资源：\n" + "\n".join(focus_lines)
-        if summary:
-            body += f"\n最近焦点摘要：{summary}"
-        sections.append(body)
-    return "\n".join(sections)
+    sections.append(build_run_context_block(context, session=session))
+    return "\n".join(section for section in sections if section)
 
 
 def extract_task_resource_semantics(task: Any) -> dict[str, Any]:

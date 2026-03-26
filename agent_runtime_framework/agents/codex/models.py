@@ -77,6 +77,7 @@ class CodexTask:
     goal: str
     actions: list[CodexAction]
     task_profile: str = "chat"
+    runtime_persona: str = ""
     task_id: str = field(default_factory=lambda: str(uuid4()))
     status: str = "pending"
     summary: str = ""

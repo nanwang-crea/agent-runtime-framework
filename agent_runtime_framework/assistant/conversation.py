@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from urllib.error import URLError
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
+from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,7 @@ def stream_conversation_reply(
                 llm_client,
                 ChatRequest(
                     model=model_name,
-                    messages=_build_messages(user_input, session),
+                    messages=_build_messages(user_input, session, context=context),
                     temperature=0.3,
                     max_tokens=max_tokens,
                 ),
@@ -287,7 +288,7 @@ def stream_conversation_reply(
                 llm_client,
                 ChatRequest(
                     model=model_name,
-                    messages=_build_messages(user_input, session),
+                    messages=_build_messages(user_input, session, context=context),
                     temperature=0.3,
                     max_tokens=max_tokens,
                 ),
@@ -308,15 +309,18 @@ def stream_conversation_reply(
     yield _fallback_conversation_reply(user_input)
 
 
-def _build_messages(user_input: str, session: Any) -> list[ChatMessage]:
+def _build_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
+    system_content = (
+        "你是一个桌面 AI 助手。"
+        "当用户是在正常聊天、提问或讨论方案时，直接自然回答。"
+        "当用户明确要求操作本地文件时，应由其他 capability 处理。"
+    )
+    if context is not None:
+        system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
     messages: list[ChatMessage] = [
         ChatMessage(
             role="system",
-            content=(
-                "你是一个桌面 AI 助手。"
-                "当用户是在正常聊天、提问或讨论方案时，直接自然回答。"
-                "当用户明确要求操作本地文件时，应由其他 capability 处理。"
-            ),
+            content=system_content,
         )
     ]
     recent_turns = list(getattr(session, "turns", [])[-6:])

@@ -500,6 +500,16 @@ def test_demo_context_payload_includes_sandbox_state(tmp_path: Path):
     assert context_payload["sandbox"]["workspace_root"] == str(workspace.resolve())
 
 
+def test_demo_context_payload_includes_active_persona(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    context_payload = app.context_payload()
+
+    assert context_payload["active_persona"] == "general"
+
+
 def test_demo_assistant_app_stream_returns_model_unavailable_without_final_payload(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
