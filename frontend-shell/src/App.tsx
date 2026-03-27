@@ -17,7 +17,6 @@ import type {
   ContextPayload,
   ModelCenterResponse,
   ModelsResponse,
-  PlanPayload,
   SessionPayload,
 } from "./types";
 
@@ -37,9 +36,24 @@ type RunLogEntry = {
   text: string;
 };
 
+type RunStageSummary = {
+  total: number;
+  completed: number;
+  running: number;
+  error: number;
+};
+
+type ProcessDetailState = {
+  streamingReply: string;
+  pendingTokenId: string | null;
+  approvalText: string;
+  currentStatus: string;
+};
+
 type RunCardState = {
   id: string;
   anchorUserTurnIndex: number;
+  approvalTokenId: string | null;
   capabilityName: string;
   phaseLabel: string;
   status: "running" | "completed" | "error";
@@ -59,6 +73,12 @@ function App() {
   });
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
   const [plans, setPlans] = useState<PlanPayload[]>([]);
+  const [memory, setMemory] = useState<MemoryPayload>({
+    focused_resource: null,
+    recent_resources: [],
+    last_summary: null,
+    active_capability: null,
+  });
   const [modelCenter, setModelCenter] = useState<ModelCenterResponse | null>(null);
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("idle");
@@ -87,6 +107,7 @@ function App() {
       setContextState(payload.context);
       setSession(payload.session);
       setPlans(payload.plan_history);
+      setMemory(payload.memory);
       setUiError(null);
     } catch (error) {
       setUiError(extractAssistantError(error, "加载会话失败。"));
@@ -183,6 +204,7 @@ function App() {
     setContextState(payload.context);
     setSession(payload.session);
     setPlans(payload.plan_history);
+    setMemory(payload.memory);
     setStatus(payload.status);
     setPendingTokenId(payload.resume_token_id);
     setApprovalText(
@@ -205,6 +227,13 @@ function App() {
       setContextState(payload.context);
       setSession(payload.session);
       setPlans(payload.plan_history);
+      setMemory(payload.memory);
+      setPendingTokenId(null);
+      setApprovalText("");
+      setPendingUserMessage("");
+      setStreamingReply("");
+      setRunCards([]);
+      setStatus("idle");
       setUiError(null);
     } catch (error) {
       setUiError(extractAssistantError(error, "切换 Agent 失败。"));
@@ -222,6 +251,13 @@ function App() {
       setContextState(payload.context);
       setSession(payload.session);
       setPlans(payload.plan_history);
+      setMemory(payload.memory);
+      setPendingTokenId(null);
+      setApprovalText("");
+      setPendingUserMessage("");
+      setStreamingReply("");
+      setRunCards([]);
+      setStatus("idle");
       setUiError(null);
     } catch (error) {
       setUiError(extractAssistantError(error, "切换工作区失败。"));
@@ -252,15 +288,17 @@ function App() {
               id: runId,
               anchorUserTurnIndex,
               capabilityName: "routing",
-              phaseLabel: label || "处理中",
-              status: "running",
-              summary: "运行中",
-              error: null,
-            }, (run) => ({
-              ...run,
-              phaseLabel: label || run.phaseLabel,
-              entries: appendRunEntry(run.entries, "status", label || "处理中"),
-            })),
+                phaseLabel: label || "处理中",
+                status: "running",
+                summary: "运行中",
+                error: null,
+                approvalTokenId: null,
+              }, (run) => ({
+                ...run,
+                capabilityName: run.capabilityName === "routing" ? inferCapabilityName(label, run.capabilityName) : run.capabilityName,
+                phaseLabel: label || run.phaseLabel,
+                entries: appendRunEntry(run.entries, "status", label || "处理中"),
+              })),
           );
         },
         onDelta: ({ delta }) => {
@@ -272,19 +310,25 @@ function App() {
               id: runId,
               anchorUserTurnIndex,
               capabilityName: "routing",
-              phaseLabel: "处理中",
-              status: "running",
-              summary: "运行中",
-              error: null,
-            }, (run) => ({
-              ...run,
-              entries: appendRunEntry(
-                run.entries,
-                step.status === "error" ? "error" : "step",
+                phaseLabel: "处理中",
+                status: "running",
+                summary: "运行中",
+                error: null,
+                approvalTokenId: null,
+              }, (run) => ({
+                ...run,
+                capabilityName: inferCapabilityName(step.name, run.capabilityName),
+                phaseLabel: normalizeDetail(step.detail) || step.name || run.phaseLabel,
+                entries: appendRunEntry(
+                  run.entries,
+                  step.status === "error" ? "error" : "step",
                 formatStepLabel(step),
               ),
             })),
           );
+        },
+        onMemory: ({ memory: nextMemory }) => {
+          setMemory(nextMemory);
         },
         onError: ({ error }) => {
           setStatus("error");
@@ -297,6 +341,7 @@ function App() {
               status: "error",
               summary: `${error.code} · ${error.message}`,
               error,
+              approvalTokenId: null,
             }, (run) => ({
               ...run,
               status: "error",
@@ -323,11 +368,12 @@ function App() {
           id: runId,
           anchorUserTurnIndex,
           capabilityName: "assistant",
-          phaseLabel: "请求失败",
-          status: "error",
-          summary: message,
-          error: {
-            code: "STREAM_BROKEN",
+            phaseLabel: "请求失败",
+            status: "error",
+            summary: message,
+            approvalTokenId: null,
+            error: {
+              code: "STREAM_BROKEN",
             message,
             detail: message,
             stage: "stream",
@@ -358,7 +404,9 @@ function App() {
       return;
     }
     setStatus("running");
-    applyResponse(await respondApproval(pendingTokenId, approved));
+    const targetRun = [...runCards].reverse().find((run) => run.approvalTokenId === pendingTokenId) || null;
+    const payload = await respondApproval(pendingTokenId, approved);
+    applyResponse(payload, targetRun?.id, targetRun?.anchorUserTurnIndex);
   }
 
   function updateDraft(instanceId: string, key: "apiKey" | "baseUrl", value: string) {
@@ -532,6 +580,32 @@ function App() {
   const activeWorkspace = contextState.active_workspace || workspace;
 
   const latestRunCardId = runCards.length > 0 ? runCards[runCards.length - 1].id : null;
+  const latestRun = runCards.length > 0 ? runCards[runCards.length - 1] : null;
+  const activeRun = [...runCards].reverse().find((run) => run.status === "running") || latestRun;
+
+  const runStageSummary = useMemo<RunStageSummary>(() => {
+    if (!activeRun) {
+      return { total: 0, completed: 0, running: 0, error: 0 };
+    }
+
+    let total = 0;
+    let error = 0;
+
+    for (const entry of activeRun.entries) {
+      if (entry.kind === "step" || entry.kind === "error") {
+        total += 1;
+      }
+      if (entry.kind === "error") {
+        error += 1;
+      }
+    }
+
+    const running = activeRun.status === "running" && total > error ? 1 : 0;
+    const completed = Math.max(total - error - running, 0);
+    return { total, completed, running, error };
+  }, [activeRun]);
+
+  const isBusy = status === "running" || status === "streaming";
 
   function refreshLatestRunVisibility() {
     if (activeView !== "chat") {
@@ -588,8 +662,8 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <p className="kicker">Agent Runtime Framework</p>
-          <h1>Agent Workbench</h1>
-          <p className="brand-copy">同一个会话里切换 agent 和 workspace，聊天区、执行轨迹、配置台共用一套工作台。</p>
+          <h1>Agent Shell</h1>
+          <p className="brand-copy">同一个会话里切换 agent 和 workspace，让对话流承载执行过程、历史和配置中心。</p>
         </div>
 
         <nav className="nav">
@@ -678,29 +752,43 @@ function App() {
         {activeView === "chat" ? (
           <section className="chat-layout">
             <section className="panel conversation-panel">
-              <div className="panel-head">
-                <h3>Conversation</h3>
+              <div className="panel-head conversation-head">
+                <div>
+                  <h3>Conversation</h3>
+                  <p className="panel-subcopy">把 Agent 过程收进对话流里：默认只显示简短状态和少量步骤，需要时再展开细节。</p>
+                </div>
+                <div className="live-shell-meta">
+                  <span className={`pill ${status}`}>{status === "streaming" ? "live" : status}</span>
+                  <span className="pill">{contextState.active_agent}</span>
+                  <span className="pill">{runCards.length} runs</span>
+                </div>
               </div>
 
-              <div className="example-row">
-                {examples.map((item) => (
-                  <button key={item} type="button" className="ghost" onClick={() => setMessage(item)}>
-                    {item}
-                  </button>
-                ))}
+              <div className="conversation-intro">
+                <div className="conversation-intro-copy">
+                  <strong>{activeWorkspace ? compactText(activeWorkspace, 56) : "当前工作区"}</strong>
+                  <span>对话是主视图；流程、审批、记忆和计划摘要都以内联方式跟随消息出现。</span>
+                </div>
+                <div className="example-row compact">
+                  {examples.map((item) => (
+                    <button key={item} type="button" className="ghost" onClick={() => setMessage(item)}>
+                      {item}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div ref={messagesRef} className="messages" onScroll={handleMessagesScroll}>
                 {chatItems.length === 0 ? (
-                  <div className="empty-state">
+                  <div className="empty-state conversation-empty-state">
                     <strong>开始一段对话</strong>
-                    <p>你可以直接闲聊，也可以让我读取、总结、列出当前工作区的内容。</p>
+                    <p>发送消息后，系统会先在消息下方显示一个轻量流程块，再自然过渡到 assistant 的最终回答。</p>
                   </div>
                 ) : (
                   chatItems.map((item) => (
                     <Fragment key={item.id}>
                       {item.kind === "message" ? (
-                        <div className={`message ${item.role}`}>
+                        <div className={`message ${item.role} ${item.role === "assistant" && item.content === streamingReply ? "streaming" : ""}`}>
                           <small>{item.role === "user" ? "You" : "Assistant"}</small>
                           {item.role === "assistant" ? <MarkdownContent content={item.content} /> : <div>{item.content}</div>}
                         </div>
@@ -722,6 +810,14 @@ function App() {
                               ),
                             )
                           }
+                          stageSummary={item.run.id === activeRun?.id ? runStageSummary : summarizeRunEntries(item.run.entries, item.run.status)}
+                          processDetails={item.run.id === latestRunCardId ? {
+                            streamingReply,
+                            pendingTokenId,
+                            approvalText,
+                            currentStatus: status,
+                          } : null}
+                          onApproval={(approved) => void handleApproval(approved)}
                         />
                       )}
                     </Fragment>
@@ -742,26 +838,15 @@ function App() {
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   placeholder="输入消息，支持正常聊天，也支持列目录、读取文件、总结文档"
+                  disabled={isBusy}
                 />
                 <div className="composer-bar">
-                  <span className="composer-hint">流式显示已开启，回复会边生成边落到聊天区。</span>
-                  <button type="submit" className="primary">发送</button>
+                  <span className="composer-hint">过程状态会内联显示在对话里，最终回复仍然保持视觉主导。</span>
+                  <button type="submit" className="primary" disabled={isBusy || !message.trim()}>
+                    {status === "streaming" ? "生成中..." : status === "running" ? "执行中..." : "发送"}
+                  </button>
                 </div>
               </form>
-
-              {pendingTokenId ? (
-                <div className="approval">
-                  <p>{approvalText}</p>
-                  <div className="approval-actions">
-                    <button type="button" className="primary" onClick={() => void handleApproval(true)}>
-                      批准继续
-                    </button>
-                    <button type="button" className="ghost" onClick={() => void handleApproval(false)}>
-                      拒绝
-                    </button>
-                  </div>
-                </div>
-              ) : null}
             </section>
           </section>
         ) : null}
@@ -1013,37 +1098,77 @@ function finalizeRunCard(
     }
     return [
       ...runs,
-      {
-        id: runId,
-        anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
-        capabilityName: payload.capability_name || "assistant",
-        phaseLabel: summary,
-        status: payload.status === "error" ? "error" : "completed",
-        entries: payload.execution_trace.map((step, index) => ({
-          id: `final-step-${index}-${step.name}`,
-          kind: step.status === "error" ? "error" : "step",
-          text: formatStepLabel(step),
-        })),
-        collapsed: payload.status !== "error",
-        summary,
-        error,
-      },
+        {
+          id: runId,
+          anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
+          approvalTokenId: payload.resume_token_id,
+          capabilityName: payload.capability_name || "assistant",
+          phaseLabel: summary,
+          status: mapPayloadStatus(payload),
+          entries: mergeFinalTraceEntries([], payload.execution_trace),
+          collapsed: !shouldExpandRunCard(payload),
+          summary,
+          error,
+        },
     ];
   }
 
   return runs.map((run) =>
     run.id !== runId
       ? run
-      : {
+        : {
           ...run,
+          approvalTokenId: payload.resume_token_id,
           capabilityName: payload.capability_name || run.capabilityName,
           phaseLabel: summary,
-          status: payload.status === "error" ? "error" : "completed",
-          collapsed: payload.status !== "error",
+          status: mapPayloadStatus(payload),
+          entries: mergeFinalTraceEntries(run.entries, payload.execution_trace),
+          collapsed: !shouldExpandRunCard(payload),
           summary,
           error,
         },
   );
+}
+
+function shouldExpandRunCard(payload: AssistantResponse): boolean {
+  return Boolean(payload.error || payload.status === "error" || payload.resume_token_id);
+}
+
+function mapPayloadStatus(payload: AssistantResponse): RunCardState["status"] {
+  if (payload.status === "error" || payload.error) {
+    return "error";
+  }
+  if (payload.resume_token_id) {
+    return "running";
+  }
+  return "completed";
+}
+
+function mergeFinalTraceEntries(entries: RunLogEntry[], trace: AssistantResponse["execution_trace"]): RunLogEntry[] {
+  if (trace.length === 0) {
+    return entries;
+  }
+
+  let nextEntries = [...entries];
+  for (const step of trace) {
+    nextEntries = appendRunEntry(nextEntries, step.status === "error" ? "error" : "step", formatStepLabel(step));
+  }
+  return nextEntries;
+}
+
+function inferCapabilityName(source: string | null | undefined, fallback: string): string {
+  const text = String(source || "").trim();
+  if (!text) {
+    return fallback;
+  }
+  const firstSegment = text.split(/[·:|]/)[0]?.trim();
+  if (!firstSegment) {
+    return fallback;
+  }
+  if (firstSegment.length > 32) {
+    return fallback;
+  }
+  return firstSegment;
 }
 
 function formatStepLabel(step: AssistantResponse["execution_trace"][number]): string {
@@ -1128,36 +1253,136 @@ function RunCard({
   run,
   onToggle,
   setContainerRef,
+  stageSummary,
+  processDetails,
+  onApproval,
 }: {
   run: RunCardState;
   onToggle: () => void;
   setContainerRef?: (element: HTMLDivElement | null) => void;
+  stageSummary: RunStageSummary;
+  processDetails: ProcessDetailState | null;
+  onApproval: (approved: boolean) => void;
 }) {
   const summaryText =
     normalizeDetail(run.collapsed ? run.summary : run.phaseLabel).trim() ||
     normalizeDetail(run.phaseLabel) ||
     normalizeDetail(run.summary) ||
     "运行中";
+  const recentEntries = run.entries.slice(-2).reverse();
+  const hasDetails = Boolean(
+    run.error ||
+      processDetails?.streamingReply ||
+      processDetails?.pendingTokenId,
+  );
+  const subtleMeta = [
+    stageSummary.total > 0 ? `${stageSummary.total} steps` : null,
+    stageSummary.running ? "live" : null,
+    stageSummary.error ? `${stageSummary.error} error` : null,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div ref={setContainerRef} className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
       <button type="button" className="run-card-header" onClick={onToggle}>
-        <span className={`run-status ${run.status}`}>{run.status}</span>
-        <div className="run-header-copy">
-          <strong>{run.capabilityName || "assistant"}</strong>
-          <span className="run-summary">{summaryText}</span>
+        <div className="run-card-header-main">
+          <div className="run-header-topline">
+            <span className={`run-status ${run.status}`}>{run.status}</span>
+            <span className="run-header-label">Agent</span>
+          </div>
+          <div className="run-header-copy">
+            <strong>{run.capabilityName || "assistant"}</strong>
+            <span className="run-summary">{summaryText}</span>
+            {subtleMeta ? <span className="run-subtle-meta">{subtleMeta}</span> : null}
+          </div>
         </div>
         <span className="run-toggle">{run.collapsed ? "展开" : "收起"}</span>
       </button>
+      {recentEntries.length > 0 ? (
+        <div className="run-card-preview">
+          {recentEntries.map((entry) => (
+            <div key={entry.id} className={`run-preview-item ${entry.kind}`}>
+              <span className="timeline-dot" />
+              <span>{compactText(entry.text, 110)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="run-card-preview empty">
+          <div className="run-preview-item status">
+            <span className="timeline-dot" />
+            <span>{run.status === "running" ? "等待事件流返回..." : "当前流程暂无步骤详情。"}</span>
+          </div>
+        </div>
+      )}
       {!run.collapsed ? (
         <div className="run-card-body">
-          <ul className="run-log">
-            {run.entries.map((entry) => (
-              <li key={entry.id} className={`run-log-entry ${entry.kind}`}>
-                {entry.text}
-              </li>
-            ))}
-          </ul>
+          <div className="run-detail-grid">
+            <section className="run-detail-section">
+              <div className="run-detail-head">
+                <strong>Process</strong>
+                <span className="section-meta">{run.entries.length} events</span>
+              </div>
+              <div className="agent-timeline compact-timeline">
+                {run.entries.length === 0 ? (
+                  <div className="compact-empty-state">
+                    <strong>等待事件流</strong>
+                    <p>{run.status === "running" ? "状态和步骤返回后会立即显示在这里。" : "这个流程没有附带更多执行细节。"}</p>
+                  </div>
+                ) : (
+                  run.entries.map((entry, index) => (
+                    <div key={entry.id} className={`agent-timeline-item ${entry.kind}`}>
+                      <span className="timeline-dot" />
+                      <div>
+                        <div className="timeline-row">
+                          <strong>{entry.kind === "status" ? "Status" : entry.kind === "step" ? `Step ${index + 1}` : entry.kind === "error" ? "Error" : "Notice"}</strong>
+                          <span className={`mini-pill ${entry.kind === "status" ? "on" : ""} ${entry.kind === "error" ? "danger" : ""}`}>{entry.kind}</span>
+                        </div>
+                        <p>{entry.text}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            {hasDetails ? (
+              <section className="run-detail-section subtle-detail-panel">
+                <div className="run-detail-head">
+                  <strong>Actions</strong>
+                  <span className="section-meta">optional</span>
+                </div>
+
+                {processDetails?.pendingTokenId ? (
+                  <div className="approval approval-inline-card">
+                    <div className="run-detail-head approval-inline-head">
+                      <strong>Approval required</strong>
+                      <span className="mini-pill">pending</span>
+                    </div>
+                    <p>{processDetails.approvalText}</p>
+                    <div className="approval-actions">
+                      <button type="button" className="primary" onClick={() => onApproval(true)}>
+                        批准继续
+                      </button>
+                      <button type="button" className="ghost" onClick={() => onApproval(false)}>
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {processDetails?.streamingReply && processDetails.currentStatus === "streaming" ? (
+                  <div className="workspace-section streaming-preview inline-streaming-preview compact-streaming-note">
+                    <div className="workspace-section-head">
+                      <span className="section-label">Answer</span>
+                      <span className="typing-indicator">Generating</span>
+                    </div>
+                    <p>{compactText(processDetails.streamingReply, 140)}</p>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
+
           {run.error ? (
             <div className="run-error-card">
               <strong>{run.error.message}</strong>
@@ -1172,6 +1397,24 @@ function RunCard({
       ) : null}
     </div>
   );
+}
+
+function summarizeRunEntries(entries: RunLogEntry[], status: RunCardState["status"]): RunStageSummary {
+  let total = 0;
+  let error = 0;
+
+  for (const entry of entries) {
+    if (entry.kind === "step" || entry.kind === "error") {
+      total += 1;
+    }
+    if (entry.kind === "error") {
+      error += 1;
+    }
+  }
+
+  const running = status === "running" && total > error ? 1 : 0;
+  const completed = Math.max(total - error - running, 0);
+  return { total, completed, running, error };
 }
 
 export default App;
