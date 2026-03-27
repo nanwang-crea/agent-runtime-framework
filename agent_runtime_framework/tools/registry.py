@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+
 from agent_runtime_framework.core.specs import ToolSpec
 
 
@@ -25,3 +27,18 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return list(self._tools.keys())
+
+    def find_case_insensitive(self, name: str) -> ToolSpec | None:
+        target = str(name or "").strip().lower()
+        if not target:
+            return None
+        for tool_name, tool in self._tools.items():
+            if tool_name.lower() == target:
+                return tool
+        return None
+
+    def suggest(self, name: str, *, limit: int = 3) -> list[str]:
+        target = str(name or "").strip()
+        if not target:
+            return []
+        return difflib.get_close_matches(target, self.names(), n=limit, cutoff=0.5)

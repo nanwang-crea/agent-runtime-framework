@@ -3,8 +3,8 @@
 此文件由 Agent 自动维护，用于记录可检索的长期记忆。
 
 ## workspace_focus | focus:.
-- text: ". agent-runtime-framework 下面共有 15 个条目。\n子目录：\n- .arf/\n- .git/\n- .pytest_cache/\n- agent_runtime_framework/\n- agent_runtime_framework.egg-info/\n- docs/\n- frontend-shell/\n- tests/\n可见文件：\n- .DS_Store（二进制或非 UTF-8 文件）\n- .api_demo_config.json（文本文件）\n- .arf_demo_config.json（文本文件）\n- .gitignore（文本文件）\n- MEMORY.md（文本文件）\n- README.md（文本文件）\n- pyproject.toml（文本文件）"
-- metadata: {"path": ".", "summary": "agent-runtime-framework 下面共有 15 个条目。\n子目录：\n- .arf/\n- .git/\n- .pytest_cache/\n- agent_runtime_framework/\n- agent_runtime_framework.egg-info/\n- docs/\n- frontend-shell/\n- tests/\n可见文件：\n- .DS_Store（二进制或非 UTF-8 文件）\n- .api_demo_config.json（文本文件）\n- .arf_demo_config.json（文本文件）\n- .gitignore（文本文件）\n- MEMORY.md（文本文件）\n- README.md（文本文件）\n- pyproject.toml（文本文件）"}
+- text: ". 下面一共有 15 个条目。\n目录：.arf, .git, .pytest_cache, agent_runtime_framework, agent_runtime_framework.egg-info, docs, frontend-shell, tests\n文件：.DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml"
+- metadata: {"path": ".", "summary": "下面一共有 15 个条目。\n目录：.arf, .git, .pytest_cache, agent_runtime_framework, agent_runtime_framework.egg-info, docs, frontend-shell, tests\n文件：.DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml"}
 
 ## task_conclusion | task:aa4962af-8abb-4ee0-a3ff-8cc2bc213a48:conclusion
 - text: "帮我列一下当前文件夹下面都有哪些内容呢？ 基于已收集的信息，我的总结是：\n- 目录结构：agent-runtime-framework 下面共有 15 个条目。\n- .arf/ 的作用是模块目录。\n- .git/ 的作用是模块目录。\n- .pytest_cache/ 的作用是模块目录。\n- agent_runtime_framework/ 的作用是模块目录。\n- agent_runtime_framework.egg-info/ 的作用是模块目录。\n引用：\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"

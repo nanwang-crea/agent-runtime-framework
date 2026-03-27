@@ -623,7 +623,29 @@ class CodexAgentLoop:
         arguments = dict(action.metadata.get("arguments") or {})
         if not tool_name:
             return CodexActionResult(status="failed", final_output="missing tool_name")
-        tool = self.context.application_context.tools.require(tool_name)
+        tool = self.context.application_context.tools.get(tool_name)
+        if tool is None:
+            repaired = self.context.application_context.tools.find_case_insensitive(tool_name)
+            if repaired is not None:
+                action.metadata["requested_tool_name"] = tool_name
+                action.metadata["tool_name"] = repaired.name
+                tool_name = repaired.name
+                tool = repaired
+            else:
+                suggestions = self.context.application_context.tools.suggest(tool_name)
+                return CodexActionResult(
+                    status="failed",
+                    final_output=f"unknown tool: {tool_name}",
+                    metadata={
+                        "error": {
+                            "code": "TOOL_NOT_FOUND",
+                            "message": f"unknown tool: {tool_name}",
+                            "available_tools": self.context.application_context.tools.names(),
+                            "suggestions": suggestions,
+                            "retriable": True,
+                        }
+                    },
+                )
         access_result = self._enforce_persona_tool_access(action, tool, session=self.context.session)
         if access_result is not None:
             return access_result
@@ -646,7 +668,11 @@ class CodexAgentLoop:
                     return recovered
             if result.exception is not None:
                 raise result.exception
-            return CodexActionResult(status="failed", final_output=str(result.error or "tool execution failed"))
+            return CodexActionResult(
+                status="failed",
+                final_output=str(result.error or "tool execution failed"),
+                metadata={"error": dict(result.metadata.get("error") or {})},
+            )
         output = result.output
         if isinstance(output, dict):
             final_output = str(output.get("text") or output.get("content") or output.get("stdout") or output)

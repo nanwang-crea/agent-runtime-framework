@@ -185,3 +185,70 @@ def test_tool_spec_can_load_prompt_assets(tmp_path: Path):
         "Prefer excerpts for summary tasks.",
         "Only read full text when the user explicitly asks for it.",
     ]
+
+
+def test_execute_tool_call_repairs_argument_aliases():
+    captured: dict[str, object] = {}
+
+    def _tool(task, context, arguments):
+        captured.update(arguments)
+        return {"ok": True, "path": arguments["path"]}
+
+    tool = ToolSpec(
+        name="reader",
+        description="read file",
+        executor=_tool,
+        input_schema={"path": "string"},
+        argument_aliases={"path": ("file_path", "filepath")},
+    )
+
+    result = execute_tool_call(
+        tool,
+        ToolCall(tool_name="reader", arguments={"file_path": "docs/readme.md"}),
+        task=None,
+        context=None,
+    )
+
+    assert result.success is True
+    assert captured["path"] == "docs/readme.md"
+
+
+def test_execute_tool_call_returns_structured_validation_error_for_type_mismatch():
+    tool = ToolSpec(
+        name="counter",
+        description="count lines",
+        executor=lambda task, context, arguments: {"ok": True},
+        input_schema={"max_lines": "integer"},
+    )
+
+    result = execute_tool_call(
+        tool,
+        ToolCall(tool_name="counter", arguments={"max_lines": "ten"}),
+        task=None,
+        context=None,
+    )
+
+    assert result.success is False
+    assert result.metadata["error"]["code"] == "TOOL_VALIDATION_ERROR"
+    assert result.metadata["error"]["field"] == "max_lines"
+
+
+def test_execute_tool_call_returns_structured_validation_error_for_missing_required_argument():
+    tool = ToolSpec(
+        name="reader",
+        description="read file",
+        executor=lambda task, context, arguments: {"ok": True},
+        input_schema={"path": "string"},
+        required_arguments=("path",),
+    )
+
+    result = execute_tool_call(
+        tool,
+        ToolCall(tool_name="reader", arguments={}),
+        task=None,
+        context=None,
+    )
+
+    assert result.success is False
+    assert result.metadata["error"]["code"] == "TOOL_VALIDATION_ERROR"
+    assert result.metadata["error"]["field"] == "path"

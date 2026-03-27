@@ -66,6 +66,8 @@ class ToolSpec:
     prompt_guidelines: list[str] = field(default_factory=list)
     prompt_asset_path: str = ""
     serialize_by_argument: str | None = None
+    required_arguments: tuple[str, ...] = ()
+    argument_aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.prompt_asset_path and (not self.prompt_snippet or not self.prompt_guidelines):

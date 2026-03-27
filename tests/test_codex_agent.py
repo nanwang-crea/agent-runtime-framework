@@ -353,6 +353,51 @@ def test_summary_persona_enforces_step_budget(tmp_path: Path):
     assert "step budget exceeded" in result.final_output
 
 
+def test_codex_loop_repairs_tool_name_case_before_execution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="read readme",
+            metadata={"tool_name": "READ_WORKSPACE_TEXT", "arguments": {"path": "README.md"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("读取 README.md")
+
+    assert result.status == "completed"
+    assert result.final_output == "hello"
+    assert result.task.actions[0].metadata["tool_name"] == "read_workspace_text"
+
+
+def test_codex_loop_returns_structured_failure_for_unknown_tool(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda _user_input, _session, _ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction="read readme",
+            metadata={"tool_name": "read_workspace_txt", "arguments": {"path": "README.md"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("读取 README.md")
+
+    assert result.status == "failed"
+    assert "unknown tool" in result.final_output
+    error = result.task.actions[0].metadata["result"]["error"]
+    assert error["code"] == "TOOL_NOT_FOUND"
+    assert "read_workspace_text" in error["available_tools"]
+
+
 def test_codex_loop_retries_retriable_action_error_once(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

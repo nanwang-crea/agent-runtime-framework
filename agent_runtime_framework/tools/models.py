@@ -18,3 +18,4 @@ class ToolResult:
     error: str | None = None
     exception: Exception | None = None
     attempt_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)

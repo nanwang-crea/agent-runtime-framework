@@ -8,7 +8,27 @@
 
 **Tech Stack:** Python dataclasses, existing Codex runtime, pytest
 
+## Status
+
+Implementation is complete.
+
+Delivered outcomes:
+- Added shared run-context construction in `agent_runtime_framework/agents/codex/run_context.py`
+- Added runtime personas in `agent_runtime_framework/agents/codex/personas.py`
+- Wired persona-aware context into planner, evaluator, classifier, and conversation
+- Persisted active persona onto task/session/demo context
+- Enforced persona `deny/ask/allow` at execution time
+- Enforced persona step budget at runtime
+- Added instruction auto-discovery for workspace root and target-local paths
+- Persisted discovered instructions into `loaded_instructions` for follow-up turns
+
+Verification:
+- Ran `pytest tests/test_codex_agent.py tests/test_assistant_runtime.py tests/test_demo_app.py -v`
+- Result: `150 passed`
+
 ### Task 1: Lock down run-context and persona behavior with tests
+
+Status: `completed`
 
 **Files:**
 - Modify: `tests/test_codex_agent.py`
@@ -37,6 +57,8 @@ Run: `pytest tests/test_codex_agent.py tests/test_assistant_runtime.py -k "run_c
 Expected: PASS
 
 ### Task 2: Finish Codex runtime persona plumbing
+
+Status: `completed`
 
 **Files:**
 - Modify: `agent_runtime_framework/agents/codex/loop.py`
@@ -74,6 +96,8 @@ Expected: PASS
 
 ### Task 3: Finish shared run-context builder
 
+Status: `completed`
+
 **Files:**
 - Modify: `agent_runtime_framework/agents/codex/run_context.py`
 - Modify: `agent_runtime_framework/agents/codex/prompting.py`
@@ -108,6 +132,8 @@ Expected: PASS
 
 ### Task 4: Verify the full Codex path
 
+Status: `completed`
+
 **Files:**
 - Modify: `tests/test_codex_agent.py`
 
@@ -134,6 +160,8 @@ Expected: PASS
 
 ### Task 5: Full verification
 
+Status: `completed`
+
 **Files:**
 - Test: `tests/test_codex_agent.py`
 - Test: `tests/test_assistant_runtime.py`
@@ -142,7 +170,7 @@ Expected: PASS
 **Step 1: Run targeted suites**
 
 Run: `pytest tests/test_codex_agent.py tests/test_assistant_runtime.py tests/test_demo_app.py -v`
-Expected: PASS
+Observed: PASS (`150 passed`)
 
 **Step 2: Commit**
 
