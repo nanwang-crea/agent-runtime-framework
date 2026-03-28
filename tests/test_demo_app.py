@@ -35,6 +35,37 @@ def _create_demo_assistant_app_with_test_planner(workspace: Path):
     return app
 
 
+def _register_router_model(app, route: str):
+    class _RouterClient:
+        def create_chat_completion(self, _request):
+            return SimpleNamespace(content=json.dumps({"route": route}))
+
+    class _RouterInstance:
+        instance_id = f"router_{route}"
+
+        def list_models(self):
+            return [
+                ModelProfile(
+                    instance=self.instance_id,
+                    model_name=f"router-{route}-model",
+                    display_name="Router Model",
+                    recommended_roles=["router"],
+                )
+            ]
+
+        def authenticate(self, credentials, store):
+            if credentials.get("api_key"):
+                store.set(self.instance_id, {"api_key": credentials["api_key"]})
+            return AuthSession(instance=self.instance_id, authenticated=True, auth_type="api_key")
+
+        def get_client(self, _store):
+            return _RouterClient()
+
+    app.model_registry.register_instance(_RouterInstance())
+    app.model_registry.authenticate(_RouterInstance.instance_id, {"api_key": "secret"})
+    app.model_router.set_route("router", instance_id=_RouterInstance.instance_id, model_name=f"router-{route}-model")
+
+
 def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -410,6 +441,7 @@ def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
+    _register_router_model(app, "conversation")
 
     def _unexpected_planner(*_args, **_kwargs):
         raise AssertionError("planner should not be called for plain conversation")
@@ -427,6 +459,7 @@ def test_demo_assistant_app_stream_routes_plain_greeting_without_planner(tmp_pat
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
+    _register_router_model(app, "conversation")
 
     def _unexpected_planner(*_args, **_kwargs):
         raise AssertionError("planner should not be called for plain conversation")
@@ -445,34 +478,7 @@ def test_demo_assistant_app_uses_router_role_before_planner(tmp_path: Path):
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    class _RouterClient:
-        def create_chat_completion(self, _request):
-            return SimpleNamespace(content='{"route":"conversation","reason":"user asked to discuss before acting"}')
-
-    class _RouterInstance:
-        instance_id = "router_fake"
-
-        def list_models(self):
-            return [
-                ModelProfile(
-                    instance=self.instance_id,
-                    model_name="router-model",
-                    display_name="Router Model",
-                    recommended_roles=["router"],
-                )
-            ]
-
-        def authenticate(self, credentials, store):
-            if credentials.get("api_key"):
-                store.set(self.instance_id, {"api_key": credentials["api_key"]})
-            return AuthSession(instance=self.instance_id, authenticated=True, auth_type="api_key")
-
-        def get_client(self, _store):
-            return _RouterClient()
-
-    app.model_registry.register_instance(_RouterInstance())
-    app.model_registry.authenticate("router_fake", {"api_key": "secret"})
-    app.model_router.set_route("router", instance_id="router_fake", model_name="router-model")
+    _register_router_model(app, "conversation")
 
     def _unexpected_planner(*_args, **_kwargs):
         raise AssertionError("planner should not be called when router chooses conversation")

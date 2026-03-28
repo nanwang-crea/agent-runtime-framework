@@ -19,7 +19,6 @@ from agent_runtime_framework.assistant import (
     StaticMCPProvider,
     create_codex_delegate_capability,
     create_conversation_capability,
-    route_default_capability,
 )
 from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext
 from agent_runtime_framework.assistant.approval import InMemoryApprovalStore
@@ -189,7 +188,7 @@ def test_default_capability_router_prefers_conversation_for_normal_chat(tmp_path
     context = _assistant_context(workspace)
     context.capabilities.register(create_conversation_capability())
     context.capabilities.register_application("desktop_content", create_desktop_content_application())
-    context.services["capability_selector"] = route_default_capability
+    context.application_context.llm_client = _FakeLLM('{"capability_name":"conversation"}')
 
     result = AgentLoop(context).run("你是谁？")
 
