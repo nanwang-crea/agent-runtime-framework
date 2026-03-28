@@ -71,7 +71,7 @@ def _merge_clarification_goal(goal: str, clarification: str) -> str:
         return detail
     if not detail:
         return base
-    return f"{base}\n用户澄清目标：{detail}"
+    return f"{base}\nUser clarification: {detail}"
 
 
 class CodexAgentLoop:

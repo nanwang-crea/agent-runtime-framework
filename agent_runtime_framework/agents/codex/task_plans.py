@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
+from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint, is_list_only_request
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_task_resource_semantics
 from agent_runtime_framework.agents.codex.run_context import available_tool_names
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
@@ -18,6 +18,24 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
     tool_names = set(available_tool_names(context, persona=persona))
     workspace_root = str(context.application_context.config.get("default_directory") or "")
     if task.task_profile == "repository_explainer":
+        target = _extract_repository_target(task.goal)
+    # Simple list/confirm-file requests: use list_workspace_directory in one step
+        if _is_list_only_request(task.goal) and "list_workspace_directory" in tool_names:
+            list_step = CodexPlanTask(
+                title="List directory contents",
+                kind="gather_context",
+                metadata={"path": target, "use_default_directory": not target, "preferred_tool": "list_workspace_directory"},
+            )
+            synthesize_step = CodexPlanTask(
+                title="Synthesize directory listing",
+                kind="synthesize_answer",
+                depends_on=[list_step.task_id],
+                metadata={"path": target},
+            )
+            return CodexPlan(
+                tasks=[list_step, synthesize_step],
+                metadata={"workspace_root": workspace_root, "workflow": "file_reader", "list_only": True},
+            )
         if "inspect_workspace_path" not in tool_names:
             return None
         target = _extract_repository_target(task.goal)
@@ -102,11 +120,16 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
 
 def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | None:
     patch_match = re.search(
+        r'replace\s+"([^"]+)"\s+with\s+"([^"]+)"\s+in\s+([^\s]+)|'
         r'把\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+替换成\s+"([^"]+)"',
         goal,
     )
     if patch_match and "apply_text_patch" in tool_names:
-        path, search_text, replace_text = patch_match.groups()
+        groups = patch_match.groups()
+        if groups[0] is not None:  # English: replace "X" with "Y" in PATH
+            search_text, replace_text, path = groups[0], groups[1], groups[2]
+        else:  # Chinese: 把 PATH 里的 "X" 替换成 "Y"
+            path, search_text, replace_text = groups[3], groups[4], groups[5]
         return CodexPlanTask(
             title="Modify target with patch",
             kind="modify_target",
@@ -120,9 +143,17 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
                 "risk_class": "high",
             },
         )
-    replace_match = re.search(r'替换\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+(?:为|成)\s+"([^"]+)"', goal)
+    replace_match = re.search(
+        r'replace\s+"([^"]+)"\s+(?:with|as)\s+"([^"]+)"\s+in\s+([^\s]+)|'
+        r'替换\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+(?:为|成)\s+"([^"]+)"',
+        goal,
+    )
     if replace_match and "replace_workspace_text" in tool_names:
-        path, search_text, replace_text = replace_match.groups()
+        groups = replace_match.groups()
+        if groups[0] is not None:  # English
+            search_text, replace_text, path = groups[0], groups[1], groups[2]
+        else:  # Chinese
+            path, search_text, replace_text = groups[3], groups[4], groups[5]
         return CodexPlanTask(
             title="Replace target contents",
             kind="modify_target",
@@ -132,9 +163,17 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
                 "risk_class": "high",
             },
         )
-    append_match = re.search(r'在\s+([^\s]+)\s+末尾追加\s+"([^"]+)"', goal)
+    append_match = re.search(
+        r'append\s+"([^"]+)"\s+to\s+([^\s]+)|'
+        r'在\s+([^\s]+)\s+末尾追加\s+"([^"]+)"',
+        goal,
+    )
     if append_match and "append_workspace_text" in tool_names:
-        path, content = append_match.groups()
+        groups = append_match.groups()
+        if groups[0] is not None:  # English: append "X" to PATH
+            content, path = groups[0], groups[1]
+        else:  # Chinese
+            path, content = groups[2], groups[3]
         return CodexPlanTask(
             title="Append target contents",
             kind="modify_target",
@@ -144,9 +183,13 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
                 "risk_class": "high",
             },
         )
-    edit_match = re.search(r"(?:编辑|修改)\s+([^\s]+)\s+内容\s+(.+?)(?:\s+并运行验证\s+.+)?$", goal)
+    edit_match = re.search(
+        r'(?:edit|modify)\s+([^\s]+)\s+content\s+(.+?)(?:\s+and\s+run\s+.+)?$|'
+        r'(?:编辑|修改)\s+([^\s]+)\s+内容\s+(.+?)(?:\s+并运行验证\s+.+)?$',
+        goal,
+    )
     if edit_match and "edit_workspace_text" in tool_names:
-        path, content = edit_match.groups()
+        path, content = edit_match.groups()[:2] if edit_match.groups()[0] else edit_match.groups()[2:4]
         return CodexPlanTask(
             title="Modify target contents",
             kind="modify_target",
@@ -156,9 +199,17 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
                 "risk_class": "high",
             },
         )
-    create_match = re.search(r"(?:创建|新建)\s+([^\s]+)(?:\s+内容\s+(.+))?", goal)
+    create_match = re.search(
+        r'(?:create|new)\s+([^\s]+)(?:\s+content\s+(.+))?|'
+        r'(?:创建|新建)\s+([^\s]+)(?:\s+内容\s+(.+))?',
+        goal,
+    )
     if create_match and "create_workspace_path" in tool_names:
-        path, content = create_match.groups()
+        groups = create_match.groups()
+        if groups[0] is not None:  # English
+            path, content = groups[0], groups[1]
+        else:  # Chinese
+            path, content = groups[2], groups[3]
         return CodexPlanTask(
             title="Create target path",
             kind="modify_target",
@@ -174,10 +225,14 @@ def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | 
 def _build_change_verify_task(goal: str, tool_names: set[str]) -> CodexPlanTask | None:
     if "run_shell_command" not in tool_names:
         return None
-    verification_match = re.search(r"(?:并)?运行(?:验证|测试)\s+(.+)$", goal)
+    verification_match = re.search(
+        r'(?:and\s+)?run(?:\s+verification|\s+tests?)\s+(.+)$|'
+        r'(?:并)?运行(?:验证|测试)\s+(.+)$',
+        goal,
+    )
     if not verification_match:
         return None
-    command = verification_match.group(1).strip()
+    command = next((g for g in verification_match.groups() if g is not None), "").strip()
     if not command:
         return None
     return CodexPlanTask(
@@ -329,7 +384,7 @@ def plan_next_task_action(task: CodexTask) -> CodexAction | None:
     if next_task.kind == "clarify_target":
         return CodexAction(
             kind="respond",
-            instruction=str(next_task.metadata.get("message") or "请补充更明确的目标。"),
+            instruction=str(next_task.metadata.get("message") or "Please provide a more specific goal."),
             subgoal="synthesize_answer",
             metadata={
                 "direct_output": True,
@@ -400,7 +455,7 @@ def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context
                         title="Clarify target",
                         kind="clarify_target",
                         depends_on=[plan_task.task_id],
-                        metadata={"message": clarification or "请补充更明确的目标。"},
+                        metadata={"message": clarification or "Please provide a more specific goal."},
                     )
                 )
             _sync_plan_status(task)
@@ -498,11 +553,13 @@ def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context
             if _find_task_by_kind(plan, suggested.kind) is not None:
                 continue
             _insert_task_before_kind(plan, before_kind="synthesize_answer", new_task=suggested)
-    llm_tasks = _suggest_follow_up_tasks_with_llm(task, action, result, context)
-    for suggested in llm_tasks:
-        if _find_task_by_kind(plan, suggested.kind) is not None:
-            continue
-        _insert_task_before_kind(plan, before_kind="synthesize_answer", new_task=suggested)
+    # Simple list/confirm-file requests do not need LLM-driven plan expansion
+    if not _is_list_only_request(task.goal):
+        llm_tasks = _suggest_follow_up_tasks_with_llm(task, action, result, context)
+        for suggested in llm_tasks:
+            if _find_task_by_kind(plan, suggested.kind) is not None:
+                continue
+            _insert_task_before_kind(plan, before_kind="synthesize_answer", new_task=suggested)
     _sync_plan_status(task)
 
 
@@ -614,27 +671,43 @@ def _extract_repository_target(goal: str) -> str:
     return extract_workspace_target_hint(goal)
 
 
+def _is_list_only_request(goal: str) -> bool:
+    return is_list_only_request(goal)
+
+
 def _extract_change_target(goal: str) -> str:
-    patch_match = re.search(r'把\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+替换成\s+"([^"]+)"', goal)
+    patch_match = re.search(
+        r'replace\s+"([^"]+)"\s+with\s+"([^"]+)"\s+in\s+([^\s]+)|'
+        r'把\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+替换成\s+"([^"]+)"',
+        goal,
+    )
     if patch_match:
-        return patch_match.group(1).strip()
-    edit_match = re.search(r"(?:编辑|修改)\s+([^\s]+)\s+内容\s+(.+?)(?:\s+并运行验证\s+.+)?$", goal)
+        return (patch_match.group(3) or patch_match.group(4) or "").strip()
+    edit_match = re.search(
+        r'(?:edit|modify)\s+([^\s]+)\s+content\s+|'
+        r'(?:编辑|修改)\s+([^\s]+)\s+内容\s+',
+        goal,
+    )
     if edit_match:
-        return edit_match.group(1).strip()
-    create_match = re.search(r"(?:创建|新建)\s+([^\s]+)(?:\s+内容\s+(.+))?", goal)
+        return (edit_match.group(1) or edit_match.group(2) or "").strip()
+    create_match = re.search(
+        r'(?:create|new)\s+([^\s]+)|'
+        r'(?:创建|新建)\s+([^\s]+)',
+        goal,
+    )
     if create_match:
-        return create_match.group(1).strip()
+        return (create_match.group(1) or create_match.group(2) or "").strip()
     return ""
 
 
 def _goal_prefers_summary(goal: str) -> bool:
     lowered = goal.strip().lower()
-    return any(marker in lowered for marker in ("总结", "概括", "summarize", "summary", "主要内容"))
+    return any(marker in lowered for marker in ("summarize", "summary", "overview", "总结", "概括", "主要内容"))
 
 
 def _goal_is_raw_read(goal: str) -> bool:
     lowered = goal.strip().lower()
-    return any(lowered.startswith(prefix) for prefix in ("读取", "read ")) and not _goal_prefers_summary(goal)
+    return any(lowered.startswith(prefix) for prefix in ("read ", "读取")) and not _goal_prefers_summary(goal)
 
 
 def _resolved_plan_path(plan_task: CodexPlanTask) -> str:
@@ -696,23 +769,23 @@ def _build_repository_overview(task: CodexTask) -> str:
     role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
-        lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
+        lines.append(f"Directory structure: {structure_claims[0].get('detail', '')}")
     if role_claims:
         for claim in role_claims[:5]:
             subject = claim.get("subject", "").strip()
             detail = claim.get("detail", "").strip()
             if subject and detail:
-                lines.append(f"{subject} 的作用是{detail}")
+                lines.append(f"{subject}: {detail}")
     if not lines:
         fallback = next(
             (action.observation.strip() for action in reversed(task.actions) if (action.observation or "").strip()),
             "",
         )
         if fallback:
-            body = f"关于 `{_extract_repository_target(task.goal) or '目标目录'}`，我先整理了这些信息：\n{fallback}"
+            body = f"Here is what I found about `{_extract_repository_target(task.goal) or 'the target directory'}`:\n{fallback}"
             return _append_references(body, task)
-        return _append_references(f"关于 `{_extract_repository_target(task.goal) or '目标目录'}`，暂时还没有足够信息形成结构化讲解。", task)
-    body = "基于已收集的信息，我的总结是：\n" + "\n".join(f"- {line}" for line in lines)
+        return _append_references(f"Not enough information to explain `{_extract_repository_target(task.goal) or 'the target directory'}` yet.", task)
+    body = "Based on the collected information:\n" + "\n".join(f"- {line}" for line in lines)
     return _append_references(body, task)
 
 
@@ -729,12 +802,12 @@ def _build_change_summary(task: CodexTask) -> str:
         "",
     )
     if modified:
-        lines.append(f"已修改：{', '.join(modified)}")
+        lines.append(f"Modified: {', '.join(modified)}")
     if latest_modify_output:
-        lines.append(f"最新内容：{latest_modify_output}")
+        lines.append(f"Latest content: {latest_modify_output}")
     if verification is not None:
-        status = "通过" if verification.success else "失败"
-        lines.append(f"验证结果：{status}，{verification.summary}")
+        status = "passed" if verification.success else "failed"
+        lines.append(f"Verification: {status} — {verification.summary}")
     else:
         last_verification = next(
             (
@@ -745,10 +818,10 @@ def _build_change_summary(task: CodexTask) -> str:
             "",
         )
         if last_verification:
-            lines.append(f"验证结果：{last_verification}")
+            lines.append(f"Verification: {last_verification}")
     if not lines:
-        lines.append("修改任务已执行完成。")
-    body = "处理结果：\n" + "\n".join(f"- {line}" for line in lines)
+        lines.append("Change task completed.")
+    body = "Result:\n" + "\n".join(f"- {line}" for line in lines)
     return _append_references(body, task)
 
 
@@ -763,12 +836,12 @@ def _build_file_reader_summary(task: CodexTask) -> str:
         ),
         "",
     )
-    target = _extract_repository_target(task.goal) or "目标文件"
+    target = _extract_repository_target(task.goal) or "the target file"
     if latest:
         if _goal_is_raw_read(task.goal):
             return latest
-        return _append_references(f"关于 `{target}`，我整理出的主要内容如下：\n{latest}", task)
-    return _append_references(f"关于 `{target}`，暂时还没有足够内容形成总结。", task)
+        return _append_references(f"Here is a summary of `{target}`:\n{latest}", task)
+    return _append_references(f"Not enough content to summarize `{target}` yet.", task)
 
 
 def _action_kind_for_tool(tool_name: str) -> str:
@@ -810,19 +883,19 @@ def _suggest_follow_up_tasks_with_llm(task: CodexTask, action: CodexAction, resu
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "你是 Codex task-plan expander。"
-                            "请判断 repository_explainer 是否需要在 synthesize_answer 前插入额外任务。"
-                            "只输出 JSON，格式为 {\"tasks\":[{\"kind\":\"read_entrypoint\",\"path\":\"...\",\"title\":\"...\"}]} 或 {\"tasks\":[]}。"
-                            "只有在当前 inspect 结果显示存在关键入口文件且读取它能明显提升最终讲解时，才返回 read_entrypoint。"
+                            "You are a Codex task-plan expander. "
+                            "Decide whether repository_explainer needs extra tasks inserted before synthesize_answer. "
+                            'Output JSON only: {"tasks":[{"kind":"read_entrypoint","path":"...","title":"..."}]} or {"tasks":[]}. '
+                            "Only return read_entrypoint when the inspect result shows a key entry file whose content would meaningfully improve the final explanation."
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
-                            f"任务目标：{task.goal}\n"
-                            f"当前 plan：{', '.join(plan_kinds)}\n"
-                            f"刚完成的 inspect 结果：\n{observation}\n"
-                            "如果建议 read_entrypoint，path 必须是工作区内的具体文件路径。"
+                            f"Goal: {task.goal}\n"
+                            f"Current plan: {', '.join(plan_kinds)}\n"
+                            f"Inspect result:\n{observation}\n"
+                            "If suggesting read_entrypoint, path must be a concrete file path within the workspace."
                         ),
                     ),
                 ],
@@ -877,18 +950,18 @@ def _suggest_failed_verification_recovery_with_llm(task: CodexTask, action: Code
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "你是 Codex change-recovery planner。"
-                            "当验证失败时，判断是否需要在 synthesize_answer 前插入修复任务。"
-                            "只输出 JSON，格式为 {\"tasks\":[{\"kind\":\"repair_after_failed_verification\",\"title\":\"...\",\"tool_name\":\"edit_workspace_text|apply_text_patch\",\"path\":\"...\",\"content\":\"...\",\"search_text\":\"...\",\"replace_text\":\"...\"}]} 或 {\"tasks\":[]}。"
+                            "You are a Codex change-recovery planner. "
+                            "When verification fails, decide whether a repair task should be inserted before synthesize_answer. "
+                            'Output JSON only: {"tasks":[{"kind":"repair_after_failed_verification","title":"...","tool_name":"edit_workspace_text|apply_text_patch","path":"...","content":"...","search_text":"...","replace_text":"..."}]} or {"tasks":[]}. '
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
-                            f"任务目标：{task.goal}\n"
-                            f"最近修改路径：{modified_target}\n"
-                            f"验证失败输出：{verification_output}\n"
-                            "如果建议修复任务，必须给出具体 path 和所需参数。"
+                            f"Goal: {task.goal}\n"
+                            f"Recently modified path: {modified_target}\n"
+                            f"Verification failure output:\n{verification_output}\n"
+                            "If suggesting a repair task, provide a concrete path and all required arguments."
                         ),
                     ),
                 ],
@@ -963,28 +1036,28 @@ def _suggest_failed_action_recovery_with_llm(task: CodexTask, action: CodexActio
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "你是 Codex failure-recovery planner。"
-                            "当某个 plan 动作失败后，判断是否需要在 synthesize_answer 前插入一个恢复动作。"
-                            "只输出 JSON，格式为 "
-                            "{\"tasks\":[{\"kind\":\"recover_failed_action\",\"title\":\"...\",\"tool_name\":\"...\","
-                            "\"arguments\":{},\"risk_class\":\"low|high\",\"subgoal\":\"gather_evidence|modify_workspace|verify_changes\"}]} "
-                            "或 {\"tasks\":[]}。"
-                            "只有在插入一个明确动作就能继续推进时才返回任务。"
+                            "You are a Codex failure-recovery planner. "
+                            "When a plan action fails, decide whether a recovery action should be inserted before synthesize_answer. "
+                            "Output JSON only: "
+                            '{"tasks":[{"kind":"recover_failed_action","title":"...","tool_name":"...",'
+                            '"arguments":{},"risk_class":"low|high","subgoal":"gather_evidence|modify_workspace|verify_changes"}]} '
+                            'or {"tasks":[]}. '
+                            "Only return a task when inserting one specific action would unblock progress."
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
-                            f"任务目标：{task.goal}\n"
-                            f"任务类型：{task.task_profile}\n"
-                            f"当前 plan：{', '.join(plan_kinds)}\n"
-                            f"失败的 plan task：{plan_task.kind}\n"
-                            f"失败动作 kind：{action.kind}\n"
-                            f"失败工具：{action.metadata.get('tool_name') or ''}\n"
-                            f"失败摘要：{failure_summary}\n"
-                            f"错误信息：{json.dumps(error_payload, ensure_ascii=False)}\n"
-                            f"可用工具：{', '.join(context.application_context.tools.names())}\n"
-                            "如果建议恢复动作，arguments 必须是完整 JSON 对象。"
+                            f"Goal: {task.goal}\n"
+                            f"Task profile: {task.task_profile}\n"
+                            f"Current plan: {', '.join(plan_kinds)}\n"
+                            f"Failed plan task: {plan_task.kind}\n"
+                            f"Failed action kind: {action.kind}\n"
+                            f"Failed tool: {action.metadata.get('tool_name') or ''}\n"
+                            f"Failure summary: {failure_summary}\n"
+                            f"Error details: {json.dumps(error_payload)}\n"
+                            f"Available tools: {', '.join(context.application_context.tools.names())}\n"
+                            "If suggesting a recovery action, arguments must be a complete JSON object."
                         ),
                     ),
                 ],
@@ -1026,7 +1099,7 @@ def _append_references(body: str, task: CodexTask) -> str:
     references = _collect_reference_labels(task)
     if not references:
         return body
-    return body + "\n引用：\n" + "\n".join(f"- {item}" for item in references)
+    return body + "\nReferences:\n" + "\n".join(f"- {item}" for item in references)
 
 
 def _collect_reference_labels(task: CodexTask) -> list[str]:

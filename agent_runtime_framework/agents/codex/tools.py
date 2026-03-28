@@ -25,11 +25,11 @@ def _output_limit(context: Any, key: str, default: int) -> int:
         return default
 
 
-def _truncate_text(text: str, *, limit: int, label: str = "输出") -> str:
+def _truncate_text(text: str, *, limit: int, label: str = "output") -> str:
     stripped = text.strip()
     if len(stripped) <= limit:
         return stripped
-    return f"{stripped[:limit].rstrip()}\n\n[{label}已截断，保留前 {limit} 个字符。]"
+    return f"{stripped[:limit].rstrip()}\n\n[{label} truncated — showing first {limit} characters.]"
 
 
 def _build_agent_output(
@@ -206,6 +206,56 @@ def build_default_codex_tools() -> list[ToolSpec]:
             prompt_guidelines=["Use edit_workspace_text only for full rewrites, not surgical patches."],
             serialize_by_argument="path",
         ),
+        ToolSpec(
+            name="grep_workspace",
+            description="Search for a text pattern across all workspace files, returning file paths, line numbers, and surrounding context lines.",
+            executor=_grep_workspace,
+            input_schema={"pattern": "string", "path": "string", "context_lines": "integer", "file_glob": "string"},
+            permission_level="content_read",
+            prompt_snippet="Full-text search across workspace files with context.",
+            prompt_guidelines=[
+                "Use grep_workspace to find usages, definitions, or patterns across multiple files.",
+                "Prefer grep_workspace over read_workspace_text when you need to locate where something is defined or used.",
+            ],
+        ),
+        ToolSpec(
+            name="search_workspace_symbols",
+            description="Search for function definitions, class declarations, or variable assignments by symbol name across the workspace.",
+            executor=_search_workspace_symbols,
+            input_schema={"symbol": "string", "path": "string", "kind": "string"},
+            permission_level="content_read",
+            prompt_snippet="Find where a function, class, or variable is defined in the workspace.",
+            prompt_guidelines=[
+                "Use search_workspace_symbols before modifying a function to understand its definition and all call sites.",
+                "kind can be 'function', 'class', 'variable', or 'all' (default).",
+            ],
+        ),
+        ToolSpec(
+            name="get_git_diff",
+            description="Get the current git diff showing all uncommitted changes in the workspace, or the diff for a specific file.",
+            executor=_get_git_diff,
+            input_schema={"path": "string", "staged": "boolean"},
+            permission_level="metadata_read",
+            prompt_snippet="Show uncommitted git changes in the workspace.",
+            prompt_guidelines=[
+                "Use get_git_diff to understand what has already been changed before making further edits.",
+                "Use get_git_diff after edits to confirm the diff looks correct before running tests.",
+            ],
+        ),
+        ToolSpec(
+            name="run_tests",
+            description="Run the project test suite (or a specific test file/pattern) and return a structured summary of pass/fail results with failure details.",
+            executor=_run_tests,
+            input_schema={"path": "string", "pattern": "string", "timeout": "integer"},
+            permission_level="safe_write",
+            timeout_seconds=120.0,
+            prompt_snippet="Run tests and return pass/fail summary.",
+            prompt_guidelines=[
+                "Use run_tests after any code change to verify correctness.",
+                "Prefer run_tests over run_shell_command for test execution — it returns structured results.",
+                "If run_tests fails, read the failure details and fix the root cause before retrying.",
+            ],
+        ),
     ]
 
 
@@ -288,7 +338,7 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
                 path=str(resolved),
                 text=summary,
                 summary=summary,
-                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                next_hint="Next: decide whether to list the directory, inspect it, or read a file depending on the target type.",
                 items=candidates[:12],
             ),
             "resolved_path": str(resolved),
@@ -313,7 +363,7 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
                 path=str(resolved),
                 text=summary,
                 summary=summary,
-                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                next_hint="Next: decide whether to list the directory, inspect it, or read a file depending on the target type.",
                 items=candidates[:12],
             ),
             "resolved_path": str(resolved),
@@ -335,7 +385,7 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
                 path=str(resolved),
                 text=summary,
                 summary=summary,
-                next_hint="下一步根据目标类型决定是列目录、inspect，还是读取文件。",
+                next_hint="Next: decide whether to list the directory, inspect it, or read a file depending on the target type.",
                 items=candidates[:12],
             ),
             "resolved_path": str(resolved),
@@ -349,13 +399,13 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
         }
     if state.status == "ambiguous":
         candidate_paths = [_relative_workspace_path(context, item.ref.location) for item in state.candidates]
-        text = "找到多个可能目标，请明确指定其中一个：\n" + "\n".join(f"- {item}" for item in candidate_paths[:6])
+        text = "Multiple possible targets found, please specify one:\n" + "\n".join(f"- {item}" for item in candidate_paths[:6])
         return {
             **_build_agent_output(
                 path="",
                 text=text,
-                summary="找到多个可能目标。",
-                next_hint="请直接指定其中一个候选路径或名称。",
+                summary="Found multiple possible targets.",
+                next_hint="Specify one of the candidate paths or names directly.",
                 items=candidate_paths[:12],
             ),
             "resolved_path": "",
@@ -364,13 +414,13 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
             "resolution_status": "ambiguous",
             "resolution_source": state.source,
         }
-    text = "没有找到明确目标。请补充更具体的路径、文件名或模块名。"
+    text = "No clear target found. Please provide a more specific path, filename, or module name."
     return {
         **_build_agent_output(
             path="",
             text=text,
-            summary="没有找到明确目标。",
-            next_hint="可以补充路径，或从当前目录下给出更具体的名称。",
+            summary="No clear target found.",
+            next_hint="Add a path or a more specific name under the current directory.",
             items=candidates[:12],
         ),
         "resolved_path": "",
@@ -391,18 +441,18 @@ def _list_workspace_directory(task: Any, context: Any, arguments: dict[str, Any]
     items = context.application_context.resource_repository.list_directory(ref)
     directories = [item.title for item in items if item.kind == "directory"]
     files = [item.title for item in items if item.kind == "file"]
-    lines = [f"下面一共有 {len(items)} 个条目。"]
+    lines = [f"Found {len(items)} entries."]
     if directories:
-        lines.append(f"目录：{', '.join(directories)}")
+        lines.append(f"Directories: {', '.join(directories)}")
     if files:
-        lines.append(f"文件：{', '.join(files)}")
+        lines.append(f"Files: {', '.join(files)}")
     text = "\n".join(lines)
     _remember_focus(context, ref, text)
     return _build_agent_output(
         path=ref.location,
         text=text,
         summary=lines[0],
-        next_hint="如果需要理解目录职责，下一步调用 inspect_workspace_path。",
+        next_hint="If you need to understand directory responsibilities, call inspect_workspace_path next.",
         items=[item.title for item in items],
     )
 
@@ -451,18 +501,18 @@ def _resolve_target_with_model(query: str, target_hint: str, candidates: list[st
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "你是 workspace target resolver。"
-                            "只输出 JSON，格式为 {\"best_match\":\"...\",\"candidates\":[...]}。"
-                            "best_match 必须从候选列表中选择，若当前目录最合适则返回 ."
+                            "You are a workspace target resolver. "
+                            'Output JSON only: {"best_match":"...","candidates":[...]}. '
+                            "best_match must be selected from the candidate list; return . if the current directory is the best match."
                         ),
                     ),
                     ChatMessage(
                         role="user",
                         content=(
-                            f"用户问题：{query}\n"
-                            f"{build_follow_up_context(session=None, context=context) or '近期对话：\n(none)'}\n"
-                            f"目标提示：{target_hint}\n"
-                            f"候选路径：{json.dumps(candidates[:80], ensure_ascii=False)}"
+                            f"User query: {query}\n"
+                            f"{build_follow_up_context(session=None, context=context) or 'Recent turns:\n(none)'}\n"
+                            f"Target hint: {target_hint}\n"
+                            f"Candidate paths: {json.dumps(candidates[:80])}"
                         ),
                     ),
                 ],
@@ -520,7 +570,7 @@ def _memory_hints_for_query(query: str, target_hint: str, context: Any) -> list[
 def _resolve_target_fallback(query: str, target_hint: str, candidates: list[str]) -> str:
     lowered_query = query.lower()
     lowered_hint = target_hint.lower()
-    if any(marker in lowered_query for marker in ("当前目录", "根目录", "workspace")):
+    if any(marker in lowered_query for marker in ("当前目录", "根目录", "workspace", "current directory", "root")):
         return "."
     for candidate in candidates:
         base = Path(candidate).name.lower()
@@ -550,7 +600,7 @@ def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> 
         text=limited,
         summary=summary or f"Read {Path(ref.location).name}",
         truncated=limited != content.strip(),
-        next_hint="如果需要更多内容，继续读取同一路径或改用 summarize/inspect。",
+        next_hint="If more content is needed, continue reading the same path or switch to summarize/inspect.",
     )
 
 
@@ -568,7 +618,7 @@ def _read_workspace_excerpt(task: Any, context: Any, arguments: dict[str, Any]) 
     excerpt = "\n".join(content.splitlines()[:max_lines]).strip()
     if not excerpt:
         excerpt = content[: _output_limit(context, "codex_max_summary_chars", 1000)].strip()
-    excerpt = _truncate_text(excerpt, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="摘录")
+    excerpt = _truncate_text(excerpt, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="excerpt")
     summary = "\n".join(line.strip() for line in excerpt.splitlines()[:2] if line.strip()) or f"Excerpt of {Path(ref.location).name}"
     _remember_focus(context, ref, summary)
     return _build_agent_output(
@@ -576,7 +626,7 @@ def _read_workspace_excerpt(task: Any, context: Any, arguments: dict[str, Any]) 
         text=excerpt,
         summary=summary,
         truncated=excerpt != content.strip(),
-        next_hint="如果 excerpt 不够，再读取全文或继续提取结构化大纲。",
+        next_hint="If the excerpt is insufficient, read the full file or extract a structured outline.",
     )
 
 
@@ -589,14 +639,14 @@ def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]
     content = context.application_context.resource_repository.load_text(ref)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     summary = "\n".join(lines[:3]) if lines else content[:300]
-    summary = _truncate_text(summary, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="摘要")
+    summary = _truncate_text(summary, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="summary")
     _remember_focus(context, ref, summary)
     return _build_agent_output(
         path=ref.location,
         text=summary,
         summary=summary,
         truncated=summary != content[: len(summary)],
-        next_hint="如果摘要不够，下一步读取原文或 inspect 相关路径。",
+        next_hint="If the summary is insufficient, read the original file or inspect the related path.",
     )
 
 
@@ -615,21 +665,21 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
             path=str(path),
             text=text,
             summary=text,
-            next_hint="如果需要原文细节，下一步读取该文件。",
+            next_hint="If you need the raw file content, read that file next.",
         )
     items = context.application_context.resource_repository.list_directory(ref)
     directories = [item for item in items if item.kind == "directory"]
     files = [item for item in items if item.kind == "file"]
-    lines = [f"{path.name or str(path)} 下面共有 {len(items)} 个条目。"]
+    lines = [f"{path.name or str(path)}: {len(items)} entries."]
     if directories:
-        lines.append("子目录：")
+        lines.append("Subdirectories:")
         for item in directories[:8]:
             lines.append(f"- {item.title}/")
     if files:
-        lines.append("可见文件：")
+        lines.append("Files:")
         for item in files[:8]:
             file_path = Path(item.location)
-            lines.append(f"- {item.title}（{_structure_label_for_file(file_path)}）")
+            lines.append(f"- {item.title} ({_structure_label_for_file(file_path)})")
     text = "\n".join(lines)
     text = _truncate_text(text, limit=_output_limit(context, "codex_max_inspect_chars", 2000))
     _remember_focus(context, ref, text)
@@ -637,7 +687,7 @@ def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) 
         path=str(path),
         text=text,
         summary=lines[0],
-        next_hint="如果需要细化模块作用，继续读取关键文件。",
+        next_hint="If module roles need more detail, continue reading key files.",
         items=[item.title for item in items],
     )
 
@@ -652,26 +702,26 @@ def _rank_workspace_entries(task: Any, context: Any, arguments: dict[str, Any]) 
     path = Path(ref.location)
     if path.is_file():
         relative = _relative_workspace_path(context, str(path))
-        summary = f"代表文件：{relative}"
+        summary = f"Representative file: {relative}"
         _remember_focus(context, ref, summary)
         return {
-            **_build_agent_output(path=str(path), text=summary, summary=summary, next_hint="下一步提取该文件的大纲。", items=[relative]),
+            **_build_agent_output(path=str(path), text=summary, summary=summary, next_hint="Next: extract the outline of this file.", items=[relative]),
             "ranked_paths": [relative],
         }
     ranked = _rank_representative_files(path, query=str(arguments.get("query") or ""), context=context)
     relative_ranked = [_relative_workspace_path(context, str(item)) for item in ranked]
-    lines = ["代表文件候选："]
+    lines = ["Representative file candidates:"]
     for candidate in ranked[:5]:
         relative = _relative_workspace_path(context, str(candidate))
-        lines.append(f"- {relative}：{_summarize_file(candidate)}")
+        lines.append(f"- {relative}: {_summarize_file(candidate)}")
     text = "\n".join(lines)
     _remember_focus(context, ref, text)
     return {
         **_build_agent_output(
             path=str(path),
             text=text,
-            summary="已选择代表文件。",
-            next_hint="下一步对这些代表文件提取大纲或读取入口内容。",
+            summary="Representative file selected.",
+            next_hint="Next: extract outlines of these representative files or read the entry point.",
             items=relative_ranked,
         ),
         "ranked_paths": relative_ranked,
@@ -693,7 +743,7 @@ def _extract_workspace_outline(task: Any, context: Any, arguments: dict[str, Any
         path=str(path),
         text=text,
         summary=detail,
-        next_hint="如果还不够，可以继续读取原文或选择下一个代表文件。",
+        next_hint="If more detail is needed, continue reading the full file or select the next representative file.",
         items=[relative],
     )
 
@@ -712,7 +762,7 @@ def _run_shell_command(task: Any, context: Any, arguments: dict[str, Any]) -> di
         result["stderr"] = _truncate_text(str(result["stderr"]), limit=_output_limit(context, "codex_max_shell_chars", 2000))
     result["summary"] = truncated_text.splitlines()[0] if truncated_text else command
     result["truncated"] = truncated_text != text.strip()
-    result["next_hint"] = "如果这是验证命令，检查 success 字段；否则结合上下文决定是否继续读取文件。"
+    result["next_hint"] = "If this is a verification command, check the success field; otherwise use context to decide whether to continue reading."
     result["changed_paths"] = []
     result["entities"] = {"path": "", "items": []}
     return result
@@ -720,39 +770,39 @@ def _run_shell_command(task: Any, context: Any, arguments: dict[str, Any]) -> di
 
 def _summarize_file(path: Path) -> str:
     if not path.exists():
-        return "文件不存在。"
+        return "File does not exist."
     if path.suffix == ".py":
         return _summarize_python_file(path)
     text = _read_text_for_summary(path)
     if text is None:
-        return "二进制或非 UTF-8 文本文件。"
+        return "Binary or non-UTF-8 file."
     for line in text.splitlines():
         stripped = line.strip().strip("#").strip()
         if stripped:
             return stripped[:120]
-    return "文件内容较少。"
+    return "File has minimal content."
 
 
 def _summarize_python_file(path: Path) -> str:
     text = _read_text_for_summary(path)
     if text is None:
-        return "Python 相关文件，但无法按 UTF-8 读取。"
+        return "Python file (unreadable as UTF-8)."
     try:
         module = ast.parse(text)
     except SyntaxError:
-        return "Python 模块。"
+        return "Python module."
     docstring = ast.get_docstring(module)
     if docstring:
         return docstring.strip().splitlines()[0][:120]
     symbols = [node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
     if symbols:
-        return f"定义了 {', '.join(symbols[:4])}"
-    return "Python 模块。"
+        return f"Defines {', '.join(symbols[:4])}"
+    return "Python module."
 
 
 def _outline_file(path: Path) -> str:
     if not path.exists():
-        return "文件不存在。"
+        return "file not found"
     if path.suffix == ".py":
         return _outline_python_file(path)
     return _summarize_file(path)
@@ -761,20 +811,20 @@ def _outline_file(path: Path) -> str:
 def _outline_python_file(path: Path) -> str:
     text = _read_text_for_summary(path)
     if text is None:
-        return "Python 相关文件，但无法按 UTF-8 读取。"
+        return "Python file (unreadable as UTF-8)."
     try:
         module = ast.parse(text)
     except SyntaxError:
-        return "Python 文件。"
+        return "Python file."
     docstring = ast.get_docstring(module)
     symbols = [node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
     if docstring and symbols:
-        return f"{docstring.strip().splitlines()[0][:80]}；定义了 {', '.join(symbols[:4])}"
+        return f"{docstring.strip().splitlines()[0][:80]}; defines {', '.join(symbols[:4])}"
     if docstring:
         return docstring.strip().splitlines()[0][:120]
     if symbols:
-        return f"定义了 {', '.join(symbols[:4])}"
-    return "Python 文件。"
+        return f"Defines {', '.join(symbols[:4])}"
+    return "Python file."
 
 
 def _read_text_for_summary(path: Path) -> str | None:
@@ -786,8 +836,8 @@ def _read_text_for_summary(path: Path) -> str | None:
 
 def _structure_label_for_file(path: Path) -> str:
     if _read_text_for_summary(path) is None:
-        return "二进制或非 UTF-8 文件"
-    return "文本文件"
+        return "binary"
+    return "text"
 
 
 def _rank_representative_files(root: Path, *, query: str, context: Any, limit: int = 4) -> list[Path]:
@@ -853,7 +903,7 @@ def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dic
             text=truncated,
             summary=f"Patched {path.name}",
             truncated=truncated != updated.strip(),
-            next_hint="下一步应运行验证或重新读取文件确认修改。",
+            next_hint="Next: run verification or re-read the file to confirm the change.",
             changed_paths=[path.name],
         ),
         "before_text": original,
@@ -885,7 +935,7 @@ def _append_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -
             text=truncated,
             summary=f"Appended to {path.name}",
             truncated=truncated != updated.strip(),
-            next_hint="下一步应运行验证或重新读取文件确认追加内容。",
+            next_hint="Next: run verification or re-read the file to confirm the appended content.",
             changed_paths=[path.name],
         ),
         "before_text": original,
@@ -908,7 +958,7 @@ def _move_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> 
             path=str(destination),
             text=summary,
             summary=summary,
-            next_hint="如果需要确认内容未变，下一步读取目标文件。",
+            next_hint="If you need to confirm the content is unchanged, read the target file next.",
             changed_paths=[destination.name],
         ),
         "destination_path": str(destination),
@@ -927,7 +977,7 @@ def _delete_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -
         path=str(path),
         text=f"deleted: {path.name}",
         summary=f"Deleted {path.name}",
-        next_hint="如果这是计划中的清理操作，下一步运行验证或继续其余修改。",
+        next_hint="If this is a planned cleanup, next run verification or continue the remaining edits.",
         changed_paths=[path.name],
     )
 
@@ -952,7 +1002,7 @@ def _create_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -
             path=str(path),
             text=text,
             summary=f"Created {path.name}",
-            next_hint="如果这是代码文件，下一步读取或验证该文件内容。",
+            next_hint="If this is a code file, read or verify its content next.",
             changed_paths=[path.name],
         ),
         "content": content,
@@ -976,8 +1026,191 @@ def _edit_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> 
             text=truncated,
             summary=f"Updated {path.name}",
             truncated=truncated != content.strip(),
-            next_hint="下一步应运行验证或重新读取文件确认最终内容。",
+            next_hint="Next: run verification or re-read the file to confirm the final content.",
             changed_paths=[path.name],
         ),
         "content": content,
+    }
+
+
+def _grep_workspace(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    import subprocess
+    pattern = str(arguments.get("pattern") or "").strip()
+    if not pattern:
+        raise ValueError("pattern is required")
+    root = _workspace_root(context)
+    search_path = root
+    path_arg = str(arguments.get("path") or "").strip()
+    if path_arg:
+        search_path = _resolve_workspace_path(context, path_arg)
+    context_lines = int(arguments.get("context_lines") or 2)
+    context_lines = max(0, min(context_lines, 10))
+    file_glob = str(arguments.get("file_glob") or "").strip()
+    cmd = ["grep", "-rn", f"--context={context_lines}", "--include=*.py", "--include=*.ts", "--include=*.tsx", "--include=*.js", "--include=*.md"]
+    if file_glob:
+        cmd = ["grep", "-rn", f"--context={context_lines}", f"--include={file_glob}"]
+    cmd += [pattern, str(search_path)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=str(root))
+        output = result.stdout
+    except subprocess.TimeoutExpired:
+        output = f"[search timed out]"
+    # Make paths relative
+    root_str = str(root) + "/"
+    lines = []
+    for line in output.splitlines():
+        if line.startswith(root_str):
+            line = line[len(root_str):]
+        lines.append(line)
+    text = "\n".join(lines)
+    limit = _output_limit(context, "codex_max_grep_chars", 4000)
+    truncated_text = _truncate_text(text, limit=limit, label="search results")
+    match_count = output.count("\n") if output else 0
+    summary = f"Found {match_count} lines matching '{pattern}'"
+    return {
+        **_build_agent_output(
+            path=str(search_path),
+            text=truncated_text,
+            summary=summary,
+            truncated=truncated_text != text,
+            next_hint="After locating the target file from the search results, use read_workspace_text to read the full content.",
+        ),
+        "pattern": pattern,
+        "match_count": match_count,
+    }
+
+
+def _search_workspace_symbols(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    import subprocess
+    symbol = str(arguments.get("symbol") or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+    root = _workspace_root(context)
+    search_path = root
+    path_arg = str(arguments.get("path") or "").strip()
+    if path_arg:
+        search_path = _resolve_workspace_path(context, path_arg)
+    kind = str(arguments.get("kind") or "all").strip().lower()
+    # Build patterns for different symbol kinds
+    patterns: list[str] = []
+    if kind in ("function", "all"):
+        patterns += [rf"def {re.escape(symbol)}\b", rf"function {re.escape(symbol)}\b", rf"const {re.escape(symbol)}\s*=", rf"let {re.escape(symbol)}\s*=", rf"var {re.escape(symbol)}\s*="]
+    if kind in ("class", "all"):
+        patterns += [rf"class {re.escape(symbol)}\b"]
+    if kind in ("variable", "all") and kind != "all":
+        patterns += [rf"{re.escape(symbol)}\s*="]
+    results: list[str] = []
+    seen: set[str] = set()
+    for pat in patterns:
+        cmd = ["grep", "-rn", "-E", "--include=*.py", "--include=*.ts", "--include=*.tsx", "--include=*.js", pat, str(search_path)]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, cwd=str(root))
+            for line in result.stdout.splitlines():
+                rel = line
+                if line.startswith(str(root) + "/"):
+                    rel = line[len(str(root)) + 1:]
+                if rel not in seen:
+                    seen.add(rel)
+                    results.append(rel)
+        except subprocess.TimeoutExpired:
+            pass
+    text = "\n".join(results[:80])
+    if not text:
+        text = f"Symbol '{symbol}' not found."
+    summary = f"Found {len(results)} definition(s) of '{symbol}'"
+    return {
+        **_build_agent_output(
+            path=str(search_path),
+            text=text,
+            summary=summary,
+            next_hint="After finding the definition, use read_workspace_text to confirm context, or grep_workspace to find all call sites.",
+        ),
+        "symbol": symbol,
+        "match_count": len(results),
+    }
+
+
+def _get_git_diff(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    import subprocess
+    root = _workspace_root(context)
+    staged = bool(arguments.get("staged") or False)
+    path_arg = str(arguments.get("path") or "").strip()
+    cmd = ["git", "diff"]
+    if staged:
+        cmd.append("--staged")
+    if path_arg:
+        target = _resolve_workspace_path(context, path_arg)
+        cmd += ["--", str(target)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=str(root))
+        diff_text = result.stdout
+        if result.returncode != 0 and result.stderr:
+            diff_text = f"[git error] {result.stderr.strip()}"
+    except subprocess.TimeoutExpired:
+        diff_text = "[git diff timed out]"
+    except FileNotFoundError:
+        diff_text = "[git not found in PATH]"
+    if not diff_text.strip():
+        diff_text = "(no changes — working tree is clean)"
+    limit = _output_limit(context, "codex_max_diff_chars", 6000)
+    truncated_text = _truncate_text(diff_text, limit=limit, label="diff")
+    summary = f"Git diff ({('staged' if staged else 'unstaged')}): {len(diff_text.splitlines())} lines"
+    return {
+        **_build_agent_output(
+            path=str(root),
+            text=truncated_text,
+            summary=summary,
+            truncated=truncated_text != diff_text.strip(),
+            next_hint="If the diff looks correct, use run_tests to verify the changes.",
+        ),
+        "staged": staged,
+        "line_count": len(diff_text.splitlines()),
+    }
+
+
+def _run_tests(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    import subprocess
+    root = _workspace_root(context)
+    path_arg = str(arguments.get("path") or "").strip()
+    pattern = str(arguments.get("pattern") or "").strip()
+    timeout = int(arguments.get("timeout") or 60)
+    timeout = max(10, min(timeout, 120))
+    # Auto-detect test runner
+    cmd: list[str] = []
+    if (root / "pyproject.toml").exists() or (root / "setup.py").exists() or (root / "pytest.ini").exists():
+        cmd = ["python", "-m", "pytest", "--tb=short", "-q"]
+        if path_arg:
+            cmd.append(path_arg)
+        if pattern:
+            cmd += ["-k", pattern]
+    elif (root / "package.json").exists():
+        cmd = ["npm", "test", "--", "--watchAll=false"]
+        if pattern:
+            cmd += ["--testNamePattern", pattern]
+    else:
+        cmd = ["python", "-m", "pytest", "--tb=short", "-q"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(root))
+        output = (result.stdout + result.stderr).strip()
+        passed = result.returncode == 0
+    except subprocess.TimeoutExpired:
+        output = f"[tests timed out after {timeout}s]"
+        passed = False
+    except FileNotFoundError as exc:
+        output = f"[test runner not found: {exc}]"
+        passed = False
+    limit = _output_limit(context, "codex_max_test_chars", 5000)
+    truncated_output = _truncate_text(output, limit=limit, label="test output")
+    status_label = "PASSED" if passed else "FAILED"
+    summary = f"Tests {status_label}: {len(output.splitlines())} lines of output"
+    return {
+        **_build_agent_output(
+            path=str(root),
+            text=truncated_output,
+            summary=summary,
+            truncated=truncated_output != output,
+            next_hint=("All tests passed." if passed else "Tests failed — read the error output and fix the root cause before re-running."),
+        ),
+        "passed": passed,
+        "return_code": result.returncode if 'result' in dir() else -1,
     }

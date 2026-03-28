@@ -13,7 +13,7 @@ from agent_runtime_framework.agents.codex.prompting import (
     build_tool_guidance_lines,
     extract_task_resource_semantics,
 )
-from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint
+from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint, is_list_only_request
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
@@ -58,11 +58,11 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
         return llm_planned
     raise AppError(
         code="PLANNER_RUNTIME_MISSING",
-        message="未配置可用的大模型，无法为 Codex Agent 规划下一步动作。",
+        message="No LLM model configured; cannot plan the next action for the Codex Agent.",
         detail="planner model runtime is unavailable",
         stage="planner",
         retriable=True,
-        suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
+        suggestion="Configure and authenticate a planner model in the frontend settings first.",
     )
 
 
@@ -71,19 +71,34 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
-    if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
-        return CodexAction(
-            kind="call_tool",
-            instruction=goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "resolve_workspace_target",
-                "arguments": {
-                    "query": goal,
-                    "target_hint": _extract_repository_target(goal),
+    if profile in {"repository_explainer", "file_reader"}:
+        # Simple list/confirm-file requests: use list_workspace_directory directly, no path resolve needed
+        if profile == "repository_explainer" and _goal_is_list_request(goal) and "list_workspace_directory" in tool_names:
+            return CodexAction(
+                kind="call_tool",
+                instruction=goal,
+                subgoal="gather_evidence",
+                metadata={
+                    "tool_name": "list_workspace_directory",
+                    "arguments": {
+                        "path": _extract_repository_target(goal) or "",
+                        "use_default_directory": not bool(_extract_repository_target(goal)),
+                    },
                 },
-            },
-        )
+            )
+        if "resolve_workspace_target" in tool_names:
+            return CodexAction(
+                kind="call_tool",
+                instruction=goal,
+                subgoal="gather_evidence",
+                metadata={
+                    "tool_name": "resolve_workspace_target",
+                    "arguments": {
+                        "query": goal,
+                        "target_hint": _extract_repository_target(goal),
+                    },
+                },
+            )
     return None
 
 
@@ -91,11 +106,15 @@ def _extract_repository_target(goal: str) -> str:
     return extract_workspace_target_hint(goal)
 
 
+def _goal_is_list_request(goal: str) -> bool:
+    return is_list_only_request(goal)
+
+
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:
     text = user_input.strip()
     lowered = text.lower()
 
-    verification_prefixes = ("运行验证", "运行测试", "run verification", "verify ")
+    verification_prefixes = ("运行验证", "运行测试", "run verification", "verify ", "run tests ", "run test ")
     for prefix in verification_prefixes:
         if lowered.startswith(prefix.lower()) and "run_shell_command" in tool_names:
             command = text[len(prefix) :].strip()
@@ -288,10 +307,10 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         for action in task.actions[-6:]
     ]
     system_prompt = build_codex_system_prompt(
-        "你负责做 next-action planner。请根据任务目标、最近 observation、资源语义、历史上下文和可用工具，选择唯一的下一步动作。"
-        "只输出合法 JSON，字段允许为 kind、instruction、tool_name、arguments、risk_class、direct_output。"
-        "kind 只能是 call_tool、apply_patch、move_path、delete_path、run_verification、respond。"
-        "不要输出 action、tool、task、conversation 等其他 kind。"
+        "You are the next-action planner. Based on the task goal, recent observations, resource semantics, history, and available tools, choose the single best next action. "
+        "Output valid JSON only. Allowed fields: kind, instruction, tool_name, arguments, risk_class, direct_output. "
+        "kind must be one of: call_tool, apply_patch, move_path, delete_path, run_verification, respond. "
+        "Do not output other kinds like action, tool, task, or conversation."
         ,
         workflow_name=workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or "")),
         persona=persona,
@@ -306,30 +325,30 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
     semantics = extract_task_resource_semantics(task)
     preferred_file_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) else "read_workspace_text"
     user_prompt = (
-        f"任务目标：{task.goal}\n"
-        f"任务模式：{getattr(task, 'task_profile', 'chat')}\n"
-        f"runtime persona：{persona.name}\n"
+        f"Goal: {task.goal}\n"
+        f"Task profile: {getattr(task, 'task_profile', 'chat')}\n"
+        f"Runtime persona: {persona.name}\n"
         f"{build_resource_semantics_block(task)}\n"
         f"{run_context_block}\n"
-        f"最近动作：\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
-        f"可用工具：\n{chr(10).join(tool_lines)}\n"
-        f"工作区根目录：{context.application_context.config.get('default_directory', '')}\n"
-        "约束：\n"
-        "- 只能选择可用工具列表中的 tool_name\n"
-        "- 写操作必须设置合适的 risk_class\n"
-        "- destructive_write 对应 destructive\n"
-        "- safe_write 对应 high\n"
-        "- content_read / metadata_read 对应 low\n"
-        "- repository_explainer 模式优先 resolve_workspace_target，再决定 inspect / read / list，最后综合回答\n"
-        f"- file_reader 模式优先 resolve_workspace_target；当 resource_kind=file 且 allowed_actions={', '.join(semantics.get('allowed_actions') or []) or '(unknown)'} 时，优先 {preferred_file_tool}，再综合回答\n"
-        "- change_and_verify 模式优先 edit / patch / write，然后运行验证，再总结\n"
-        "- chat 模式优先直接回答，除非用户明确要求查看工作区或修改代码\n"
-        f"- 当前 persona 的 evidence_threshold 是 {persona.evidence_threshold}，证据不足时优先继续收集而不是过早结束\n"
-        "示例：\n"
-        '- 如果用户说“memory 文件夹下面有什么”，优先输出 {"kind":"call_tool","tool_name":"resolve_workspace_target","arguments":{"query":"memory 文件夹下面有什么","target_hint":"memory"}}\n'
-        '- 如果要运行 shell 命令 pwd，输出 {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'
-        '- 如果要读取 README.md，输出 {"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"README.md"},"risk_class":"low"}\n'
-        '- 如果只是直接回复用户，输出 {"kind":"respond","instruction":"..."}\n'
+        f"Recent actions:\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
+        f"Available tools:\n{chr(10).join(tool_lines)}\n"
+        f"Workspace root: {context.application_context.config.get('default_directory', '')}\n"
+        "Constraints:\n"
+        "- tool_name must be from the available tools list\n"
+        "- write operations must have an appropriate risk_class\n"
+        "- destructive_write → destructive\n"
+        "- safe_write → high\n"
+        "- content_read / metadata_read → low\n"
+        "- repository_explainer profile: resolve_workspace_target first, then inspect/read/list, then synthesize\n"
+        f"- file_reader profile: resolve_workspace_target first; when resource_kind=file and allowed_actions={', '.join(semantics.get('allowed_actions') or []) or '(unknown)'}, prefer {preferred_file_tool}, then synthesize\n"
+        "- change_and_verify profile: edit/patch/write first, then run verification, then summarize\n"
+        "- chat profile: answer directly unless the user explicitly requests workspace inspection or code edits\n"
+        f"- current persona evidence_threshold is {persona.evidence_threshold}; gather more evidence rather than finishing prematurely when evidence is insufficient\n"
+        "Examples:\n"
+        '- To resolve a workspace target: {"kind":"call_tool","tool_name":"resolve_workspace_target","arguments":{"query":"what is in the memory folder","target_hint":"memory"}}\n'
+        '- To run a shell command: {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'
+        '- To read README.md: {"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"README.md"},"risk_class":"low"}\n'
+        '- To reply directly: {"kind":"respond","instruction":"..."}\n'
     )
     try:
         response = chat_once(
@@ -341,17 +360,17 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
                     ChatMessage(role="user", content=user_prompt),
                 ],
                 temperature=0.0,
-                max_tokens=220,
+                max_tokens=600,
             ),
         )
     except Exception as exc:
         raise AppError(
             code="PLANNER_REQUEST_FAILED",
-            message="planner 模型请求失败，无法生成下一步动作。",
+            message="Planner model request failed; cannot generate the next action.",
             detail=f"{type(exc).__name__}: {exc}",
             stage="planner",
             retriable=True,
-            suggestion="请检查 planner 模型配置、认证状态和网络连通性。",
+            suggestion="Check the planner model configuration, authentication, and network connectivity.",
         ) from exc
 
     raw_content = (response.content or "").strip()
@@ -361,11 +380,11 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         logger.warning("planner invalid json: raw=%s", raw_content[:400])
         raise AppError(
             code="PLANNER_INVALID_JSON",
-            message="planner 模型已返回结果，但不是合法 JSON。",
+            message="Planner model returned a response but it is not valid JSON.",
             detail=raw_content[:400],
             stage="planner",
             retriable=True,
-            suggestion="请检查 planner prompt 或切换到更稳定的模型。",
+            suggestion="Check the planner prompt or switch to a more reliable model.",
         ) from exc
 
     invalid_reason = _invalid_action_reason(parsed, tool_names=set(tool_names))
@@ -375,11 +394,11 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         logger.warning("planner normalization failed: %s", detail)
         raise AppError(
             code="PLANNER_NORMALIZATION_FAILED",
-            message="planner 模型返回了 JSON，但内容不符合动作约束。",
+            message="Planner model returned JSON but the content does not satisfy the action constraints.",
             detail=detail,
             stage="planner",
             retriable=True,
-            suggestion="请检查 tool_name、kind 和 arguments 是否满足约束。",
+            suggestion="Check that tool_name, kind, and arguments satisfy the constraints.",
         )
     return planned
 
@@ -394,20 +413,20 @@ def _extract_json_block(text: str) -> str:
 
 def _goal_prefers_summary(goal: str) -> bool:
     lowered = goal.strip().lower()
-    return any(marker in lowered for marker in ("总结", "概括", "summarize", "summary", "主要内容"))
+    return any(marker in lowered for marker in ("summarize", "summary", "overview", "总结", "概括", "主要内容"))
 
 
 def _goal_is_raw_read(goal: str) -> bool:
     lowered = goal.strip().lower()
-    return any(lowered.startswith(prefix) for prefix in ("读取", "read ")) and not _goal_prefers_summary(goal)
+    return any(lowered.startswith(prefix) for prefix in ("read ", "读取")) and not _goal_prefers_summary(goal)
 
 
 def _direct_file_reader_response(goal: str, observation: str) -> str:
     text = observation.strip()
     if _goal_is_raw_read(goal):
         return text
-    target = extract_workspace_target_hint(goal) or "目标文件"
-    return f"关于 `{target}`，我整理出的主要内容如下：\n{text}"
+    target = extract_workspace_target_hint(goal) or "the target file"
+    return f"Here is a summary of `{target}`:\n{text}"
 
 
 def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> CodexAction | None:

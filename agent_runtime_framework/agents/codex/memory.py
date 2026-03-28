@@ -16,10 +16,14 @@ class CodexTaskMemory:
     typed_claims: list[dict[str, str]] = field(default_factory=list)
 
 
-def _append_unique(items: list[str], value: str) -> None:
+def _append_unique(items: list[str], value: str, *, max_items: int = 20) -> None:
     normalized = value.strip()
-    if normalized and normalized not in items:
-        items.append(normalized)
+    if not normalized or normalized in items:
+        return
+    items.append(normalized)
+    # Evict the oldest entry when the limit is exceeded, keeping the most recent evidence
+    if len(items) > max_items:
+        del items[0]
 
 
 def _remove_value(items: list[str], value: str) -> None:
@@ -45,7 +49,7 @@ def _extract_claims(tool_name: str, text: str) -> tuple[list[str], list[dict[str
     if tool_name == "inspect_workspace_path":
         first_line = stripped.splitlines()[0].strip()
         if first_line:
-            claims.append(f"目录结构：{first_line}")
+            claims.append(f"Directory structure: {first_line}")
             typed_claims.append({"kind": "structure", "subject": "workspace", "detail": first_line})
         for line in stripped.splitlines():
             match = re.match(r"-\s+([^:：]+)[:：](.+)", line.strip())
@@ -53,7 +57,7 @@ def _extract_claims(tool_name: str, text: str) -> tuple[list[str], list[dict[str
                 continue
             target = match.group(1).strip()
             detail = match.group(2).strip()
-            claims.append(f"{target} 的作用是{detail}")
+            claims.append(f"{target}: {detail}")
             typed_claims.append({"kind": "role", "subject": target, "detail": detail})
     elif tool_name == "extract_workspace_outline":
         for line in stripped.splitlines():
@@ -62,7 +66,7 @@ def _extract_claims(tool_name: str, text: str) -> tuple[list[str], list[dict[str
                 continue
             target = match.group(1).strip()
             detail = match.group(2).strip()
-            claims.append(f"{target} 的作用是{detail}")
+            claims.append(f"{target}: {detail}")
             typed_claims.append({"kind": "role", "subject": target, "detail": detail})
     elif tool_name in {"read_workspace_text", "read_workspace_excerpt"}:
         preview = [line.strip() for line in stripped.splitlines() if line.strip()][:2]

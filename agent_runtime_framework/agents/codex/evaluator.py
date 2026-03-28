@@ -15,26 +15,6 @@ from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, 
 
 logger = logging.getLogger(__name__)
 
-_KNOWLEDGE_MARKERS = (
-    "总结",
-    "概括",
-    "介绍",
-    "解释",
-    "说明",
-    "结构",
-    "功能",
-    "作用",
-    "关系",
-    "主要",
-    "讲些什么",
-    "summarize",
-    "summary",
-    "explain",
-    "overview",
-    "what",
-    "how",
-)
-
 
 def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
     if task.memory.pending_verifications:
@@ -86,12 +66,12 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "你是 Codex agent 的 output evaluator。"
-                            "判断当前任务是否应该 finish、continue 或 abstain。"
-                            "只输出 JSON。"
-                            '格式一：{"decision":"finish"}。'
-                            '格式二：{"decision":"continue","kind":"call_tool|respond","instruction":"...","tool_name":"...","arguments":{},"direct_output":true|false}。'
-                            '格式三：{"decision":"abstain"}。'
+                            "You are the output evaluator for a Codex agent. "
+                            "Decide whether the current task should finish, continue, or abstain. "
+                            "Output JSON only. "
+                            'Format A: {"decision":"finish"}. '
+                            'Format B: {"decision":"continue","kind":"call_tool|respond","instruction":"...","tool_name":"...","arguments":{},"direct_output":true|false}. '
+                            'Format C: {"decision":"abstain"}. '
                             ,
                             workflow_name=workflow_name_for_task_profile(task.task_profile),
                             persona=persona,
@@ -100,19 +80,19 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
                     ChatMessage(
                         role="user",
                         content=(
-                            f"任务目标：{task.goal}\n"
+                            f"Goal: {task.goal}\n"
                             f"{build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona)}\n"
-                            f"最近已完成动作：\n{chr(10).join(action_lines)}\n"
-                            f"可用工具：{tool_list}\n"
-                            f"当前 persona evidence_threshold：{persona.evidence_threshold}\n"
-                            "如果当前结果已经回答了用户目标，输出 finish。"
-                            "如果当前结果只是原始工具输出，还需要补一步工具调用或综合回答，输出 continue。"
-                            "如果你不确定，输出 abstain。"
+                            f"Recent completed actions:\n{chr(10).join(action_lines)}\n"
+                            f"Available tools: {tool_list}\n"
+                            f"Current persona evidence_threshold: {persona.evidence_threshold}\n"
+                            "If the current result fully answers the user's goal, output finish. "
+                            "If the current result is raw tool output that still needs a follow-up tool call or synthesized answer, output continue. "
+                            "If you are uncertain, output abstain."
                         ),
                     ),
                 ],
                 temperature=0.0,
-                max_tokens=220,
+                max_tokens=400,
             ),
         )
     except Exception as exc:
@@ -137,8 +117,6 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     last_action = completed[-1]
     if last_action.kind == "respond" and not task.memory.open_questions and not task.memory.pending_verifications:
         return CodexEvaluationDecision(status="finish")
-    if not _is_knowledge_task(task.goal):
-        return CodexEvaluationDecision()
     if bool(last_action.metadata.get("from_evaluator")) and last_action.kind == "respond":
         return CodexEvaluationDecision()
     tool_name = str(last_action.metadata.get("tool_name") or "").strip()
@@ -329,9 +307,8 @@ def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str
     return CodexEvaluationDecision(status="continue", next_action=action)
 
 
-def _is_knowledge_task(goal: str) -> bool:
-    text = goal.strip().lower()
-    return any(marker in text for marker in _KNOWLEDGE_MARKERS)
+def _is_list_only_request(goal: str) -> bool:
+    return False
 
 
 def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) -> str:
@@ -352,13 +329,13 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
     if role_summary:
         return role_summary
     if tool_name == "inspect_workspace_path":
-        return f"关于 `{_extract_target_label(task.goal)}`，我先整理了目录结构和关键文件职责：\n{observation}"
+        return f"Here is a summary of the structure and key file roles for `{_extract_target_label(task.goal)}`:\n{observation}"
     if tool_name == "summarize_workspace_text":
-        return f"按你的问题，我先概括如下：\n{observation}"
+        return f"Here is an initial summary based on your question:\n{observation}"
     if tool_name == "read_workspace_excerpt":
-        return f"我先基于关键片段做一个简要说明：\n{observation}"
+        return f"Here is a brief explanation based on the key excerpt:\n{observation}"
     if tool_name == "read_workspace_text":
-        return f"我先基于已读取内容做一个简要说明：\n{_summarize_read_content(observation)}"
+        return f"Here is an initial explanation based on the file content:\n{_summarize_read_content(observation)}"
     return observation
 
 
@@ -367,15 +344,15 @@ def _build_repository_claim_summary(task: CodexTask) -> str:
     role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
-        lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
+        lines.append(f"Directory structure: {structure_claims[0].get('detail', '')}")
     for claim in role_claims[:4]:
         subject = str(claim.get("subject") or "").strip()
         detail = str(claim.get("detail") or "").strip()
         if subject and detail:
-            lines.append(f"{subject} 的作用是{detail}")
+            lines.append(f"{subject}: {detail}")
     if not lines:
         return ""
-    return "基于已收集的信息，我的总结是：\n" + "\n".join(f"- {line}" for line in lines)
+    return "Based on collected information:\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[dict[str, str]]) -> str:
@@ -385,17 +362,17 @@ def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[d
     selected = relevant or claims[:3]
     structure_claims = [claim for claim in typed_claims if claim.get("kind") == "structure"]
     role_claims = [claim for claim in typed_claims if claim.get("kind") == "role"]
-    if "作用" in goal or "功能" in goal or "role" in goal.lower():
-        lines: list[str] = []
-        if structure_claims:
-            lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
-        if role_claims:
-            for claim in role_claims[:3]:
-                lines.append(f"{claim.get('subject', '')} 的作用是{claim.get('detail', '')}")
-        elif selected:
-            lines.extend(selected)
-        return "基于已收集的信息，我的总结是：\n" + "\n".join(f"- {line}" for line in lines if line)
-    return ""
+    lines: list[str] = []
+    if structure_claims:
+        lines.append(f"Directory structure: {structure_claims[0].get('detail', '')}")
+    if role_claims:
+        for claim in role_claims[:3]:
+            lines.append(f"{claim.get('subject', '')}: {claim.get('detail', '')}")
+    elif selected:
+        lines.extend(selected)
+    if not lines:
+        return ""
+    return "Based on collected information:\n" + "\n".join(f"- {line}" for line in lines if line)
 
 
 def _goal_target_tokens(goal: str) -> list[str]:
@@ -403,8 +380,7 @@ def _goal_target_tokens(goal: str) -> list[str]:
 
 
 def _goal_prefers_summary(goal: str) -> bool:
-    lowered = goal.strip().lower()
-    return any(marker in lowered for marker in ("总结", "概括", "summarize", "summary", "主要内容"))
+    return False
 
 
 def _relative_target_path(target_semantics: dict[str, Any], context: Any) -> str:
@@ -424,13 +400,13 @@ def _extract_claims_from_observation(observation: str) -> list[str]:
             continue
         target = match.group(1).strip()
         detail = match.group(2).strip()
-        claims.append(f"{target} 的作用是{detail}")
+        claims.append(f"{target}: {detail}")
     return claims
 
 
 def _extract_target_label(goal: str) -> str:
     candidates = [token for token in goal.replace("，", " ").replace("。", " ").split() if "/" in token or "_" in token]
-    return candidates[0] if candidates else "目标内容"
+    return candidates[0] if candidates else "target"
 
 
 def _summarize_read_content(observation: str) -> str:
@@ -481,4 +457,17 @@ def _extract_target_semantics(task: CodexTask, action: CodexAction) -> dict[str,
 
 
 def _has_repository_structure_evidence(task: CodexTask) -> bool:
-    return any(claim.get("kind") == "structure" for claim in task.memory.typed_claims)
+    if any(claim.get("kind") == "structure" for claim in task.memory.typed_claims):
+        return True
+    # list_workspace_directory results also count as valid structure evidence
+    return any(
+        action.status == "completed"
+        and str(action.metadata.get("tool_name") or "") in {
+            "list_workspace_directory",
+            "inspect_workspace_path",
+            "rank_workspace_entries",
+            "extract_workspace_outline",
+        }
+        for action in task.actions
+    )
+

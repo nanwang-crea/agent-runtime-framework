@@ -1,5 +1,5 @@
-file_reader workflow：
-- 先 resolve 文件目标。
-- 如果用户要总结、解释、提炼内容，优先读取 excerpt，而不是直接依赖粗摘要。
-- 如果用户明确要求查看原文，再读取完整文本。
-- 基于 excerpt 或全文证据综合回答，不要直接把工具原始输出当最终答复。
+file_reader workflow:
+- Resolve the file target first.
+- If the user wants a summary, explanation, or key points, prefer reading an excerpt rather than relying on a coarse summary.
+- If the user explicitly asks to see the full content, read the complete text.
+- Synthesize the answer from the excerpt or full text — do not relay raw tool output as the final response.

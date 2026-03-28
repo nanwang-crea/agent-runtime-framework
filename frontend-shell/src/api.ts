@@ -83,11 +83,13 @@ export async function sendMessageStream(
     onError?: (event: { error: AssistantError }) => void;
     onFinal?: (payload: AssistantResponse) => void;
   },
+  signal?: AbortSignal,
 ): Promise<AssistantResponse | null> {
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
+    signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(`Request failed: ${response.status}`);
@@ -99,6 +101,10 @@ export async function sendMessageStream(
   let errorPayload: AssistantError | null = null;
 
   while (true) {
+    if (signal?.aborted) {
+      reader.cancel();
+      break;
+    }
     const { done, value } = await reader.read();
     if (done) {
       break;
@@ -150,6 +156,14 @@ export function respondApproval(tokenId: string, approved: boolean): Promise<Ass
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token_id: tokenId, approved }),
+  });
+}
+
+export function replayRun(runId: string): Promise<AssistantResponse> {
+  return request<AssistantResponse>("/api/replay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: runId }),
   });
 }
 

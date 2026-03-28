@@ -37,11 +37,11 @@ def build_tool_guidance_lines(context: Any, tool_names: list[str]) -> list[str]:
         guidance = list(getattr(tool, "prompt_guidelines", []) or [])
         permission = str(getattr(tool, "permission_level", "") or "")
         if permission == "metadata_read":
-            guidance.append("适合先做目标定位和结构确认，再决定是否深入读取。")
+            guidance.append("Good for target location and structure confirmation before deciding to read deeper.")
         elif permission == "content_read":
-            guidance.append("适合在目标已明确后补足内容证据，不要直接把输出原样返回。")
+            guidance.append("Use after the target is confirmed; do not relay raw tool output directly.")
         elif permission in {"safe_write", "destructive_write"}:
-            guidance.append("只在目标明确且用户意图是修改时使用，随后尽量安排验证。")
+            guidance.append("Use only when the target is clear and the user intends a change; schedule verification afterward.")
         lines.append(
             " | ".join(
                 part
@@ -65,8 +65,13 @@ def build_follow_up_context(*, session: Any | None, context: Any) -> str:
     if session is not None:
         recent_turns = getattr(session, "turns", [])[-4:]
         if recent_turns:
-            lines = [f"- {turn.role}: {turn.content}" for turn in recent_turns]
-            sections.append("近期对话：\n" + "\n".join(lines))
+            lines = []
+            for turn in recent_turns:
+                content = str(getattr(turn, "content", "") or "").strip().replace("\n", " ")
+                if len(content) > 200:
+                    content = content[:197].rstrip() + "..."
+                lines.append(f"- {turn.role}: {content}")
+            sections.append("Recent turns:\n" + "\n".join(lines))
     sections.append(build_run_context_block(context, session=session))
     return "\n".join(section for section in sections if section)
 
@@ -101,7 +106,7 @@ def build_resource_semantics_block(task: Any) -> str:
     semantics = extract_task_resource_semantics(task)
     allowed = ", ".join(semantics["allowed_actions"]) if semantics["allowed_actions"] else "(none)"
     return (
-        "资源语义：\n"
+        "Resource semantics:\n"
         f"- path: {semantics['path'] or '(unknown)'}\n"
         f"- resource_kind: {semantics['resource_kind'] or '(unknown)'}\n"
         f"- is_container: {str(bool(semantics['is_container'])).lower()}\n"

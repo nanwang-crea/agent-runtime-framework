@@ -27,7 +27,7 @@ _PERSONAS: dict[str, RuntimePersona] = {
     "build": RuntimePersona(
         name="build",
         description="Default execution persona for editing, fixing, and verifying workspace changes.",
-        prompt_preamble="你当前处于 build persona。优先完成用户请求，允许修改工作区，并在必要时安排验证。",
+        prompt_preamble="You are in build persona. Focus on completing the user's request. Workspace edits are allowed; schedule verification after changes.",
         allow_write=True,
         default_step_budget=10,
         evidence_threshold="medium",
@@ -36,7 +36,7 @@ _PERSONAS: dict[str, RuntimePersona] = {
     "plan": RuntimePersona(
         name="plan",
         description="Analysis-first persona. Focus on understanding and planning, not editing.",
-        prompt_preamble="你当前处于 plan persona。重点是分析、规划、解释和提出建议，默认不要修改工作区。",
+        prompt_preamble="You are in plan persona. Focus on analysis, planning, and explanation. Do not modify the workspace unless explicitly instructed.",
         allow_write=False,
         default_step_budget=8,
         evidence_threshold="high",
@@ -46,7 +46,7 @@ _PERSONAS: dict[str, RuntimePersona] = {
     "explore": RuntimePersona(
         name="explore",
         description="Read-first persona for locating targets, reading files, and understanding repositories.",
-        prompt_preamble="你当前处于 explore persona。重点是定位目标、读取内容、理解结构，默认不要修改工作区。",
+        prompt_preamble="You are in explore persona. Focus on locating targets, reading content, and understanding structure. Do not modify the workspace.",
         allow_write=False,
         default_step_budget=8,
         evidence_threshold="high",
@@ -58,16 +58,44 @@ _PERSONAS: dict[str, RuntimePersona] = {
     "general": RuntimePersona(
         name="general",
         description="General-purpose persona for mixed reasoning tasks and follow-up conversations.",
-        prompt_preamble="你当前处于 general persona。根据任务需要在分析、读取、总结之间切换；只有在用户明确要求时才修改工作区。",
+        prompt_preamble="You are in general persona. Switch between analysis, reading, and summarizing as needed. Only modify the workspace when explicitly requested.",
         allow_write=True,
         default_step_budget=8,
         evidence_threshold="medium",
         task_profiles=("chat",),
     ),
+    "debug": RuntimePersona(
+        name="debug",
+        description="Debugging and root-cause analysis persona. Prioritizes evidence gathering before proposing fixes.",
+        prompt_preamble="You are in debug persona. Gather error evidence and locate the root cause before proposing a fix. Do not guess without sufficient evidence.",
+        allow_write=True,
+        default_step_budget=12,
+        evidence_threshold="high",
+        ask_tool_names=("run_shell_command",),
+        task_profiles=("debug_and_fix",),
+    ),
+    "multi_edit": RuntimePersona(
+        name="multi_edit",
+        description="Multi-file change persona. Plans all edits upfront and verifies after all changes are applied.",
+        prompt_preamble="You are in multi_edit persona. List all files to modify and their reasons upfront, apply changes in dependency order, then run tests once all edits are complete.",
+        allow_write=True,
+        default_step_budget=16,
+        evidence_threshold="high",
+        task_profiles=("multi_file_change",),
+    ),
+    "test": RuntimePersona(
+        name="test",
+        description="Test execution and analysis persona. Runs tests, reads output, and iterates on failures.",
+        prompt_preamble="You are in test persona. Run tests first, read failure output carefully, locate the root cause, fix it, then re-run until all tests pass.",
+        allow_write=True,
+        default_step_budget=12,
+        evidence_threshold="medium",
+        task_profiles=("test_and_verify",),
+    ),
     "summary": RuntimePersona(
         name="summary",
         description="Compression and summarization persona for turning collected evidence into concise output.",
-        prompt_preamble="你当前处于 summary persona。重点是压缩、整理和综合已有证据，不主动继续扩展新的调查范围。",
+        prompt_preamble="You are in summary persona. Compress, organize, and synthesize existing evidence into concise output. Do not expand into new investigation areas.",
         tool_access="deny",
         allow_write=False,
         default_step_budget=4,
@@ -76,7 +104,7 @@ _PERSONAS: dict[str, RuntimePersona] = {
     "compaction": RuntimePersona(
         name="compaction",
         description="Context compaction persona for aggressively summarizing long history into durable state.",
-        prompt_preamble="你当前处于 compaction persona。目标是压缩上下文并保留后续继续工作所需的关键信息。",
+        prompt_preamble="You are in compaction persona. Compress context and preserve only the key information needed to continue work.",
         tool_access="deny",
         allow_write=False,
         default_step_budget=4,
@@ -109,6 +137,12 @@ def resolve_runtime_persona(context: Any | None, *, task: Any | None = None, use
         return require_runtime_persona("build")
     if profile in {"repository_explainer", "file_reader"}:
         return require_runtime_persona("explore")
+    if profile == "debug_and_fix":
+        return require_runtime_persona("debug")
+    if profile == "multi_file_change":
+        return require_runtime_persona("multi_edit")
+    if profile == "test_and_verify":
+        return require_runtime_persona("test")
     return require_runtime_persona("general")
 
 

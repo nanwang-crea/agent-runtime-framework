@@ -36,6 +36,9 @@ class WorkflowRegistry:
                 WorkflowDefinition(name="repository_overview", task_profile="repository_explainer", instructions=_load_workflow_doc("repository_overview")),
                 WorkflowDefinition(name="file_reader", task_profile="file_reader", instructions=_load_workflow_doc("file_reader")),
                 WorkflowDefinition(name="change_and_verify", task_profile="change_and_verify", instructions=_load_workflow_doc("change_and_verify")),
+                WorkflowDefinition(name="debug_and_fix", task_profile="debug_and_fix", instructions=_load_workflow_doc("debug_and_fix")),
+                WorkflowDefinition(name="multi_file_change", task_profile="multi_file_change", instructions=_load_workflow_doc("multi_file_change")),
+                WorkflowDefinition(name="test_and_verify", task_profile="test_and_verify", instructions=_load_workflow_doc("test_and_verify")),
             ]
         )
 

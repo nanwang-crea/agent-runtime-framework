@@ -118,7 +118,7 @@ def build_run_context_block(
     plan_lines = [f"- {item}" for item in snapshot.current_plan_state.get("tasks", [])] or ["- (none)"]
     return "\n".join(
         [
-            "运行时上下文：",
+            "Runtime context:",
             f"- active_agent: {snapshot.identity['active_agent']}",
             f"- persona_description: {snapshot.identity['persona_description']}",
             f"- task_profile: {snapshot.identity['task_profile']}",
@@ -133,11 +133,11 @@ def build_run_context_block(
             f"- pending_clarification: {snapshot.pending_clarification or '(none)'}",
             f"- pending_verification: {', '.join(pending_verifications)}",
             f"- current_user_message: {snapshot.current_user_message or '(none)'}",
-            "近期对话：",
+            "Recent turns:",
             *recent_turn_lines,
             "loaded_instructions:",
             *instruction_lines,
-            "最近焦点资源：",
+            "Recent focused resources:",
             *focused_lines,
             "recent_completed_actions:",
             *recent_action_lines,
@@ -294,11 +294,11 @@ def _recent_turns(session: Any | None) -> list[str]:
     if session is None:
         return []
     result: list[str] = []
-    for turn in getattr(session, "turns", [])[-4:]:
+    for turn in getattr(session, "turns", [])[-6:]:
         role = str(getattr(turn, "role", "") or "unknown")
         content = str(getattr(turn, "content", "") or "").strip().replace("\n", " ")
-        if len(content) > 160:
-            content = content[:157].rstrip() + "..."
+        if len(content) > 300:
+            content = content[:297].rstrip() + "..."
         result.append(f"{role}: {content or '(empty)'}")
     return result
 

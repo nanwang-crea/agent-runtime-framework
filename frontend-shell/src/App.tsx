@@ -1,8 +1,9 @@
-import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiRequestError,
   fetchModelCenter,
   fetchSession,
+  replayRun,
   respondApproval,
   runModelCenterAction,
   sendMessageStream,
@@ -15,8 +16,11 @@ import type {
   AssistantResponse,
   ConfigResponse,
   ContextPayload,
+  MemoryPayload,
   ModelCenterResponse,
   ModelsResponse,
+  PlanPayload,
+  PlanStep,
   SessionPayload,
 } from "./types";
 
@@ -94,6 +98,27 @@ function App() {
   const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setStatus("idle");
+  }, []);
+
+  async function handleReplay(runId: string) {
+    setStatus("running");
+    try {
+      const payload = await replayRun(runId);
+      applyResponse(payload);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "重试失败，请检查后端日志。"));
+      setStatus("error");
+    }
+  }
 
   useEffect(() => {
     void loadSession();
@@ -277,6 +302,8 @@ function App() {
     setStreamingReply("");
     const runId = `run-${Date.now()}`;
     setMessage("");
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     try {
       const finalPayload = await sendMessageStream(trimmed, {
         onStart: () => {
@@ -355,12 +382,22 @@ function App() {
         onFinal: (finalPayload) => {
           applyResponse(finalPayload, runId, anchorUserTurnIndex);
         },
-      });
+      }, abortController.signal);
+      abortControllerRef.current = null;
       if (finalPayload !== null) {
         setPendingUserMessage("");
       }
       setUiError(null);
     } catch (error) {
+      abortControllerRef.current = null;
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setRunCards((current) =>
+          current.map((run) =>
+            run.id === runId ? { ...run, status: "completed", phaseLabel: "已中止", summary: "用户已停止" } : run,
+          ),
+        );
+        return;
+      }
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
       setRunCards((current) =>
@@ -680,12 +717,12 @@ function App() {
         </nav>
 
         <div className="sidebar-card">
-          <span>Current Workspace</span>
+          <span>当前工作区</span>
           <code>{activeWorkspace || "加载中..."}</code>
         </div>
 
         <div className="sidebar-card">
-          <span>Agent</span>
+          <span>切换 Agent</span>
           <select value={contextState.active_agent} onChange={(event) => void handleAgentSwitch(event.target.value)}>
             {contextState.available_agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
@@ -696,7 +733,7 @@ function App() {
         </div>
 
         <div className="sidebar-card">
-          <span>Workspace Switch</span>
+          <span>切换工作区</span>
           <select value={contextState.active_workspace || workspace} onChange={(event) => void handleWorkspaceSwitch(event.target.value)}>
             {(contextState.available_workspaces.length > 0 ? contextState.available_workspaces : [workspace]).filter(Boolean).map((item) => (
               <option key={item} value={item}>
@@ -708,15 +745,15 @@ function App() {
 
         <div className="sidebar-stats">
           <div className="stat-card">
-            <span>Turns</span>
+            <span>轮次</span>
             <strong>{session.turns.length}</strong>
           </div>
           <div className="stat-card">
-            <span>Runs</span>
+            <span>运行次数</span>
             <strong>{runCards.length}</strong>
           </div>
           <div className="stat-card">
-            <span>Status</span>
+            <span>状态</span>
             <strong>{status}</strong>
           </div>
         </div>
@@ -726,8 +763,8 @@ function App() {
       <section className="main-stage">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{activeView === "chat" ? "Conversation Workspace" : activeView === "history" ? "Run History" : "Model & Config Center"}</p>
-            <h2>{activeView === "chat" ? "Agent Shell" : activeView === "history" ? "History" : "Settings"}</h2>
+            <p className="eyebrow">{activeView === "chat" ? "对话工作区" : activeView === "history" ? "运行历史" : "模型与配置"}</p>
+            <h2>{activeView === "chat" ? "Agent Shell" : activeView === "history" ? "历史" : "设置"}</h2>
           </div>
           <div className="topbar-meta">
             <span className="pill">{contextState.active_agent}</span>
@@ -754,7 +791,7 @@ function App() {
             <section className="panel conversation-panel">
               <div className="panel-head conversation-head">
                 <div>
-                  <h3>Conversation</h3>
+                  <h3>对话</h3>
                   <p className="panel-subcopy">把 Agent 过程收进对话流里：默认只显示简短状态和少量步骤，需要时再展开细节。</p>
                 </div>
                 <div className="live-shell-meta">
@@ -818,6 +855,7 @@ function App() {
                             currentStatus: status,
                           } : null}
                           onApproval={(approved) => void handleApproval(approved)}
+                          onReplay={() => void handleReplay(item.run.id)}
                         />
                       )}
                     </Fragment>
@@ -842,9 +880,15 @@ function App() {
                 />
                 <div className="composer-bar">
                   <span className="composer-hint">过程状态会内联显示在对话里，最终回复仍然保持视觉主导。</span>
-                  <button type="submit" className="primary" disabled={isBusy || !message.trim()}>
-                    {status === "streaming" ? "生成中..." : status === "running" ? "执行中..." : "发送"}
-                  </button>
+                  {(status === "streaming" || status === "running") ? (
+                    <button type="button" className="stop-btn" onClick={handleStop}>
+                      停止
+                    </button>
+                  ) : (
+                    <button type="submit" className="primary" disabled={isBusy || !message.trim()}>
+                      发送
+                    </button>
+                  )}
                 </div>
               </form>
             </section>
@@ -855,7 +899,7 @@ function App() {
           <section className="history-layout">
             <section className="panel history-panel">
               <div className="panel-head">
-                <h3>Chat History</h3>
+                <h3>聊天历史</h3>
               </div>
               <div className="history-list">
                 {session.turns.length === 0 ? (
@@ -876,7 +920,7 @@ function App() {
 
             <section className="panel history-panel">
               <div className="panel-head">
-                <h3>Plan Timeline</h3>
+                <h3>计划时间线</h3>
               </div>
               <div className="timeline">
                 {plans.length === 0 ? (
@@ -888,7 +932,7 @@ function App() {
                   [...plans].reverse().map((plan) => (
                     <div key={plan.plan_id} className="timeline-card">
                       <h3>{plan.goal}</h3>
-                      {plan.steps.map((step, index) => (
+                      {plan.steps.map((step: PlanStep, index: number) => (
                         <div key={`${plan.plan_id}-${index}`} className="timeline-step">
                           <span className="step-status">{step.status}</span>
                           <strong>{step.capability_name}</strong>
@@ -908,7 +952,7 @@ function App() {
           <section className="settings-layout">
             <section className="panel settings-panel">
               <div className="panel-head">
-                <h3>Model Console</h3>
+                <h3>模型控制台</h3>
               </div>
               <div className="model-console-hero">
                 <div className="hero-copy">
@@ -918,16 +962,16 @@ function App() {
                 </div>
                 <div className="hero-metrics">
                   <div className="metric-tile">
-                    <span>Active Instance</span>
-                    <strong>{selectedGlobalInstance || "None"}</strong>
+                    <span>当前实例</span>
+                    <strong>{selectedGlobalInstance || "无"}</strong>
                   </div>
                   <div className="metric-tile">
-                    <span>Ready Instances</span>
+                    <span>可用实例</span>
                     <strong>{readyInstanceCount}/{models.instances.length}</strong>
                   </div>
                   <div className="metric-tile">
-                    <span>Routing Scope</span>
-                    <strong>Global</strong>
+                    <span>路由范围</span>
+                    <strong>全局</strong>
                   </div>
                 </div>
               </div>
@@ -935,7 +979,7 @@ function App() {
               <div className="settings-card featured-model-card">
                 <div className="instance-head">
                   <strong>当前生效模型</strong>
-                  <span className="pill ready">single active model</span>
+                  <span className="pill ready">单一全局模型</span>
                 </div>
                 <p className="instance-meta">选择草稿后显式应用，避免误操作。当前 endpoint：{selectedGlobalBaseUrl}</p>
                 <div className="form-pair">
@@ -983,7 +1027,7 @@ function App() {
               </div>
 
               <div className="config-summary compact">
-                <span>Config Path</span>
+                <span>配置文件路径</span>
                 <code>{config.path || "加载中..."}</code>
               </div>
 
@@ -1256,6 +1300,7 @@ function RunCard({
   stageSummary,
   processDetails,
   onApproval,
+  onReplay,
 }: {
   run: RunCardState;
   onToggle: () => void;
@@ -1263,6 +1308,7 @@ function RunCard({
   stageSummary: RunStageSummary;
   processDetails: ProcessDetailState | null;
   onApproval: (approved: boolean) => void;
+  onReplay?: () => void;
 }) {
   const summaryText =
     normalizeDetail(run.collapsed ? run.summary : run.phaseLabel).trim() ||
@@ -1287,7 +1333,7 @@ function RunCard({
         <div className="run-card-header-main">
           <div className="run-header-topline">
             <span className={`run-status ${run.status}`}>{run.status}</span>
-            <span className="run-header-label">Agent</span>
+            <span className="run-header-label">执行 Agent</span>
           </div>
           <div className="run-header-copy">
             <strong>{run.capabilityName || "assistant"}</strong>
@@ -1391,6 +1437,11 @@ function RunCard({
                 {run.error.code}
                 {run.error.stage ? ` · ${run.error.stage}` : ""}
               </p>
+              {run.error.retriable && onReplay ? (
+                <button type="button" className="retry-btn" onClick={onReplay}>
+                  重试
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

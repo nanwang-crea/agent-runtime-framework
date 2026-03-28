@@ -850,6 +850,48 @@ select {
   text-align: left;
 }
 
+/* Diff block syntax highlight */
+.diff-block {
+  overflow: auto;
+  padding: 14px;
+  border-radius: 16px;
+  background: #0b1220;
+  color: #e7edf7;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.diff-block code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  display: block;
+}
+
+.diff-add {
+  display: block;
+  background: rgba(40, 200, 80, 0.12);
+  color: #7ee787;
+}
+
+.diff-del {
+  display: block;
+  background: rgba(220, 60, 60, 0.12);
+  color: #f97583;
+}
+
+.diff-hunk {
+  display: block;
+  color: #79b8ff;
+  opacity: 0.75;
+}
+
+.diff-ctx {
+  display: block;
+  color: #e7edf7;
+}
+
 .composer {
   margin-top: 16px;
 }
@@ -876,6 +918,41 @@ textarea:disabled {
   justify-content: space-between;
   gap: 12px;
   margin-top: 12px;
+}
+
+.stop-btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid rgba(220, 60, 60, 0.5);
+  background: rgba(220, 60, 60, 0.12);
+  color: #e05555;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.stop-btn:hover {
+  background: rgba(220, 60, 60, 0.22);
+  border-color: rgba(220, 60, 60, 0.75);
+}
+
+.retry-btn {
+  margin-top: 10px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(100, 160, 220, 0.5);
+  background: rgba(100, 160, 220, 0.1);
+  color: #6aabdd;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.retry-btn:hover {
+  background: rgba(100, 160, 220, 0.2);
+  border-color: rgba(100, 160, 220, 0.75);
 }
 
 .composer-hint {
