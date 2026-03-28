@@ -53,10 +53,11 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
         return CodexEvaluationDecision()
     action_lines = [
         f"- kind: {action.kind}; instruction: {action.instruction}; observation: {action.observation or ''}; tool_name: {action.metadata.get('tool_name', '')}"
-        for action in completed[-4:]
+        for action in completed[-8:]
     ]
     tool_list = ", ".join(tool_names)
     persona = resolve_runtime_persona(context, task=task)
+    workflow_name = workflow_name_for_task_profile(task.task_profile)
     try:
         response = chat_once(
             llm_client,
@@ -67,13 +68,18 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
                         role="system",
                         content=build_codex_system_prompt(
                             "You are the output evaluator for a Codex agent. "
+                            f"The active workflow is '{workflow_name or 'general'}'; apply that workflow's completion standard when judging finish vs continue. "
                             "Decide whether the current task should finish, continue, or abstain. "
+                            "Finish only when the user's goal is fully satisfied, the latest result has already been synthesized into a user-ready answer when needed, there are no open questions, and there are no pending verifications or missing required workflow steps. "
+                            "Continue when raw tool output has not yet been synthesized, additional evidence or workflow steps are still required, verification is still pending, the answer is only partial, or the latest action created new uncertainty. "
+                            "Abstain only when the decision cannot be made reliably from the available context. "
+                            "Prefer continue over premature finish when evidence is incomplete. "
                             "Output JSON only. "
                             'Format A: {"decision":"finish"}. '
                             'Format B: {"decision":"continue","kind":"call_tool|respond","instruction":"...","tool_name":"...","arguments":{},"direct_output":true|false}. '
                             'Format C: {"decision":"abstain"}. '
                             ,
-                            workflow_name=workflow_name_for_task_profile(task.task_profile),
+                            workflow_name=workflow_name,
                             persona=persona,
                         ),
                     ),
@@ -81,18 +87,20 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
                         role="user",
                         content=(
                             f"Goal: {task.goal}\n"
+                            f"Workflow: {workflow_name or '(none)'}\n"
                             f"{build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona)}\n"
+                            f"Task progress summary:\n{_build_evaluator_progress_summary(task)}\n"
                             f"Recent completed actions:\n{chr(10).join(action_lines)}\n"
                             f"Available tools: {tool_list}\n"
                             f"Current persona evidence_threshold: {persona.evidence_threshold}\n"
-                            "If the current result fully answers the user's goal, output finish. "
-                            "If the current result is raw tool output that still needs a follow-up tool call or synthesized answer, output continue. "
+                            "Return finish only if the workflow is complete and the user could receive the answer right now without another tool call or synthesis step. "
+                            "Return continue if any required evidence gathering, synthesis, or verification still remains. "
                             "If you are uncertain, output abstain."
                         ),
                     ),
                 ],
                 temperature=0.0,
-                max_tokens=400,
+                max_tokens=700,
             ),
         )
     except Exception as exc:
@@ -307,6 +315,42 @@ def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str
     return CodexEvaluationDecision(status="continue", next_action=action)
 
 
+def _build_evaluator_progress_summary(task: CodexTask) -> str:
+    completed_actions = [action for action in task.actions if action.status == "completed"]
+    pending_actions = [action for action in task.actions if action.status != "completed"]
+    lines = [
+        f"- task_profile: {task.task_profile}",
+        f"- completed_actions: {len(completed_actions)}",
+        f"- remaining_actions: {len(pending_actions)}",
+    ]
+    if task.plan is not None:
+        plan_tasks = list(getattr(task.plan, "tasks", []) or [])
+        completed_plan = sum(1 for item in plan_tasks if getattr(item, "status", "") == "completed")
+        lines.append(f"- plan_status: {getattr(task.plan, 'status', 'unknown')}")
+        lines.append(f"- plan_tasks_completed: {completed_plan}/{len(plan_tasks)}")
+        for item in plan_tasks[:6]:
+            title = str(getattr(item, "title", "") or getattr(item, "kind", "task") or "task")
+            lines.append(f"  - [{getattr(item, 'status', 'pending')}] {title}")
+    if task.memory.read_paths:
+        lines.append("- read_paths: " + ", ".join(task.memory.read_paths[-6:]))
+    if task.memory.modified_paths:
+        lines.append("- modified_paths: " + ", ".join(task.memory.modified_paths[-6:]))
+    if task.memory.known_facts:
+        lines.append("- recent_known_facts:")
+        lines.extend(f"  - {fact}" for fact in task.memory.known_facts[-6:])
+    if task.memory.open_questions:
+        lines.append("- open_questions:")
+        lines.extend(f"  - {question}" for question in task.memory.open_questions[-4:])
+    else:
+        lines.append("- open_questions: none")
+    if task.memory.pending_verifications:
+        lines.append("- pending_verifications:")
+        lines.extend(f"  - {item}" for item in task.memory.pending_verifications[-4:])
+    else:
+        lines.append("- pending_verifications: none")
+    return "\n".join(lines)
+
+
 def _is_list_only_request(goal: str) -> bool:
     return False
 
@@ -470,4 +514,3 @@ def _has_repository_structure_evidence(task: CodexTask) -> bool:
         }
         for action in task.actions
     )
-

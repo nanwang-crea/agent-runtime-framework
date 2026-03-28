@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import difflib
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,7 +74,7 @@ def _interpret(user_input: str, context: ApplicationContext) -> DesktopIntent:
         ),
         llm_user_prompt=user_input.strip(),
         normalizer=lambda parsed: _normalize_llm_intent(parsed, user_input),
-        fallback=lambda: _interpret_with_rules(user_input),
+        fallback=lambda: DesktopIntent(user_input=user_input.strip(), action="list"),
         max_tokens=260,
     )
 
@@ -90,11 +89,6 @@ def _normalize_llm_intent(parsed: dict[str, Any], user_input: str) -> DesktopInt
     target_kind = str(parsed.get("target_kind") or "file").strip().lower()
     if target_kind not in {"file", "directory"}:
         target_kind = "file"
-    lowered_input = user_input.lower()
-    if action == "create":
-        destination_name = None
-        if any(marker in user_input for marker in ("文件夹", "目录")) or any(marker in lowered_input for marker in ("folder", "directory")):
-            target_kind = "directory"
     return DesktopIntent(
         user_input=user_input.strip(),
         action=action,
@@ -104,88 +98,6 @@ def _normalize_llm_intent(parsed: dict[str, Any], user_input: str) -> DesktopInt
         target_kind=target_kind,
         use_last_focus=bool(parsed.get("use_last_focus")),
     )
-
-
-def _interpret_with_rules(user_input: str) -> DesktopIntent:
-    text = user_input.strip()
-    lowered = text.lower()
-    if any(marker in text for marker in ("列出", "列一下", "有哪些文件", "有什么文件")):
-        return DesktopIntent(user_input=text, action="list", target_name=_extract_target_name(text, action="list"))
-    if "总结" in text or "summarize" in lowered:
-        return DesktopIntent(user_input=text, action="summarize", target_name=_extract_target_name(text, action="summarize"))
-    if "读取" in text or "read " in lowered or "看" in text:
-        return DesktopIntent(
-            user_input=text,
-            action="read",
-            target_name=_extract_target_name(text, action="read"),
-            use_last_focus=("刚才" in text or "那个文件" in text or "上一个" in text),
-        )
-    if any(marker in text for marker in ("创建", "新建")) or "create " in lowered:
-        target, content = _extract_target_and_content(text)
-        target_kind = "directory" if any(marker in text for marker in ("文件夹", "目录", "folder", "directory")) else "file"
-        if target_kind == "directory":
-            target = _extract_directory_name(text) or target
-            content = None
-        return DesktopIntent(user_input=text, action="create", target_name=target, content=content, target_kind=target_kind)
-    if any(marker in text for marker in ("编辑", "修改")) or "edit " in lowered:
-        target, content = _extract_target_and_content(text)
-        return DesktopIntent(user_input=text, action="edit", target_name=target, content=content)
-    if any(marker in text for marker in ("移动", "重命名")) or "move " in lowered or "rename " in lowered:
-        source, destination = _extract_move_pair(text)
-        return DesktopIntent(user_input=text, action="move", target_name=source, destination_name=destination)
-    if "删除" in text or "delete " in lowered or "remove " in lowered:
-        return DesktopIntent(user_input=text, action="delete", target_name=_extract_target_name(text, action="delete"))
-    return DesktopIntent(user_input=text, action="list")
-
-
-def _extract_target_name(text: str, *, action: str) -> str | None:
-    for marker in (
-        "读取",
-        "总结",
-        "删除",
-        "再看",
-        "看",
-        "列出",
-        "列一下",
-        "一下",
-        "刚才那个文件",
-        "都有哪些文件",
-        "有哪些文件",
-        "有什么文件",
-        "下面",
-        "目录",
-        "吗",
-        "呢",
-        "可以给我",
-        "我想知道",
-    ):
-        text = text.replace(marker, "")
-    cleaned = " ".join(text.split()).strip().strip("。？！?!.，,").strip()
-    if action == "list" and cleaned in {"当前", "当前目录", "这个", "这个目录"}:
-        return None
-    return cleaned or None
-
-
-def _extract_target_and_content(text: str) -> tuple[str | None, str | None]:
-    matched = re.search(r"(?:创建|新建|编辑|修改|create|edit)\s+([^\s，。,]+)", text, flags=re.IGNORECASE)
-    target = matched.group(1).strip() if matched else None
-    content_match = re.search(r"(?:内容|content)\s*[:：]?\s*(.+)$", text, flags=re.IGNORECASE)
-    content = content_match.group(1).strip() if content_match else None
-    return target, content
-
-
-def _extract_move_pair(text: str) -> tuple[str | None, str | None]:
-    matched = re.search(r"(?:移动|重命名|move|rename)\s+([^\s，。,]+)\s+(?:到|to)\s+([^\s，。,]+)", text, flags=re.IGNORECASE)
-    if not matched:
-        return None, None
-    return matched.group(1).strip(), matched.group(2).strip()
-
-
-def _extract_directory_name(text: str) -> str | None:
-    matched = re.search(r"(?:创建|新建)\s*(?:文件夹|目录|folder|directory)\s+([^\s，。,]+)", text, flags=re.IGNORECASE)
-    if not matched:
-        return None
-    return matched.group(1).strip()
 
 
 def _resolve(intent: DesktopIntent, context: ApplicationContext) -> list[ResourceRef]:

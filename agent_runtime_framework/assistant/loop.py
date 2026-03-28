@@ -8,7 +8,6 @@ from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.approval import ApprovalManager, ApprovalRequest, ResumeToken
 from agent_runtime_framework.assistant.checkpoints import CheckpointRecord, CheckpointStore
 from agent_runtime_framework.assistant.capabilities import CapabilityRegistry
-from agent_runtime_framework.assistant.conversation import route_default_capability
 from agent_runtime_framework.assistant.session import AssistantSession, ExecutionPlan, PlannedAction
 from agent_runtime_framework.assistant.skills import SkillRegistry
 from agent_runtime_framework.core.errors import AppError
@@ -481,12 +480,8 @@ class AgentLoop:
         llm_selected = self._select_capability_with_llm(user_input, session)
         if llm_selected is not None:
             return llm_selected
-        triggered_skill = self.context.skills.match_triggered(user_input)
-        if triggered_skill is not None:
-            return f"skill:{triggered_skill.name}"
-        default_selected = route_default_capability(user_input, session, self.context.capabilities, self.context)
-        if default_selected is not None:
-            return default_selected
+        if "conversation" in self.context.capabilities.names():
+            return "conversation"
         if "desktop_content" in self.context.capabilities.names():
             return "desktop_content"
         names = self.context.capabilities.executable_names()

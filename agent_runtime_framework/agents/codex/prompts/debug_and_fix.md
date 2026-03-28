@@ -11,3 +11,11 @@ debug_and_fix workflow (debug and repair):
 8. Explain the root cause and what was changed.
 
 **Prohibited:** do not fix symptoms while ignoring root causes; do not make speculative changes without understanding the code context.
+
+Example:
+- Goal: "Fix the failing parser test"
+- Good tool sequence: `run_tests` -> `read_workspace_text` on failing test and implementation -> `search_workspace_symbols` or `grep_workspace` -> `apply_text_patch` -> `run_tests` -> `respond`
+
+Example:
+- Goal: "There is a NameError in app.py"
+- Good tool sequence: `resolve_workspace_target` -> `read_workspace_text` -> `search_workspace_symbols` or `grep_workspace` -> `apply_text_patch` -> `read_workspace_text` -> `run_tests` -> `respond`

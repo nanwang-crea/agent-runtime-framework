@@ -303,7 +303,7 @@ def test_conversation_message_builder_can_include_run_context(tmp_path: Path):
     assert "memory_snapshot:" in messages[0].content
 
 
-def test_agent_loop_falls_back_to_triggered_skill_when_llm_not_available(tmp_path: Path):
+def test_skill_registry_preserves_trigger_phrases_as_metadata_only(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = _assistant_context(workspace)
@@ -315,10 +315,12 @@ def test_agent_loop_falls_back_to_triggered_skill_when_llm_not_available(tmp_pat
     )
     context.capabilities.register_skill_registry(context.skills)
 
-    result = AgentLoop(context).run("please create a report")
+    skill = context.skills.get("report_skill")
+    capability = context.capabilities.require("skill:report_skill")
 
-    assert result.final_answer == "skill:report"
-    assert result.capability_name == "skill:report_skill"
+    assert skill is not None
+    assert skill.trigger_phrases == ["report"]
+    assert capability.input_contract == {"trigger_phrases": ["report"]}
 
 
 def test_capability_registry_preserves_skill_metadata_for_selector(tmp_path: Path):

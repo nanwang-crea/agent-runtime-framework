@@ -294,13 +294,19 @@ def test_desktop_application_uses_custom_action_handler_registry_when_provided(t
     assert result.final_answer == "handled:summarize:full"
 
 
-def test_desktop_application_falls_back_to_rule_interpretation_without_llm(tmp_path: Path):
+def test_desktop_application_uses_custom_interpreter_without_llm(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "a.md").write_text("hello", encoding="utf-8")
 
+    context = _build_context(workspace)
+    context.services["intent_parser"] = lambda user_input, _context: {
+        "action": "list",
+        "target_name": None,
+        "use_last_focus": False,
+    }
     app = create_desktop_content_application()
-    runner = ApplicationRunner(app, _build_context(workspace))
+    runner = ApplicationRunner(app, context)
 
     result = runner.run("列出当前目录")
 

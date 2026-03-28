@@ -10,3 +10,11 @@ test_and_verify workflow (run and verify tests):
 7. Re-run `run_tests` after fixing and repeat until all tests pass.
 
 **Prohibited:** do not modify tests just to make them pass without fixing the underlying code; do not make blind changes without understanding why a test fails.
+
+Example:
+- Goal: "Run the project tests and fix what is broken"
+- Good tool sequence: `run_tests` -> `read_workspace_text` on failing tests and source files -> `search_workspace_symbols` or `grep_workspace` -> patch the root cause -> `run_tests` -> `respond`
+
+Example:
+- Goal: "Verify whether my refactor broke anything"
+- Good tool sequence: `run_tests` -> if passing then `respond`; if failing, continue with failure analysis before responding.

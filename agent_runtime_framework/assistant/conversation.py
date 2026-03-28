@@ -89,27 +89,10 @@ def create_conversation_capability(name: str = "conversation") -> CapabilitySpec
 
 
 def route_default_capability(user_input: str, _session: Any, registry: Any, _context: Any) -> str | None:
-    lowered = user_input.strip().lower()
-    desktop_markers = (
-        "读取",
-        "列出",
-        "总结",
-        "打开",
-        "查看",
-        "目录",
-        "文件",
-        "read ",
-        "list ",
-        "summarize ",
-        ".md",
-        ".txt",
-        ".py",
-        "/",
-    )
-    if any(marker in lowered for marker in desktop_markers) and "desktop_content" in registry.names():
-        return "desktop_content"
     if "conversation" in registry.names():
         return "conversation"
+    if "desktop_content" in registry.names():
+        return "desktop_content"
     return None
 
 def route_user_message(user_input: str, context: Any | None = None) -> str:
@@ -120,34 +103,11 @@ def get_route_decision(user_input: str, context: Any | None = None) -> dict[str,
     model_route = _route_with_model(user_input, context)
     if model_route in {"conversation", "codex"}:
         return {"route": model_route, "source": "model"}
-    return {
-        "route": "conversation" if _deterministic_conversation_gate(user_input) else "codex",
-        "source": "deterministic",
-    }
+    return {"route": "codex", "source": "default"}
 
 
 def should_route_to_conversation(user_input: str, context: Any | None = None) -> bool:
     return route_user_message(user_input, context) == "conversation"
-
-
-def _deterministic_conversation_gate(user_input: str) -> bool:
-    text = user_input.strip()
-    if not text:
-        return True
-    lowered = text.lower()
-    if any(marker in text for marker in _WORKSPACE_VERB_MARKERS):
-        return False
-    if any(marker in lowered for marker in _WORKSPACE_VERB_MARKERS):
-        return False
-    if any(marker in text for marker in _WORKSPACE_NOUN_MARKERS) and any(
-        keyword in text for keyword in ("当前", "这个", "那个", "里面", "下", "内容")
-    ):
-        return False
-    if any(marker in lowered for marker in _WORKSPACE_NOUN_MARKERS):
-        return False
-    if _RESOURCE_PATTERN.search(text) or _PATH_PATTERN.search(text):
-        return False
-    return True
 
 
 def _route_with_model(user_input: str, context: Any | None) -> str | None:

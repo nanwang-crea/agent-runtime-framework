@@ -102,6 +102,7 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
     ]
     system_prompt = build_codex_system_prompt(
         "You are the next-action planner. Based on the task goal, recent observations, resource semantics, history, and available tools, choose the single best next action. "
+        "Follow the workflow guidance and in-context examples when they match the task profile. "
         "Output valid JSON only. Allowed fields: kind, instruction, tool_name, arguments, risk_class, direct_output. "
         "kind must be one of: call_tool, apply_patch, move_path, delete_path, run_verification, respond. "
         "Do not output other kinds like action, tool, task, or conversation."
