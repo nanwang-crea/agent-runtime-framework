@@ -34,3 +34,5 @@ index.json
 index.pkl
 vector_store/
 .arf_demo_config.json
+node_modules/
+*/node_modules/*

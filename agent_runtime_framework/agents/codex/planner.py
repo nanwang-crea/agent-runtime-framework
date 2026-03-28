@@ -13,7 +13,6 @@ from agent_runtime_framework.agents.codex.prompting import (
     build_tool_guidance_lines,
     extract_task_resource_semantics,
 )
-from agent_runtime_framework.agents.codex.profiles import extract_workspace_target_hint, is_list_only_request
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
@@ -71,226 +70,21 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
-    if profile in {"repository_explainer", "file_reader"}:
-        # Simple list/confirm-file requests: use list_workspace_directory directly, no path resolve needed
-        if profile == "repository_explainer" and _goal_is_list_request(goal) and "list_workspace_directory" in tool_names:
-            return CodexAction(
-                kind="call_tool",
-                instruction=goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "list_workspace_directory",
-                    "arguments": {
-                        "path": _extract_repository_target(goal) or "",
-                        "use_default_directory": not bool(_extract_repository_target(goal)),
-                    },
-                },
-            )
-        if "resolve_workspace_target" in tool_names:
-            return CodexAction(
-                kind="call_tool",
-                instruction=goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "resolve_workspace_target",
-                    "arguments": {
-                        "query": goal,
-                        "target_hint": _extract_repository_target(goal),
-                    },
-                },
-            )
+    if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
+        return CodexAction(
+            kind="call_tool",
+            instruction=goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "resolve_workspace_target",
+                "arguments": {"query": goal, "target_hint": ""},
+            },
+        )
     return None
 
 
-def _extract_repository_target(goal: str) -> str:
-    return extract_workspace_target_hint(goal)
-
-
-def _goal_is_list_request(goal: str) -> bool:
-    return is_list_only_request(goal)
-
-
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:
-    text = user_input.strip()
-    lowered = text.lower()
-
-    verification_prefixes = ("运行验证", "运行测试", "run verification", "verify ", "run tests ", "run test ")
-    for prefix in verification_prefixes:
-        if lowered.startswith(prefix.lower()) and "run_shell_command" in tool_names:
-            command = text[len(prefix) :].strip()
-            if command:
-                return CodexAction(
-                    kind="run_verification",
-                    instruction=command,
-                    subgoal="verify_changes",
-                    metadata={"command": command},
-                )
-
-    patch_match = re.search(
-        r'把\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+替换成\s+"([^"]+)"',
-        text,
-    )
-    if patch_match and "apply_text_patch" in tool_names:
-        path, search_text, replace_text = patch_match.groups()
-        return CodexAction(
-            kind="apply_patch",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "apply_text_patch",
-                "arguments": {
-                    "path": path,
-                    "search_text": search_text,
-                    "replace_text": replace_text,
-                },
-            },
-        )
-
-    replace_match = re.search(
-        r'替换\s+([^\s]+)\s+里(?:的)?\s+"([^"]+)"\s+(?:为|成)\s+"([^"]+)"',
-        text,
-    )
-    if replace_match and "replace_workspace_text" in tool_names:
-        path, search_text, replace_text = replace_match.groups()
-        return CodexAction(
-            kind="edit_text",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "replace_workspace_text",
-                "arguments": {
-                    "path": path,
-                    "search_text": search_text,
-                    "replace_text": replace_text,
-                },
-            },
-        )
-
-    append_match = re.search(r"在\s+([^\s]+)\s+末尾追加\s+\"([^\"]+)\"", text)
-    if append_match and "append_workspace_text" in tool_names:
-        path, content = append_match.groups()
-        return CodexAction(
-            kind="edit_text",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "append_workspace_text",
-                "arguments": {
-                    "path": path,
-                    "content": bytes(content, "utf-8").decode("unicode_escape"),
-                },
-            },
-        )
-
-    create_match = re.search(r"(?:创建|新建)\s+([^\s]+)(?:\s+内容\s+(.+))?", text)
-    if create_match and "create_workspace_path" in tool_names:
-        path, content = create_match.groups()
-        is_directory = any(marker in text for marker in ("文件夹", "目录", "folder", "directory"))
-        return CodexAction(
-            kind="create_path",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "create_workspace_path",
-                "arguments": {
-                    "path": path,
-                    "content": (content or "").strip(),
-                    "kind": "directory" if is_directory else "file",
-                },
-            },
-        )
-
-    edit_match = re.search(r"(?:编辑|修改)\s+([^\s]+)\s+内容\s+(.+)", text)
-    if edit_match and "edit_workspace_text" in tool_names:
-        path, content = edit_match.groups()
-        return CodexAction(
-            kind="edit_text",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "edit_workspace_text",
-                "arguments": {"path": path, "content": content.strip()},
-            },
-        )
-
-    move_match = re.search(r"把\s+([^\s]+)\s+(?:移动\s*到|重命名\s*到)\s+([^\s]+)", text)
-    if move_match and "move_workspace_path" in tool_names:
-        path, destination_path = move_match.groups()
-        return CodexAction(
-            kind="move_path",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="high",
-            metadata={
-                "tool_name": "move_workspace_path",
-                "arguments": {"path": path, "destination_path": destination_path},
-            },
-        )
-
-    delete_match = re.search(r"(?:删除|delete)\s+([^\s]+)", text, flags=re.IGNORECASE)
-    if delete_match and "delete_workspace_path" in tool_names:
-        path = delete_match.group(1).strip()
-        return CodexAction(
-            kind="delete_path",
-            instruction=text,
-            subgoal="modify_workspace",
-            risk_class="destructive",
-            metadata={
-                "tool_name": "delete_workspace_path",
-                "arguments": {"path": path},
-            },
-        )
-
-    summarize_match = re.search(r"(?:总结|概括|summarize)\s*([^\s]+)?", text, flags=re.IGNORECASE)
-    if summarize_match and "summarize_workspace_text" in tool_names:
-        path = (summarize_match.group(1) or "").strip()
-        return CodexAction(
-            kind="call_tool",
-            instruction=text,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "summarize_workspace_text",
-                "arguments": {
-                    "path": path,
-                    "use_last_focus": any(marker in text for marker in ("刚才", "那个文件", "上一个")),
-                },
-            },
-        )
-
-    if any(marker in text for marker in ("列出", "列一下")) or lowered.startswith("list "):
-        if "list_workspace_directory" in tool_names:
-            path_match = re.search(r"(?:列出|列一下|list)\s*([^\s]+)?", text, flags=re.IGNORECASE)
-            path = (path_match.group(1) or "").strip() if path_match else ""
-            return CodexAction(
-                kind="call_tool",
-                instruction=text,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "list_workspace_directory",
-                    "arguments": {
-                        "path": path,
-                        "use_last_focus": any(marker in text for marker in ("下面", "刚才", "上一个")),
-                        "use_default_directory": not path,
-                    },
-                },
-            )
-
-    read_match = re.search(r"(?:读取|read)\s+([^\s]+)", text, flags=re.IGNORECASE)
-    if read_match and "read_workspace_text" in tool_names:
-        path = read_match.group(1).strip()
-        return CodexAction(
-            kind="call_tool",
-            instruction=text,
-            subgoal="gather_evidence",
-            metadata={"tool_name": "read_workspace_text", "arguments": {"path": path}},
-        )
-
-    return CodexAction(kind="respond", instruction=text, subgoal="synthesize_answer")
+    return None
 
 
 def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None = None) -> CodexAction | None:
@@ -412,21 +206,15 @@ def _extract_json_block(text: str) -> str:
 
 
 def _goal_prefers_summary(goal: str) -> bool:
-    lowered = goal.strip().lower()
-    return any(marker in lowered for marker in ("summarize", "summary", "overview", "总结", "概括", "主要内容"))
+    return False
 
 
 def _goal_is_raw_read(goal: str) -> bool:
-    lowered = goal.strip().lower()
-    return any(lowered.startswith(prefix) for prefix in ("read ", "读取")) and not _goal_prefers_summary(goal)
+    return False
 
 
 def _direct_file_reader_response(goal: str, observation: str) -> str:
-    text = observation.strip()
-    if _goal_is_raw_read(goal):
-        return text
-    target = extract_workspace_target_hint(goal) or "the target file"
-    return f"Here is a summary of `{target}`:\n{text}"
+    return observation.strip()
 
 
 def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> CodexAction | None:

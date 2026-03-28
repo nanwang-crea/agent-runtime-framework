@@ -299,9 +299,9 @@ def test_conversation_message_builder_can_include_run_context(tmp_path: Path):
 
     messages = _build_messages("继续聊这个项目", session, context=context)
 
-    assert "运行时上下文：" in messages[0].content
+    assert "Runtime context:" in messages[0].content
     assert "loaded_instructions:" in messages[0].content
-    assert "最近焦点资源：" in messages[0].content
+    assert "memory_snapshot:" in messages[0].content
 
 
 def test_agent_loop_falls_back_to_triggered_skill_when_llm_not_available(tmp_path: Path):

@@ -442,7 +442,7 @@ select {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 16px 10px;
+  padding: 12px 15px 8px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -450,7 +450,7 @@ select {
 }
 
 .run-card-body {
-  padding: 14px 16px 16px;
+  padding: 12px 15px 14px;
   border-top: 1px solid var(--line);
 }
 
@@ -459,7 +459,7 @@ select {
 }
 
 .run-card.expanded .run-card-header {
-  padding-bottom: 12px;
+  padding-bottom: 10px;
 }
 
 .run-card-header-main {
@@ -467,7 +467,7 @@ select {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .run-header-topline {
@@ -511,39 +511,57 @@ select {
 .run-header-copy {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   flex: 1;
 }
 
 .run-header-copy strong {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .run-summary {
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .run-subtle-meta {
   color: rgba(146, 160, 184, 0.72);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.4;
 }
 
 .run-toggle {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgba(146, 160, 184, 0.74);
+  padding-top: 2px;
+}
+
+.run-toggle-chevron {
   font-size: 12px;
-  color: var(--muted);
-  padding-top: 4px;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.run-toggle-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.run-toggle-label {
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
 .run-card-preview {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 16px 14px;
+  padding: 0 15px 12px;
 }
 
 .run-card.expanded .run-card-preview {
@@ -578,7 +596,7 @@ select {
 .run-detail-grid {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .run-error-card {
@@ -609,7 +627,7 @@ select {
 .resource-item,
 .plan-peek-card,
 .run-detail-section {
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 .workspace-section-head,
@@ -618,7 +636,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .plan-peek-card strong,
@@ -697,7 +715,7 @@ select {
 }
 
 .compact-timeline {
-  max-height: 300px;
+  max-height: 260px;
   overflow: auto;
   padding-right: 4px;
 }

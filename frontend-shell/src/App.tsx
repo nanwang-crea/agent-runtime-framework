@@ -1341,7 +1341,10 @@ function RunCard({
             {subtleMeta ? <span className="run-subtle-meta">{subtleMeta}</span> : null}
           </div>
         </div>
-        <span className="run-toggle">{run.collapsed ? "展开" : "收起"}</span>
+        <span className="run-toggle" aria-hidden="true">
+          <span className={`run-toggle-chevron ${run.collapsed ? "collapsed" : "expanded"}`}>⌄</span>
+          <span className="run-toggle-label">详情</span>
+        </span>
       </button>
       {recentEntries.length > 0 ? (
         <div className="run-card-preview">

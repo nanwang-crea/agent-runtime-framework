@@ -43,8 +43,8 @@
 - metadata: {"claim_kind": "role", "path": ".", "task_profile": "repository_explainer"}
 
 ## workspace_focus | focus:README.md
-- text: "README.md - README.md：Agent Runtime Framework"
-- metadata: {"path": "README.md", "summary": "- README.md：Agent Runtime Framework"}
+- text: "README.md # Agent Runtime Framework\n\n`agent-runtime-framework` is a reusable Agent framework package that combines:"
+- metadata: {"path": "README.md", "summary": "# Agent Runtime Framework\n\n`agent-runtime-framework` is a reusable Agent framework package that combines:"}
 
 ## task_conclusion | task:874c11ae-fc4d-4017-8e63-c6c8233e6240:conclusion
 - text: "agent_runtime_framework这个目录下面主要都有什么呢？给我简单讲解一下 根据已收集的目录结构和 README.md 信息，给用户一个综合性的讲解，说明 agent_runtime_framework 目录的主要内容和各部分作用"
@@ -221,3 +221,31 @@
 ## workspace_fact | task:d7e80194-bf0a-4995-b082-fe5a90950f74:typed:1
 - text: "去看一下下面是不是有Readme的相关文件呢 read_result requires = [\"setuptools>=68\", \"wheel\"] content"
 - metadata: {"claim_kind": "content", "path": "pyproject.toml", "task_profile": "repository_explainer"}
+
+## task_conclusion | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:conclusion
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md 关于 `README.md`，我先整理了这些信息：\n# Agent Runtime Framework\n\n`agent-runtime-framework` is a reusable Agent framework package that combines:\n\n- an integrated graph execution module\n- reusable Agent runtime abstractions\n- tool registration and execution\n- policy and memory layers\n- resource modeling for local desktop content\n- application orchestration for end-to-end assistant workflows\n- runtime tracing hooks\n\nThe framework now has two entry levels:\n\n- low-level graph/runtime primitives for generic agent execution\n- a first-stage desktop content application layer for local files, directories, and document chunks\n- an assistant runtime layer for single-agent capability selection with skills and MCP slots\n\nKey first-stage modules:\n\n- `agent_runtime_framework.assistant`\n- `agent_runtime_framework.graph`\n- `agent_runtime_framework.tools`\n- `agent_runtime_framework.runtime`\n- `agent_runtime_framework.resources`\n- `agent_runtime_framework.memory`\n- `agent_runtime_framework.policy`\n- `agent_runtime_framework.applications`\n\n`agent_runtime_framework.runtime.parse_structured_output` provides a reusable LLM-first structured parsing helper that applications can share instead of embedding prompt + JSON parsing logic locally.\n`agent_runtime_framework.applications.run_stage_parser` builds on top of it so application stages can consistently use: service override -> LLM structured parsing -> deterministic fallback.\nDesktop-specific deterministic behavior is modularized through `ResolverPipeline` and `DesktopActionHandlerRegistry`.\nThe assistant runtime provides `AssistantSession`, `CapabilityRegistry`, `AgentLoop`, `SkillRegistry`, MCP provider slots, and approval/resume primitives so desktop capabilities can be composed into a Codex-style single-agent loop.\n`AgentLoop` now supports a minimal `plan -> act -> review -> continue/stop` cycle, LLM-first structured capability selection, and resumable approval checkpoints for higher-risk capabilities.\n`CapabilitySpec` now carries description, safety level, input contract, cost hint, latency hint, risk class, dependency readiness, and output type metadata, and MCP providers can expose discoverable tool schemas through `MCPToolSpec`.\nThe framework now also includes a first-stage model access layer with provider registration, auth sessions, model routing, and an OpenAI-compatible provider adapter.\n\n## Demo backend (Python)\n\nThe demo HTTP API and bundled web UI live in `agent_runtime_framework.demo.server`. The server is implemented with the standard library (`ThreadingHTTPServer`); there is no separate ASGI process (for example, no uvicorn).\n\n**Requirements:** Python **3.10+** (the package uses `@dataclass(slots=True)` and similar 3.10+ APIs).\n\nFrom the repository root, install the package in editable mode so the console script and imports resolve:\n\n```bash\npython3 -m venv .venv\nsource .venv/bin/activate   # Windows: .venv\\Scripts\\activate\npip install -e .\n```\n\nStart the demo (pick one):\n\n```bash\narf-desktop-demo --workspace .\n```\n\n```bash\npython -m agent_runtime_framework.demo.server --workspace .\n```\n\nThen open [http://127.0.0.1:8765](http://127.0.0.1:8765).\n\n**CLI options:** `--workspace` (default `.`), `--host` (default `127.0.0.1`), `--port` (default `8765`).\n\n**Config:** the model center persists settings under `<workspace>/.arf_demo_config.json` (created or updated through the UI/API). On first use it seeds a DashScope-compatible layout:\n\n- provider instance: `dashscope`\n- base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`\n- default routed model: `qwen3.5-plus`\n\nYou still need a valid API key (or other credentials) for that provider in the model center before remote calls succeed.\n\nThe demo combines general **conversation** routing with the **Codex-style agent loop** (plan / act / review) and desktop file capabilities where enabled: list/read/summarize files under the workspace, inspect turn and plan history, and use the model center for auth and per-stage model routing.\n\n**HTTP surface (current):**\n\n- **GET** `/` — bu\n\n[输出已截断，保留前 4000 个字符。]\n引用：\n- README.md"
+- metadata: {"goal": "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md", "path": "README.md", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:fact:0
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md 找到多个可能目标。"
+- metadata: {"path": "README.md", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:fact:1
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md Resolved target: README.md"
+- metadata: {"path": "README.md", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:fact:2
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md # Agent Runtime Framework\n\n`agent-runtime-framework` is a reusable Agent framework package that combines:"
+- metadata: {"path": "README.md", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:typed:0
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md read_result # Agent Runtime Framework content"
+- metadata: {"claim_kind": "content", "path": "README.md", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:9d3aa16e-ed84-4691-a4a4-5710334fca1f:typed:1
+- text: "需要看一下READme的文档，我想了解一下这个主要是在干什么\n用户澄清目标：README.md read_result `agent-runtime-framework` is a reusable Agent framework package that combines: content"
+- metadata: {"claim_kind": "content", "path": "README.md", "task_profile": "repository_explainer"}
+
+## task_conclusion | task:10fc470d-3951-41c6-b520-e10767957f26:conclusion
+- text: "这个也太长了吧，你不能给我总结一下呀 用户要求更简短的总结，我已有足够信息，直接给出极简版总结即可。"
+- metadata: {"goal": "这个也太长了吧，你不能给我总结一下呀", "path": "README.md", "task_profile": "chat"}
