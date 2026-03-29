@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.personas import RuntimePersona
@@ -18,6 +19,14 @@ def build_codex_system_prompt(role_instruction: str, *, workflow_name: str = "",
     return "\n".join(section for section in sections if section)
 
 
+def render_codex_prompt_doc(name: str, **values: Any) -> str:
+    content = _load_prompt_doc(name)
+    rendered = content
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
+    return rendered
+
+
 def build_workflow_guidance(workflow_name: str) -> str:
     normalized = str(workflow_name or "").strip()
     if not normalized:
@@ -26,6 +35,14 @@ def build_workflow_guidance(workflow_name: str) -> str:
         return _load_prompt_doc(normalized)
     except FileNotFoundError:
         return ""
+
+
+def extract_json_block(text: str) -> str:
+    stripped = text.strip()
+    if "```" in stripped:
+        stripped = re.sub(r"^.*?```(?:json)?\s*", "", stripped, flags=re.DOTALL)
+        stripped = re.sub(r"\s*```.*$", "", stripped, flags=re.DOTALL)
+    return stripped.strip()
 
 
 def build_tool_guidance_lines(context: Any, tool_names: list[str]) -> list[str]:

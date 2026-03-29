@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_task_resource_semantics
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, extract_task_resource_semantics, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import available_tool_names
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -720,19 +720,16 @@ def _suggest_follow_up_tasks_with_llm(task: CodexTask, action: CodexAction, resu
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are a Codex task-plan expander. "
-                            "Decide whether repository_explainer needs extra tasks inserted before synthesize_answer. "
-                            'Output JSON only: {"tasks":[{"kind":"read_entrypoint","path":"...","title":"..."}]} or {"tasks":[]}. '
-                            "Only return read_entrypoint when the inspect result shows a key entry file whose content would meaningfully improve the final explanation."
+                            render_codex_prompt_doc("task_plan_expander_system")
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"Goal: {task.goal}\n"
-                            f"Current plan: {', '.join(plan_kinds)}\n"
-                            f"Inspect result:\n{observation}\n"
-                            "If suggesting read_entrypoint, path must be a concrete file path within the workspace."
+                        content=render_codex_prompt_doc(
+                            "task_plan_expander_user",
+                            goal=task.goal,
+                            current_plan=", ".join(plan_kinds),
+                            inspect_result=observation,
                         ),
                     ),
                 ],
@@ -787,18 +784,16 @@ def _suggest_failed_verification_recovery_with_llm(task: CodexTask, action: Code
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are a Codex change-recovery planner. "
-                            "When verification fails, decide whether a repair task should be inserted before synthesize_answer. "
-                            'Output JSON only: {"tasks":[{"kind":"repair_after_failed_verification","title":"...","tool_name":"edit_workspace_text|apply_text_patch","path":"...","content":"...","search_text":"...","replace_text":"..."}]} or {"tasks":[]}. '
+                            render_codex_prompt_doc("repair_after_verification_system")
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"Goal: {task.goal}\n"
-                            f"Recently modified path: {modified_target}\n"
-                            f"Verification failure output:\n{verification_output}\n"
-                            "If suggesting a repair task, provide a concrete path and all required arguments."
+                        content=render_codex_prompt_doc(
+                            "repair_after_verification_user",
+                            goal=task.goal,
+                            modified_target=modified_target,
+                            verification_output=verification_output,
                         ),
                     ),
                 ],
@@ -873,28 +868,22 @@ def _suggest_failed_action_recovery_with_llm(task: CodexTask, action: CodexActio
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are a Codex failure-recovery planner. "
-                            "When a plan action fails, decide whether a recovery action should be inserted before synthesize_answer. "
-                            "Output JSON only: "
-                            '{"tasks":[{"kind":"recover_failed_action","title":"...","tool_name":"...",'
-                            '"arguments":{},"risk_class":"low|high","subgoal":"gather_evidence|modify_workspace|verify_changes"}]} '
-                            'or {"tasks":[]}. '
-                            "Only return a task when inserting one specific action would unblock progress."
+                            render_codex_prompt_doc("failed_action_recovery_system")
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"Goal: {task.goal}\n"
-                            f"Task profile: {task.task_profile}\n"
-                            f"Current plan: {', '.join(plan_kinds)}\n"
-                            f"Failed plan task: {plan_task.kind}\n"
-                            f"Failed action kind: {action.kind}\n"
-                            f"Failed tool: {action.metadata.get('tool_name') or ''}\n"
-                            f"Failure summary: {failure_summary}\n"
-                            f"Error details: {json.dumps(error_payload)}\n"
-                            f"Available tools: {', '.join(context.application_context.tools.names())}\n"
-                            "If suggesting a recovery action, arguments must be a complete JSON object."
+                        content=render_codex_prompt_doc(
+                            "failed_action_recovery_user",
+                            goal=task.goal,
+                            task_profile=task.task_profile,
+                            current_plan=", ".join(plan_kinds),
+                            failed_plan_task=plan_task.kind,
+                            failed_action_kind=action.kind,
+                            failed_tool=action.metadata.get("tool_name") or "",
+                            failure_summary=failure_summary,
+                            error_details=json.dumps(error_payload),
+                            available_tools=", ".join(context.application_context.tools.names()),
                         ),
                     ),
                 ],
@@ -969,12 +958,7 @@ def _normalize_reference_path(path: str, root: str) -> str:
 
 
 def _parse_json_payload(content: str) -> dict[str, Any]:
-    stripped = content.strip()
-    if "```" in stripped:
-        stripped = stripped.split("```", 1)[-1]
-        if stripped.startswith("json"):
-            stripped = stripped[4:]
-        stripped = stripped.rsplit("```", 1)[0]
+    stripped = extract_json_block(content)
     try:
         parsed = json.loads(stripped.strip())
     except Exception:

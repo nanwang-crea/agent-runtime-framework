@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from agent_runtime_framework.core.specs import ToolSpec
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
 from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -501,18 +501,17 @@ def _resolve_target_with_model(query: str, target_hint: str, candidates: list[st
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are a workspace target resolver. "
-                            'Output JSON only: {"best_match":"...","candidates":[...]}. '
-                            "best_match must be selected from the candidate list; return . if the current directory is the best match."
+                            render_codex_prompt_doc("target_resolver_system")
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"User query: {query}\n"
-                            f"{build_follow_up_context(session=None, context=context) or 'Recent turns:\n(none)'}\n"
-                            f"Target hint: {target_hint}\n"
-                            f"Candidate paths: {json.dumps(candidates[:80])}"
+                        content=render_codex_prompt_doc(
+                            "target_resolver_user",
+                            query=query,
+                            follow_up_context=build_follow_up_context(session=None, context=context) or "Recent turns:\n(none)",
+                            target_hint=target_hint,
+                            candidate_paths=json.dumps(candidates[:80]),
                         ),
                     ),
                 ],
@@ -523,7 +522,7 @@ def _resolve_target_with_model(query: str, target_hint: str, candidates: list[st
     except Exception:
         return ""
     try:
-        parsed = json.loads(str(response.content or "").strip())
+        parsed = json.loads(extract_json_block(str(response.content or "")))
     except Exception:
         return ""
     best_match = str(parsed.get("best_match") or "").strip()

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
@@ -44,26 +44,16 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are a task-profile classifier. Output only JSON in the format: "
-                            '{"profile":"chat|repository_explainer|file_reader|change_and_verify|debug_and_fix|multi_file_change|test_and_verify"}. '
-                            "Choose exactly one profile from the enum above.",
+                            render_codex_prompt_doc("task_profile_classifier_system"),
                             persona=persona,
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"User request: {user_input}\n"
-                            + (build_run_context_block(context, session=session, user_input=user_input, persona=persona) + "\n" if context is not None else "")
-                            + "Profile selection rules:\n"
-                            "- repository_explainer: listing files/directories, exploring workspace/repo structure, asking what files exist or what a directory contains.\n"
-                            "- file_reader: reading, summarizing, or explaining a specific file's content.\n"
-                            "- debug_and_fix: error, bug, crash, exception, debugging, or fix request.\n"
-                            "- multi_file_change: refactoring, batch edits, updating all call sites, renaming across files.\n"
-                            "- change_and_verify: editing a file, applying a patch, creating/deleting/moving a file, or a single-file change.\n"
-                            "- test_and_verify: running tests, checking test results, fixing test failures.\n"
-                            "- chat: general question, explanation, or anything that does not require workspace changes or file access.\n"
-                            "Output only JSON."
+                        content=render_codex_prompt_doc(
+                            "task_profile_classifier_user",
+                            user_input=user_input,
+                            run_context_block=build_run_context_block(context, session=session, user_input=user_input, persona=persona) if context is not None else "",
                         ),
                     ),
                 ],
@@ -74,13 +64,8 @@ def _classify_task_profile_with_model(user_input: str, context: Any | None = Non
     except Exception:
         return None
     raw = (response.content or "").strip()
-    if "```" in raw:
-        raw = raw.split("```", 1)[-1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.rsplit("```", 1)[0]
     try:
-        parsed = json.loads(raw.strip())
+        parsed = json.loads(extract_json_block(raw))
     except Exception:
         return None
     profile = str(parsed.get("profile") or "").strip()

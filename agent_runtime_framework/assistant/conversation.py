@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from urllib.error import URLError
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
+from agent_runtime_framework.agents.codex.prompting import extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
@@ -125,23 +126,11 @@ def _route_with_model(user_input: str, context: Any | None) -> str | None:
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
-                            "你是消息路由器。"
-                            "判断用户输入应该直接进入 conversation，还是进入 codex 任务执行。"
-                            "只输出最短 JSON，不要输出原因，不要输出解释，不要输出 markdown。"
-                            "合法输出只有两种：{\"route\":\"conversation\"} 或 {\"route\":\"codex\"}。"
-                        ),
+                        content=render_codex_prompt_doc("router_system"),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"用户输入：{user_input}\n"
-                            "如果只是聊天、寒暄、问答、讨论方案，返回 conversation。"
-                            "如果明确要求读取、列出、编辑、删除、移动、创建、总结工作区资源，返回 codex。\n"
-                            "示例：\n"
-                            '- 输入：你好\n输出：{"route":"conversation"}\n'
-                            '- 输入：读取 README.md\n输出：{"route":"codex"}'
-                        ),
+                        content=render_codex_prompt_doc("router_user", user_input=user_input),
                     ),
                 ],
                 temperature=0.0,
@@ -153,7 +142,7 @@ def _route_with_model(user_input: str, context: Any | None) -> str | None:
         return None
     raw_content = (response.content or "").strip()
     try:
-        parsed = json.loads(_extract_json_block(raw_content))
+        parsed = json.loads(extract_json_block(raw_content))
     except Exception:
         logger.warning("router invalid json: raw=%s", raw_content[:300])
         return None
@@ -161,14 +150,6 @@ def _route_with_model(user_input: str, context: Any | None) -> str | None:
     if route not in {"conversation", "codex"}:
         logger.warning("router normalization failed: parsed=%s", json.dumps(parsed, ensure_ascii=False)[:300])
     return route if route in {"conversation", "codex"} else None
-
-
-def _extract_json_block(text: str) -> str:
-    stripped = text.strip()
-    if "```" in stripped:
-        stripped = re.sub(r"^.*?```(?:json)?\s*", "", stripped, flags=re.DOTALL)
-        stripped = re.sub(r"\s*```.*$", "", stripped, flags=re.DOTALL)
-    return stripped.strip()
 
 
 def _run_conversation(user_input: str, context: Any, session: Any) -> str:

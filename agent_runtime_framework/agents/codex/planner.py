@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
@@ -11,7 +10,9 @@ from agent_runtime_framework.agents.codex.prompting import (
     build_codex_system_prompt,
     build_resource_semantics_block,
     build_tool_guidance_lines,
+    extract_json_block,
     extract_task_resource_semantics,
+    render_codex_prompt_doc,
 )
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
@@ -100,14 +101,10 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         f"- kind: {action.kind}; status: {action.status}; instruction: {action.instruction}; observation: {action.observation or ''}"
         for action in task.actions[-6:]
     ]
+    workflow_name = workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or ""))
     system_prompt = build_codex_system_prompt(
-        "You are the next-action planner. Based on the task goal, recent observations, resource semantics, history, and available tools, choose the single best next action. "
-        "Follow the workflow guidance and in-context examples when they match the task profile. "
-        "Output valid JSON only. Allowed fields: kind, instruction, tool_name, arguments, risk_class, direct_output. "
-        "kind must be one of: call_tool, apply_patch, move_path, delete_path, run_verification, respond. "
-        "Do not output other kinds like action, tool, task, or conversation."
-        ,
-        workflow_name=workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or "")),
+        render_codex_prompt_doc("planner_system"),
+        workflow_name=workflow_name,
         persona=persona,
     )
     run_context_block = build_run_context_block(
@@ -119,31 +116,19 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
     )
     semantics = extract_task_resource_semantics(task)
     preferred_file_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) else "read_workspace_text"
-    user_prompt = (
-        f"Goal: {task.goal}\n"
-        f"Task profile: {getattr(task, 'task_profile', 'chat')}\n"
-        f"Runtime persona: {persona.name}\n"
-        f"{build_resource_semantics_block(task)}\n"
-        f"{run_context_block}\n"
-        f"Recent actions:\n{chr(10).join(action_lines) if action_lines else '(none)'}\n"
-        f"Available tools:\n{chr(10).join(tool_lines)}\n"
-        f"Workspace root: {context.application_context.config.get('default_directory', '')}\n"
-        "Constraints:\n"
-        "- tool_name must be from the available tools list\n"
-        "- write operations must have an appropriate risk_class\n"
-        "- destructive_write → destructive\n"
-        "- safe_write → high\n"
-        "- content_read / metadata_read → low\n"
-        "- repository_explainer profile: resolve_workspace_target first, then inspect/read/list, then synthesize\n"
-        f"- file_reader profile: resolve_workspace_target first; when resource_kind=file and allowed_actions={', '.join(semantics.get('allowed_actions') or []) or '(unknown)'}, prefer {preferred_file_tool}, then synthesize\n"
-        "- change_and_verify profile: edit/patch/write first, then run verification, then summarize\n"
-        "- chat profile: answer directly unless the user explicitly requests workspace inspection or code edits\n"
-        f"- current persona evidence_threshold is {persona.evidence_threshold}; gather more evidence rather than finishing prematurely when evidence is insufficient\n"
-        "Examples:\n"
-        '- To resolve a workspace target: {"kind":"call_tool","tool_name":"resolve_workspace_target","arguments":{"query":"what is in the memory folder","target_hint":"memory"}}\n'
-        '- To run a shell command: {"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"pwd"},"risk_class":"high"}\n'
-        '- To read README.md: {"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"README.md"},"risk_class":"low"}\n'
-        '- To reply directly: {"kind":"respond","instruction":"..."}\n'
+    user_prompt = render_codex_prompt_doc(
+        "planner_user",
+        goal=task.goal,
+        task_profile=getattr(task, "task_profile", "chat"),
+        persona_name=persona.name,
+        resource_semantics_block=build_resource_semantics_block(task),
+        run_context_block=run_context_block,
+        recent_actions=chr(10).join(action_lines) if action_lines else "(none)",
+        available_tools=chr(10).join(tool_lines),
+        workspace_root=context.application_context.config.get("default_directory", ""),
+        allowed_actions=", ".join(semantics.get("allowed_actions") or []) or "(unknown)",
+        preferred_file_tool=preferred_file_tool,
+        evidence_threshold=persona.evidence_threshold,
     )
     try:
         response = chat_once(
@@ -170,17 +155,28 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
 
     raw_content = (response.content or "").strip()
     try:
-        parsed = json.loads(_extract_json_block(raw_content))
+        parsed = json.loads(extract_json_block(raw_content))
     except Exception as exc:
-        logger.warning("planner invalid json: raw=%s", raw_content[:400])
-        raise AppError(
-            code="PLANNER_INVALID_JSON",
-            message="Planner model returned a response but it is not valid JSON.",
-            detail=raw_content[:400],
-            stage="planner",
-            retriable=True,
-            suggestion="Check the planner prompt or switch to a more reliable model.",
-        ) from exc
+        repaired = _repair_planner_output_with_llm(
+            raw_content,
+            task=task,
+            context=context,
+            session=session,
+            llm_client=llm_client,
+            model_name=model_name,
+            persona=persona,
+        )
+        if repaired is None:
+            logger.warning("planner invalid json: raw=%s", raw_content[:400])
+            raise AppError(
+                code="PLANNER_INVALID_JSON",
+                message="Planner model returned a response but it is not valid JSON.",
+                detail=raw_content[:400],
+                stage="planner",
+                retriable=True,
+                suggestion="Check the planner prompt or switch to a more reliable model.",
+            ) from exc
+        parsed = repaired
 
     invalid_reason = _invalid_action_reason(parsed, tool_names=set(tool_names))
     planned = None if invalid_reason else _normalize_llm_action(parsed, tool_names=set(tool_names))
@@ -196,14 +192,6 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
             suggestion="Check that tool_name, kind, and arguments satisfy the constraints.",
         )
     return planned
-
-
-def _extract_json_block(text: str) -> str:
-    stripped = text.strip()
-    if "```" in stripped:
-        stripped = re.sub(r"^.*?```(?:json)?\s*", "", stripped, flags=re.DOTALL)
-        stripped = re.sub(r"\s*```.*$", "", stripped, flags=re.DOTALL)
-    return stripped.strip()
 
 
 def _goal_prefers_summary(goal: str) -> bool:
@@ -227,8 +215,10 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         "tool_name": str(parsed.get("tool_name") or "").strip(),
         "arguments": dict(parsed.get("arguments") or {}),
     }
-    if kind == "respond" and bool(parsed.get("direct_output")):
+    if kind == "respond" and (bool(parsed.get("direct_output")) or bool(parsed.get("clarification_required"))):
         metadata["direct_output"] = True
+    if kind == "respond" and bool(parsed.get("clarification_required")):
+        metadata["clarification_required"] = True
     if kind == "apply_patch" and not metadata["tool_name"]:
         metadata["tool_name"] = "apply_text_patch"
     if kind == "move_path" and not metadata["tool_name"]:
@@ -296,7 +286,61 @@ def _invalid_action_reason(parsed: dict[str, Any], *, tool_names: set[str] | Non
         return "respond action is missing instruction"
     if kind == "run_verification" and not instruction and not str(arguments.get("command") or "").strip():
         return "run_verification action is missing command"
+    if bool(parsed.get("clarification_required")) and kind != "respond":
+        return "clarification_required is only valid for respond actions"
     return None
+
+
+def _repair_planner_output_with_llm(
+    raw_content: str,
+    *,
+    task: Any,
+    context: Any,
+    session: Any | None,
+    llm_client: Any,
+    model_name: str,
+    persona: Any,
+) -> dict[str, Any] | None:
+    if not raw_content.strip():
+        return None
+    try:
+        response = chat_once(
+            llm_client,
+            ChatRequest(
+                model=model_name,
+                messages=[
+                    ChatMessage(
+                        role="system",
+                        content=build_codex_system_prompt(
+                            render_codex_prompt_doc("planner_repair_system"),
+                            workflow_name=workflow_name_for_task_profile(str(getattr(task, "task_profile", "") or "")),
+                            persona=persona,
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=render_codex_prompt_doc(
+                            "planner_repair_user",
+                            goal=str(getattr(task, "goal", "") or ""),
+                            task_profile=str(getattr(task, "task_profile", "") or "chat"),
+                            run_context_block=build_run_context_block(
+                                context,
+                                task=task,
+                                session=session,
+                                user_input=str(getattr(task, "goal", "") or ""),
+                                persona=persona,
+                            ),
+                            raw_content=raw_content,
+                        ),
+                    ),
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            ),
+        )
+        return json.loads(extract_json_block(str(response.content or "")))
+    except Exception:
+        return None
 
 
 def _risk_hint_for_permission(permission_level: str) -> str:

@@ -172,6 +172,13 @@ def test_codex_system_prompt_loads_change_and_verify_workflow_markdown():
     assert "verification" in prompt.lower() or "验证" in prompt
 
 
+def test_codex_system_prompt_can_load_md_backed_planner_prompt():
+    prompt = build_codex_system_prompt("planner", workflow_name="change_and_verify")
+
+    assert "You are a professional coding agent" in prompt
+    assert "change_and_verify workflow" in prompt
+
+
 def test_workflow_registry_loads_markdown_definitions():
     registry = WorkflowRegistry.default()
 
@@ -2556,6 +2563,46 @@ def test_codex_loop_surfaces_planner_invalid_json(tmp_path: Path):
         CodexAgentLoop(context).run("please inspect the note for me")
 
     assert exc_info.value.code == "PLANNER_INVALID_JSON"
+
+
+def test_codex_loop_requests_clarification_for_ambiguous_create_file_goal(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("可以为我创建一个文件吗？")
+
+    assert result.status == "needs_clarification"
+    assert result.task.task_profile == "change_and_verify"
+    assert "文件名" in result.final_output or "路径" in result.final_output
+    assert result.task.actions
+    assert result.task.actions[-1].kind == "respond"
+    assert result.task.actions[-1].metadata.get("clarification_required") is True
+
+
+def test_codex_loop_repairs_natural_language_planner_clarification_to_structured_action(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            "当然可以，不过我需要文件名称、位置和内容。",
+            '{"kind":"respond","instruction":"可以，不过我还需要文件名或路径，以及是否需要初始内容。","clarification_required":true,"direct_output":true}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("可以为我创建一个文件吗？")
+
+    assert result.status == "needs_clarification"
+    assert result.task.actions[-1].kind == "respond"
+    assert result.task.actions[-1].metadata.get("clarification_required") is True
+    assert "文件名" in result.final_output or "路径" in result.final_output
 
 
 def test_codex_loop_surfaces_planner_normalization_failed(tmp_path: Path):

@@ -8,7 +8,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
+from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -67,35 +67,22 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
                     ChatMessage(
                         role="system",
                         content=build_codex_system_prompt(
-                            "You are the output evaluator for a Codex agent. "
-                            f"The active workflow is '{workflow_name or 'general'}'; apply that workflow's completion standard when judging finish vs continue. "
-                            "Decide whether the current task should finish, continue, or abstain. "
-                            "Finish only when the user's goal is fully satisfied, the latest result has already been synthesized into a user-ready answer when needed, there are no open questions, and there are no pending verifications or missing required workflow steps. "
-                            "Continue when raw tool output has not yet been synthesized, additional evidence or workflow steps are still required, verification is still pending, the answer is only partial, or the latest action created new uncertainty. "
-                            "Abstain only when the decision cannot be made reliably from the available context. "
-                            "Prefer continue over premature finish when evidence is incomplete. "
-                            "Output JSON only. "
-                            'Format A: {"decision":"finish"}. '
-                            'Format B: {"decision":"continue","kind":"call_tool|respond","instruction":"...","tool_name":"...","arguments":{},"direct_output":true|false}. '
-                            'Format C: {"decision":"abstain"}. '
-                            ,
+                            render_codex_prompt_doc("evaluator_system", workflow_name=workflow_name or "general"),
                             workflow_name=workflow_name,
                             persona=persona,
                         ),
                     ),
                     ChatMessage(
                         role="user",
-                        content=(
-                            f"Goal: {task.goal}\n"
-                            f"Workflow: {workflow_name or '(none)'}\n"
-                            f"{build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona)}\n"
-                            f"Task progress summary:\n{_build_evaluator_progress_summary(task)}\n"
-                            f"Recent completed actions:\n{chr(10).join(action_lines)}\n"
-                            f"Available tools: {tool_list}\n"
-                            f"Current persona evidence_threshold: {persona.evidence_threshold}\n"
-                            "Return finish only if the workflow is complete and the user could receive the answer right now without another tool call or synthesis step. "
-                            "Return continue if any required evidence gathering, synthesis, or verification still remains. "
-                            "If you are uncertain, output abstain."
+                        content=render_codex_prompt_doc(
+                            "evaluator_user",
+                            goal=task.goal,
+                            workflow_name=workflow_name or "(none)",
+                            run_context_block=build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona),
+                            progress_summary=_build_evaluator_progress_summary(task),
+                            recent_completed_actions=chr(10).join(action_lines),
+                            available_tools=tool_list,
+                            evidence_threshold=persona.evidence_threshold,
                         ),
                     ),
                 ],
@@ -108,7 +95,7 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
         return CodexEvaluationDecision()
     raw_content = (response.content or "").strip()
     try:
-        parsed = json.loads(_extract_json_block(raw_content))
+        parsed = json.loads(extract_json_block(raw_content))
     except Exception:
         logger.warning("evaluator invalid json: raw=%s", raw_content[:400])
         return CodexEvaluationDecision()
@@ -459,16 +446,6 @@ def _summarize_read_content(observation: str) -> str:
         return observation[:240]
     preview = lines[:3]
     return "\n".join(f"- {line}" for line in preview)
-
-
-def _extract_json_block(text: str) -> str:
-    stripped = text.strip()
-    if "```" in stripped:
-        stripped = stripped.split("```", 1)[-1]
-        if stripped.startswith("json"):
-            stripped = stripped[4:]
-        stripped = stripped.rsplit("```", 1)[0]
-    return stripped.strip()
 
 
 def _extract_target_semantics(task: CodexTask, action: CodexAction) -> dict[str, Any] | None:
