@@ -31,6 +31,18 @@ def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_name
         )
     if task.memory.open_questions and _last_completed_action(task) and _last_completed_action(task).kind == "respond":
         return CodexEvaluationDecision(status="continue", summary="cannot finish while open questions remain")
+    synthesized_reply = _build_missing_final_respond(task)
+    if synthesized_reply is not None:
+        return CodexEvaluationDecision(
+            status="continue",
+            next_action=CodexAction(
+                kind="respond",
+                instruction=synthesized_reply,
+                subgoal="synthesize_answer",
+                metadata={"direct_output": True, "from_evaluator": True, "evaluator_reason": "missing_final_summary"},
+            ),
+            summary="task needs final user-visible summary before finish",
+        )
     llm_decision = _evaluate_with_model(task, session, context, tool_names)
     if llm_decision.status != "abstain":
         if llm_decision.next_action is not None:
@@ -226,6 +238,84 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 summary="raw evidence should be synthesized before finishing",
             )
     return CodexEvaluationDecision()
+
+
+def _build_missing_final_respond(task: CodexTask) -> str | None:
+    if not _task_requires_final_summary(task):
+        return None
+    completed = [action for action in task.actions if action.status == "completed"]
+    if not completed:
+        return None
+    last_action = completed[-1]
+    if last_action.kind == "respond":
+        return None
+    modified_paths = list(dict.fromkeys(path for path in task.memory.modified_paths if str(path).strip()))
+    verification_pending = bool(task.memory.pending_verifications)
+    last_observation = str(last_action.observation or "").strip()
+    verification_status, verification_detail = _describe_verification_outcome(task, last_action)
+    change_detail = _describe_change_outcome(last_action, last_observation)
+    lines: list[str] = []
+    if change_detail:
+        lines.append(f"Completed the requested update: {change_detail}.")
+    else:
+        lines.append("Completed the requested workspace update.")
+    if modified_paths:
+        lines.append(f"Files changed: {', '.join(modified_paths[:4])}.")
+    else:
+        lines.append("Files changed: not explicitly recorded.")
+    if verification_pending:
+        lines.append("Verification: pending.")
+    elif verification_status:
+        detail_suffix = f" ({verification_detail})" if verification_detail else ""
+        lines.append(f"Verification: {verification_status}.{detail_suffix}")
+    else:
+        lines.append("Verification: not run.")
+    return " ".join(line.strip() for line in lines if line.strip()).strip()
+
+
+def _task_requires_final_summary(task: CodexTask) -> bool:
+    profile = str(getattr(task, "task_profile", "") or "")
+    if profile in {"change_and_verify", "multi_file_change", "debug_and_fix", "test_and_verify"}:
+        return True
+    completed = [action for action in task.actions if action.status == "completed"]
+    if not completed:
+        return False
+    return any(action.subgoal in {"modify_workspace", "verify_changes"} for action in completed)
+
+
+def _describe_change_outcome(action: CodexAction, last_observation: str) -> str:
+    tool_name = str(action.metadata.get("tool_name") or "").strip()
+    if tool_name == "create_workspace_path":
+        return "created the requested file or directory"
+    if tool_name in {"edit_workspace_text", "apply_text_patch"}:
+        return "updated the requested file content"
+    if tool_name == "move_workspace_path":
+        return "moved the requested path"
+    if tool_name == "delete_workspace_path":
+        return "deleted the requested path"
+    compact_observation = " ".join(last_observation.split())[:160].strip()
+    return compact_observation or "applied the requested workspace change"
+
+
+def _describe_verification_outcome(task: CodexTask, last_action: CodexAction) -> tuple[str, str]:
+    verification_result = getattr(task, "verification", None)
+    if verification_result is not None:
+        success = bool(getattr(verification_result, "success", False))
+        summary = str(getattr(verification_result, "summary", "") or "").strip()
+        return ("passed" if success else "failed", _compact_summary(summary))
+    verification_payload = dict(last_action.metadata.get("verification_result") or {})
+    if verification_payload:
+        success = bool(verification_payload.get("success"))
+        summary = str(verification_payload.get("summary") or "").strip()
+        return ("passed" if success else "failed", _compact_summary(summary))
+    return ("", "")
+
+
+def _compact_summary(text: str, *, limit: int = 140) -> str:
+    compact = " ".join(str(text or "").split()).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
 
 
 def _last_completed_action(task: CodexTask) -> CodexAction | None:

@@ -12,5 +12,6 @@ Available tools: {{available_tools}}
 Current persona evidence_threshold: {{evidence_threshold}}
 
 Return finish only if the workflow is complete and the user could receive the answer right now without another tool call or synthesis step.
+If the latest completed action is only a tool result, edit result, verification result, or any non-respond execution evidence, return continue with a final `respond` action instead of finish.
 Return continue if any required evidence gathering, synthesis, or verification still remains.
 If you are uncertain, output abstain.

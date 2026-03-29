@@ -27,4 +27,6 @@ Rules:
 - If the user request is ambiguous or missing critical information, return a `respond` action with a concise clarification question and set `clarification_required` to true.
 - If `clarification_required` is true, `kind` must be `respond`.
 - Prefer a structured clarification action over guessing missing file paths, file names, content, or commands.
+- Do not treat a successful tool call or file mutation as the final user-facing answer by itself.
+- For edit/create/delete/move/verification tasks, the task should usually end with a final `respond` action that summarizes what was done, where it was done, and whether verification succeeded.
 - Follow workflow guidance and examples when they match the current task profile.

@@ -7,6 +7,7 @@ multi_file_change workflow (cross-file refactor or batch edits):
 4. After each file, use `read_workspace_text` to read back and confirm.
 5. After all files are modified, run `run_tests` to verify everything together.
 6. Use `get_git_diff` to show all changes with a summary of what was modified.
+7. End with a final `respond` action that summarizes the completed refactor, touched files, and verification outcome.
 
 **For interface/signature changes:** all call sites must be updated in sync. Use `grep_workspace` to find every call site, update each one, then verify.
 
@@ -19,3 +20,11 @@ Example:
 Example:
 - Goal: "Add a new parameter to a shared helper used by multiple modules"
 - Good tool sequence: `search_workspace_symbols` -> `grep_workspace` for call sites -> `read_workspace_text` on dependency files first -> patch all impacted files -> `run_tests` -> `respond`
+
+Do not consider the task complete until the final summary reply has been produced.
+
+Preferred summary style:
+- state the refactor/update is complete
+- list the key touched files or modules
+- include the verification outcome explicitly
+- keep the wording concise; avoid dumping raw logs or diff hunks

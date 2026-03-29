@@ -2537,6 +2537,62 @@ def test_codex_loop_edits_workspace_file_via_default_tooling(tmp_path: Path):
     assert "new text" in result.final_output
 
 
+def test_change_task_completes_with_final_respond_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    loop = CodexAgentLoop(context)
+    pending = loop.run("编辑 draft.txt 内容 new text")
+
+    assert pending.status == "needs_approval"
+    result = loop.resume(pending.resume_token, approved=True)
+
+    completed_actions = [action for action in result.task.actions if action.status == "completed"]
+    assert result.status == "completed"
+    assert completed_actions[-1].kind == "respond"
+    assert completed_actions[-1].subgoal == "synthesize_answer"
+    assert completed_actions[-1].metadata.get("direct_output") is True
+    assert "Completed the requested update" in result.final_output
+    assert "draft.txt" in result.final_output
+    assert "Verification:" in result.final_output
+
+
+def test_evaluator_requests_final_summary_for_change_task_without_respond(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = CodexTask(
+        goal="编辑 draft.txt 内容 new text",
+        actions=[
+            CodexAction(
+                kind="edit_text",
+                instruction="edit draft.txt",
+                subgoal="modify_workspace",
+                status="completed",
+                observation="updated draft.txt to new text",
+                metadata={"tool_name": "edit_workspace_text", "arguments": {"path": "draft.txt"}},
+            )
+        ],
+        task_profile="change_and_verify",
+    )
+    task.memory.modified_paths.append("draft.txt")
+    context = _context(workspace)
+
+    decision = evaluate_codex_output(task, context.session, context, ["run_tests", "get_git_diff"])
+
+    assert decision.status == "continue"
+    assert decision.next_action is not None
+    assert decision.next_action.kind == "respond"
+    assert decision.next_action.metadata.get("evaluator_reason") == "missing_final_summary"
+    assert "Completed the requested update" in decision.next_action.instruction
+    assert "draft.txt" in decision.next_action.instruction
+    assert "Verification:" in decision.next_action.instruction
+
+
 def test_codex_loop_surfaces_planner_runtime_missing(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

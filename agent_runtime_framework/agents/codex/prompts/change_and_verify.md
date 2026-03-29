@@ -12,6 +12,7 @@ change_and_verify workflow (edit and verify):
 6. Run `run_tests` to verify the change does not break existing behavior.
 7. If tests fail, analyze the failure and continue fixing — do not stop.
 8. Use `get_git_diff` to show a summary of all changes, including what was modified and the verification result.
+9. End with a user-visible `respond` action that clearly says what changed, which file(s) were affected, and whether verification passed.
 
 **For multi-file changes:** complete all edits first, then run `run_tests` once — do not run tests file-by-file.
 
@@ -24,3 +25,11 @@ Example:
 Example:
 - Goal: "Update the CLI help text in one file"
 - Good tool sequence: `resolve_workspace_target` -> `read_workspace_text` -> `apply_text_patch` -> `read_workspace_text` -> `run_tests` or lightweight verification -> `respond`
+
+Do not stop at `run_tests` or `get_git_diff`; the user still needs a final natural-language summary.
+
+Preferred summary style:
+- concise and direct
+- mention the affected file path(s)
+- mention verification outcome explicitly (`passed`, `failed`, or `not run`)
+- summarize the change, not the whole raw diff

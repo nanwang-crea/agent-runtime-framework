@@ -228,21 +228,27 @@ class CodexAgentLoop:
                 )
             next_index = self._next_action_index(task, start_index=action_index)
             if next_index is None:
-                planned = self._plan_next_action(task, session)
-                if planned is None:
-                    break
-                if completed_actions + 1 > step_budget:
-                    task.status = "failed"
-                    return CodexAgentLoopResult(
-                        status="failed",
-                        final_output=f"step budget exceeded for persona '{task.runtime_persona or 'general'}'",
-                        task=task,
-                        action_kind="step_budget_exceeded",
-                        run_id=run_id,
-                    )
-                task.actions.append(planned)
-                next_index = len(task.actions) - 1
-                attach_action_to_plan(task, planned, next_index)
+                forced_summary = self._build_completion_guard_action(task)
+                if forced_summary is not None:
+                    task.actions.append(forced_summary)
+                    next_index = len(task.actions) - 1
+                    attach_action_to_plan(task, forced_summary, next_index)
+                else:
+                    planned = self._plan_next_action(task, session)
+                    if planned is None:
+                        break
+                    if completed_actions + 1 > step_budget:
+                        task.status = "failed"
+                        return CodexAgentLoopResult(
+                            status="failed",
+                            final_output=f"step budget exceeded for persona '{task.runtime_persona or 'general'}'",
+                            task=task,
+                            action_kind="step_budget_exceeded",
+                            run_id=run_id,
+                        )
+                    task.actions.append(planned)
+                    next_index = len(task.actions) - 1
+                    attach_action_to_plan(task, planned, next_index)
             action = task.actions[next_index]
             approval = self._maybe_pause_for_approval(task, next_index, action, session)
             if approval is not None:
@@ -335,6 +341,81 @@ class CodexAgentLoop:
             action_kind=last_kind,
             run_id=run_id,
         )
+
+    def _build_completion_guard_action(self, task: CodexTask) -> CodexAction | None:
+        if not self._task_requires_user_visible_summary(task):
+            return None
+        completed = [action for action in task.actions if action.status == "completed"]
+        if not completed:
+            return None
+        last_action = completed[-1]
+        if last_action.kind == "respond":
+            return None
+        modified_paths = list(dict.fromkeys(path for path in task.memory.modified_paths if str(path).strip()))
+        last_observation = str(last_action.observation or "").strip()
+        instruction = self._build_delivery_summary(task, last_action, modified_paths, last_observation)
+        return CodexAction(
+            kind="respond",
+            instruction=instruction.strip(),
+            subgoal="synthesize_answer",
+            metadata={"direct_output": True, "from_completion_guard": True},
+        )
+
+    def _task_requires_user_visible_summary(self, task: CodexTask) -> bool:
+        profile = str(getattr(task, "task_profile", "") or "")
+        if profile in {"change_and_verify", "multi_file_change", "debug_and_fix", "test_and_verify"}:
+            return True
+        return any(action.subgoal in {"modify_workspace", "verify_changes"} for action in task.actions if action.status == "completed")
+
+    def _build_delivery_summary(
+        self,
+        task: CodexTask,
+        last_action: CodexAction,
+        modified_paths: list[str],
+        last_observation: str,
+    ) -> str:
+        lines: list[str] = []
+        lines.append(f"Completed the requested update: {self._describe_change_outcome(last_action, last_observation)}.")
+        if modified_paths:
+            lines.append(f"Files changed: {', '.join(modified_paths[:4])}.")
+        else:
+            lines.append("Files changed: not explicitly recorded.")
+        verification_status, verification_detail = self._describe_verification_outcome(task, last_action)
+        detail_suffix = f" ({verification_detail})" if verification_detail else ""
+        lines.append(f"Verification: {verification_status}.{detail_suffix}")
+        return " ".join(line.strip() for line in lines if line.strip()).strip()
+
+    def _describe_change_outcome(self, action: CodexAction, last_observation: str) -> str:
+        tool_name = str(action.metadata.get("tool_name") or "").strip()
+        if tool_name == "create_workspace_path":
+            return "created the requested file or directory"
+        if tool_name in {"edit_workspace_text", "apply_text_patch"}:
+            return "updated the requested file content"
+        if tool_name == "move_workspace_path":
+            return "moved the requested path"
+        if tool_name == "delete_workspace_path":
+            return "deleted the requested path"
+        compact = " ".join(last_observation.split()).strip()
+        return compact[:160].rstrip() or "completed the requested workspace change"
+
+    def _describe_verification_outcome(self, task: CodexTask, last_action: CodexAction) -> tuple[str, str]:
+        verification = getattr(task, "verification", None)
+        if verification is not None:
+            summary = self._compact_summary(str(getattr(verification, "summary", "") or ""))
+            return ("passed" if bool(getattr(verification, "success", False)) else "failed", summary)
+        payload = dict(last_action.metadata.get("verification_result") or {})
+        if payload:
+            summary = self._compact_summary(str(payload.get("summary") or ""))
+            return ("passed" if bool(payload.get("success")) else "failed", summary)
+        if task.memory.pending_verifications:
+            return ("pending", "")
+        return ("not run", "")
+
+    def _compact_summary(self, text: str, *, limit: int = 140) -> str:
+        compact = " ".join(str(text or "").split()).strip()
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3].rstrip() + "..."
 
     def _pending_clarification_payload(self) -> dict[str, Any] | None:
         index_memory = getattr(self.context.application_context, "index_memory", None)
