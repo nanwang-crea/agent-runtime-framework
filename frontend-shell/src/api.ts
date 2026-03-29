@@ -8,6 +8,25 @@ import type {
   SessionResponse,
 } from "./types";
 
+const EMPTY_SESSION: SessionResponse["session"] = {
+  session_id: null,
+  turns: [],
+};
+
+const EMPTY_MEMORY: AssistantResponse["memory"] = {
+  focused_resource: null,
+  recent_resources: [],
+  last_summary: null,
+  active_capability: null,
+};
+
+const EMPTY_CONTEXT: ContextPayload = {
+  active_agent: "assistant",
+  available_agents: [],
+  active_workspace: "",
+  available_workspaces: [],
+};
+
 export class ApiRequestError extends Error {
   status: number;
   assistantError: AssistantError | null;
@@ -52,6 +71,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function normalizeAssistantResponse(payload: unknown): AssistantResponse {
+  const data = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return {
+    status: typeof data.status === "string" ? data.status : "completed",
+    final_answer: typeof data.final_answer === "string" ? data.final_answer : "",
+    capability_name: typeof data.capability_name === "string" ? data.capability_name : "assistant",
+    execution_trace: Array.isArray(data.execution_trace) ? (data.execution_trace as ExecutionTraceStep[]) : [],
+    approval_request:
+      data.approval_request && typeof data.approval_request === "object"
+        ? (data.approval_request as AssistantResponse["approval_request"])
+        : null,
+    resume_token_id: typeof data.resume_token_id === "string" ? data.resume_token_id : null,
+    session:
+      data.session && typeof data.session === "object"
+        ? (data.session as AssistantResponse["session"])
+        : EMPTY_SESSION,
+    plan_history: Array.isArray(data.plan_history) ? (data.plan_history as AssistantResponse["plan_history"]) : [],
+    memory:
+      data.memory && typeof data.memory === "object"
+        ? (data.memory as AssistantResponse["memory"])
+        : EMPTY_MEMORY,
+    context:
+      data.context && typeof data.context === "object"
+        ? (data.context as ContextPayload)
+        : EMPTY_CONTEXT,
+    error:
+      data.error && typeof data.error === "object"
+        ? (data.error as AssistantError)
+        : null,
+    workspace: typeof data.workspace === "string" ? data.workspace : "",
+  };
+}
+
 export function fetchSession(): Promise<SessionResponse> {
   return request<SessionResponse>("/api/session");
 }
@@ -65,11 +117,11 @@ export function updateContext(payload: { agent_profile?: string; workspace?: str
 }
 
 export function sendMessage(message: string): Promise<AssistantResponse> {
-  return request<AssistantResponse>("/api/chat", {
+  return request<unknown>("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
-  });
+  }).then(normalizeAssistantResponse);
 }
 
 export async function sendMessageStream(
@@ -138,7 +190,7 @@ export async function sendMessageStream(
         errorPayload = payload.error as AssistantError;
         handlers.onError?.({ error: errorPayload });
       } else if (eventName === "final") {
-        finalPayload = payload.payload as AssistantResponse;
+        finalPayload = normalizeAssistantResponse(payload.payload);
         handlers.onFinal?.(finalPayload);
       }
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -152,19 +204,19 @@ export async function sendMessageStream(
 }
 
 export function respondApproval(tokenId: string, approved: boolean): Promise<AssistantResponse> {
-  return request<AssistantResponse>("/api/approve", {
+  return request<unknown>("/api/approve", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token_id: tokenId, approved }),
-  });
+  }).then(normalizeAssistantResponse);
 }
 
 export function replayRun(runId: string): Promise<AssistantResponse> {
-  return request<AssistantResponse>("/api/replay", {
+  return request<unknown>("/api/replay", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ run_id: runId }),
-  });
+  }).then(normalizeAssistantResponse);
 }
 
 export function fetchModelCenter(): Promise<ModelCenterResponse> {

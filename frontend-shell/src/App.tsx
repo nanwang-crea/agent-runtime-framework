@@ -245,6 +245,18 @@ function App() {
     setStreamingReply("");
   }
 
+  async function handleReplay(runId: string) {
+    try {
+      setStatus("running");
+      const payload = await replayRun(runId);
+      applyResponse(payload);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, "重试运行失败。"));
+      setStatus("error");
+    }
+  }
+
   async function handleAgentSwitch(agentProfile: string) {
     try {
       const payload = await updateContext({ agent_profile: agentProfile });
@@ -440,10 +452,16 @@ function App() {
     if (!pendingTokenId) {
       return;
     }
-    setStatus("running");
-    const targetRun = [...runCards].reverse().find((run) => run.approvalTokenId === pendingTokenId) || null;
-    const payload = await respondApproval(pendingTokenId, approved);
-    applyResponse(payload, targetRun?.id, targetRun?.anchorUserTurnIndex);
+    try {
+      setStatus("running");
+      const targetRun = [...runCards].reverse().find((run) => run.approvalTokenId === pendingTokenId) || null;
+      const payload = await respondApproval(pendingTokenId, approved);
+      applyResponse(payload, targetRun?.id, targetRun?.anchorUserTurnIndex);
+      setUiError(null);
+    } catch (error) {
+      setUiError(extractAssistantError(error, approved ? "接受请求失败。" : "拒绝请求失败。"));
+      setStatus("error");
+    }
   }
 
   function updateDraft(instanceId: string, key: "apiKey" | "baseUrl", value: string) {
@@ -1132,12 +1150,13 @@ function finalizeRunCard(
   payload: AssistantResponse,
   anchorUserTurnIndex?: number,
 ): RunCardState[] {
+  const trace = Array.isArray(payload.execution_trace) ? payload.execution_trace : [];
   const summary = buildRunSummary(payload);
   const error = payload.error || null;
   const existing = runs.find((run) => run.id === runId);
 
   if (!existing) {
-    if (!payload.execution_trace.length && !error) {
+    if (!trace.length && !error) {
       return runs;
     }
     return [
@@ -1149,7 +1168,7 @@ function finalizeRunCard(
           capabilityName: payload.capability_name || "assistant",
           phaseLabel: summary,
           status: mapPayloadStatus(payload),
-          entries: mergeFinalTraceEntries([], payload.execution_trace),
+          entries: mergeFinalTraceEntries([], trace),
           collapsed: !shouldExpandRunCard(payload),
           summary,
           error,
@@ -1166,7 +1185,7 @@ function finalizeRunCard(
           capabilityName: payload.capability_name || run.capabilityName,
           phaseLabel: summary,
           status: mapPayloadStatus(payload),
-          entries: mergeFinalTraceEntries(run.entries, payload.execution_trace),
+          entries: mergeFinalTraceEntries(run.entries, trace),
           collapsed: !shouldExpandRunCard(payload),
           summary,
           error,
@@ -1221,7 +1240,8 @@ function formatStepLabel(step: AssistantResponse["execution_trace"][number]): st
 }
 
 function buildRunSummary(payload: AssistantResponse): string {
-  const lastTrace = payload.execution_trace[payload.execution_trace.length - 1];
+  const trace = Array.isArray(payload.execution_trace) ? payload.execution_trace : [];
+  const lastTrace = trace[trace.length - 1];
   if (payload.status === "error" && payload.error) {
     return `${payload.error.code} · ${payload.error.message}`;
   }

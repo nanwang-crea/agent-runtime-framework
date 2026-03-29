@@ -251,11 +251,7 @@ def stream_conversation_reply(
 
 
 def _build_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
-    system_content = (
-        "你是一个桌面 AI 助手。"
-        "当用户是在正常聊天、提问或讨论方案时，直接自然回答。"
-        "当用户明确要求操作本地文件时，应由其他 capability 处理。"
-    )
+    system_content = render_codex_prompt_doc("conversation_system")
     if context is not None:
         system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
     messages: list[ChatMessage] = [
