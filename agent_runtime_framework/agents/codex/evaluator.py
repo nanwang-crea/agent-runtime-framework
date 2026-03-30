@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from agent_runtime_framework.agents.codex.answer_synthesizer import synthesize_answer
+from agent_runtime_framework.agents.codex.evidence_manager import evidence_gap
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvaluationDecision, CodexTask
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, render_codex_prompt_doc
@@ -71,51 +73,49 @@ def _evaluate_with_model(task: CodexTask, session: Any, context: Any, tool_names
     tool_list = ", ".join(tool_names)
     persona = resolve_runtime_persona(context, task=task)
     workflow_name = workflow_name_for_task_profile(task.task_profile)
-    try:
-        response = chat_once(
-            llm_client,
-            ChatRequest(
-                model=model_name,
-                messages=[
-                    ChatMessage(
-                        role="system",
-                        content=build_codex_system_prompt(
-                            render_codex_prompt_doc("evaluator_system", workflow_name=workflow_name or "general"),
-                            workflow_name=workflow_name,
-                            persona=persona,
-                        ),
-                    ),
-                    ChatMessage(
-                        role="user",
-                        content=render_codex_prompt_doc(
-                            "evaluator_user",
-                            goal=task.goal,
-                            workflow_name=workflow_name or "(none)",
-                            run_context_block=build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona),
-                            progress_summary=_build_evaluator_progress_summary(task),
-                            recent_completed_actions=chr(10).join(action_lines),
-                            available_tools=tool_list,
-                            evidence_threshold=persona.evidence_threshold,
-                        ),
-                    ),
-                ],
-                temperature=0.0,
-                max_tokens=700,
-            ),
-        )
-    except Exception as exc:
-        logger.warning("evaluator request failed: %s: %s", type(exc).__name__, exc)
-        return CodexEvaluationDecision()
-    raw_content = (response.content or "").strip()
-    try:
-        parsed = json.loads(extract_json_block(raw_content))
-    except Exception:
-        logger.warning("evaluator invalid json: raw=%s", raw_content[:400])
-        return CodexEvaluationDecision()
-    normalized = _normalize_evaluator_decision(parsed, tool_names=set(tool_names))
-    if normalized.status == "abstain":
+    system_prompt = build_codex_system_prompt(
+        render_codex_prompt_doc("evaluator_system", workflow_name=workflow_name or "general"),
+        workflow_name=workflow_name,
+        persona=persona,
+    )
+    user_prompt = render_codex_prompt_doc(
+        "evaluator_user",
+        goal=task.goal,
+        workflow_name=workflow_name or "(none)",
+        run_context_block=build_run_context_block(context, task=task, session=session, user_input=task.goal, persona=persona),
+        progress_summary=_build_evaluator_progress_summary(task),
+        recent_completed_actions=chr(10).join(action_lines),
+        available_tools=tool_list,
+        evidence_threshold=persona.evidence_threshold,
+    )
+    for attempt in range(2):
+        try:
+            response = chat_once(
+                llm_client,
+                ChatRequest(
+                    model=model_name,
+                    messages=[
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user", content=user_prompt + ("\n\nRetry requirement: output evaluator JSON only." if attempt else "")),
+                    ],
+                    temperature=0.0,
+                    max_tokens=700,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("evaluator request failed: %s: %s", type(exc).__name__, exc)
+            return CodexEvaluationDecision()
+        raw_content = (response.content or "").strip()
+        try:
+            parsed = json.loads(extract_json_block(raw_content))
+        except Exception:
+            logger.warning("evaluator invalid json: raw=%s", raw_content[:400])
+            continue
+        normalized = _normalize_evaluator_decision(parsed, tool_names=set(tool_names))
+        if normalized.status != "abstain":
+            return normalized
         logger.warning("evaluator normalization failed: parsed=%s", json.dumps(parsed, ensure_ascii=False)[:400])
-    return normalized
+    return CodexEvaluationDecision()
 
 
 def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
@@ -123,6 +123,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     if not completed:
         return CodexEvaluationDecision()
     last_action = completed[-1]
+    missing = evidence_gap(task)
     if last_action.kind == "respond" and not task.memory.open_questions and not task.memory.pending_verifications:
         return CodexEvaluationDecision(status="finish")
     if bool(last_action.metadata.get("from_evaluator")) and last_action.kind == "respond":
@@ -130,15 +131,39 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     tool_name = str(last_action.metadata.get("tool_name") or "").strip()
     arguments = dict(last_action.metadata.get("arguments") or {})
     target_semantics = _extract_target_semantics(task, last_action)
-    if (
-        task.task_profile == "file_reader"
-        and target_semantics is not None
-        and target_semantics.get("resource_kind") == "file"
-        and tool_name == "resolve_workspace_target"
-    ):
+    follow_up = _next_evidence_action(task, tool_name=tool_name, arguments=arguments, target_semantics=target_semantics, tool_names=tool_names, context=_context)
+    if follow_up is not None:
+        return follow_up
+    if not missing and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory", "extract_workspace_outline"}:
+        synthesized = _synthesize_knowledge_answer(task, completed)
+        if synthesized:
+            return CodexEvaluationDecision(
+                status="continue",
+                next_action=CodexAction(
+                    kind="respond",
+                    instruction=synthesized,
+                    subgoal="synthesize_answer",
+                    metadata={"direct_output": True, "from_evaluator": True, "evaluator_reason": "synthesize_answer"},
+                ),
+                summary="raw evidence should be synthesized before finishing",
+            )
+    return CodexEvaluationDecision()
+
+
+def _next_evidence_action(
+    task: CodexTask,
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    target_semantics: dict[str, Any] | None,
+    tool_names: list[str],
+    context: Any,
+) -> CodexEvaluationDecision | None:
+    strategy_families = set(getattr(task.intent, "allowed_strategy_family", []) or [])
+    if "file_reader" in strategy_families and target_semantics is not None and target_semantics.get("resource_kind") == "file" and tool_name == "resolve_workspace_target":
         follow_up_tool = "summarize_workspace_text" if _goal_prefers_summary(task.goal) and "summarize_workspace_text" in tool_names else "read_workspace_text"
         if follow_up_tool in tool_names:
-            follow_up_path = _relative_target_path(target_semantics, _context)
+            follow_up_path = _relative_target_path(target_semantics, context)
             return CodexEvaluationDecision(
                 status="continue",
                 next_action=CodexAction(
@@ -154,15 +179,16 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 ),
                 summary="resolved file target still needs content evidence",
             )
+    if not any(item in {"workspace_overview", "repository_overview"} for item in strategy_families):
+        return None
+    inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
     if (
-        task.task_profile == "repository_explainer"
-        and target_semantics is not None
+        target_semantics is not None
         and target_semantics.get("resource_kind") == "directory"
         and "inspect_workspace_path" in tool_names
         and tool_name != "inspect_workspace_path"
         and not _has_repository_structure_evidence(task)
     ):
-        inspect_path = str(arguments.get("path") or target_semantics.get("path") or "").strip()
         return CodexEvaluationDecision(
             status="continue",
             next_action=CodexAction(
@@ -171,23 +197,14 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 subgoal="gather_evidence",
                 metadata={
                     "tool_name": "inspect_workspace_path",
-                    "arguments": {
-                        "path": inspect_path,
-                        "use_last_focus": True,
-                    },
+                    "arguments": {"path": inspect_path, "use_last_focus": True},
                     "from_evaluator": True,
                     "evaluator_reason": "directory_evidence_insufficient",
                 },
             ),
             summary="directory evidence needs deeper inspection",
         )
-    if (
-        task.task_profile == "repository_explainer"
-        and tool_name == "list_workspace_directory"
-        and "inspect_workspace_path" in tool_names
-        and not _has_completed_tool(task, "inspect_workspace_path")
-    ):
-        inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
+    if tool_name == "list_workspace_directory" and "inspect_workspace_path" in tool_names and not _has_completed_tool(task, "inspect_workspace_path"):
         return CodexEvaluationDecision(
             status="continue",
             next_action=CodexAction(
@@ -203,13 +220,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             ),
             summary="directory listing alone is not enough for a repository explanation",
         )
-    if (
-        task.task_profile == "repository_explainer"
-        and tool_name == "inspect_workspace_path"
-        and "rank_workspace_entries" in tool_names
-        and not _has_completed_tool(task, "rank_workspace_entries")
-    ):
-        inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
+    if tool_name == "inspect_workspace_path" and "rank_workspace_entries" in tool_names and not _has_completed_tool(task, "rank_workspace_entries"):
         return CodexEvaluationDecision(
             status="continue",
             next_action=CodexAction(
@@ -226,12 +237,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             summary="need representative files before repository summary",
         )
     next_outline_path = _next_ranked_outline_path(task)
-    if (
-        task.task_profile == "repository_explainer"
-        and next_outline_path
-        and "extract_workspace_outline" in tool_names
-        and tool_name in {"rank_workspace_entries", "extract_workspace_outline"}
-    ):
+    if next_outline_path and "extract_workspace_outline" in tool_names and tool_name in {"rank_workspace_entries", "extract_workspace_outline"}:
         return CodexEvaluationDecision(
             status="continue",
             next_action=CodexAction(
@@ -247,20 +253,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
             ),
             summary="need representative file outline before repository summary",
         )
-    if tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory", "extract_workspace_outline"}:
-        synthesized = _synthesize_knowledge_answer(task, completed)
-        if synthesized:
-            return CodexEvaluationDecision(
-                status="continue",
-                next_action=CodexAction(
-                    kind="respond",
-                    instruction=synthesized,
-                    subgoal="synthesize_answer",
-                    metadata={"direct_output": True, "from_evaluator": True, "evaluator_reason": "synthesize_answer"},
-                ),
-                summary="raw evidence should be synthesized before finishing",
-            )
-    return CodexEvaluationDecision()
+    return None
 
 
 def _build_missing_final_respond(task: CodexTask) -> str | None:
@@ -461,6 +454,9 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
     observation = (last.observation or "").strip()
     if not observation:
         return ""
+    synthesized = synthesize_answer(task)
+    if synthesized and synthesized not in {task.goal, "目录结构信息不足。", "项目概览信息不足。", "文件内容信息不足。"}:
+        return synthesized
     if task.task_profile == "file_reader" and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text"}:
         if tool_name == "read_workspace_text":
             if goal_is_raw_read(task.goal):

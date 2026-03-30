@@ -3,8 +3,8 @@
 此文件由 Agent 自动维护，用于记录可检索的长期记忆。
 
 ## workspace_focus | focus:.
-- text: ". Resolved target: ."
-- metadata: {"path": ".", "summary": "Resolved target: ."}
+- text: ". Representative file candidates:\n- README.md: Agent Runtime Framework\n- pyproject.toml: [build-system]\n- frontend-shell/README.md: Desktop Assistant Shell\n- frontend-shell/package.json: {"
+- metadata: {"path": ".", "summary": "Representative file candidates:\n- README.md: Agent Runtime Framework\n- pyproject.toml: [build-system]\n- frontend-shell/README.md: Desktop Assistant Shell\n- frontend-shell/package.json: {"}
 
 ## task_conclusion | task:aa4962af-8abb-4ee0-a3ff-8cc2bc213a48:conclusion
 - text: "帮我列一下当前文件夹下面都有哪些内容呢？ 基于已收集的信息，我的总结是：\n- 目录结构：agent-runtime-framework 下面共有 15 个条目。\n- .arf/ 的作用是模块目录。\n- .git/ 的作用是模块目录。\n- .pytest_cache/ 的作用是模块目录。\n- agent_runtime_framework/ 的作用是模块目录。\n- agent_runtime_framework.egg-info/ 的作用是模块目录。\n引用：\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"

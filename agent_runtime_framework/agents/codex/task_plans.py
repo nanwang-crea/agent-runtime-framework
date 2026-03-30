@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
+from agent_runtime_framework.agents.codex.answer_synthesizer import synthesize_answer
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, extract_task_resource_semantics, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import available_tool_names
@@ -18,117 +19,75 @@ def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
     workspace_root = str(context.application_context.config.get("default_directory") or "")
-    intent = infer_task_intent(task.goal, Path(workspace_root) if workspace_root else None, context=context, session=context.session)
+    intent = task.intent
     llm_plan = _build_task_plan_with_llm(task, context, tool_names=tool_names, intent=intent)
     if llm_plan is not None:
         return llm_plan
-    if task.task_profile == "repository_explainer":
-        target = intent.target_hint or _extract_repository_target(task.goal)
-        if "inspect_workspace_path" not in tool_names:
-            return None
-        locate_step = CodexPlanTask(
-            title="Locate repository target",
-            kind="locate_target",
-            metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
-        )
-        gather_step = CodexPlanTask(
-            title="Gather repository context",
-            kind="gather_context",
-            depends_on=[locate_step.task_id],
-            metadata={"path": target, "use_default_directory": not target, "use_resolved_target": True},
-        )
-        tasks = [locate_step, gather_step]
-        tasks.append(
-            CodexPlanTask(
-                title="Synthesize repository overview",
-                kind="synthesize_answer",
-                depends_on=[tasks[-1].task_id],
-                metadata={"path": target},
-            )
-        )
-        return CodexPlan(
-            tasks=tasks,
-            metadata={
-                "workspace_root": workspace_root,
-                "workflow": workflow_name_for_task_profile(task.task_profile),
-                "task_intent": intent.as_dict(),
-            },
-        )
-    if task.task_profile == "file_reader":
-        if "resolve_workspace_target" not in tool_names:
-            return None
-        target = intent.target_hint or _extract_repository_target(task.goal)
-        preferred_read_tool = (
-            "read_workspace_excerpt"
-            if _goal_prefers_summary(task.goal) and "read_workspace_excerpt" in tool_names
-            else "read_workspace_text"
-        )
-        locate_step = CodexPlanTask(
-            title="Locate file target",
-            kind="locate_target",
-            metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
-        )
-        gather_step = CodexPlanTask(
-            title="Gather file contents",
-            kind="gather_context",
-            depends_on=[locate_step.task_id],
-            metadata={
-                "path": target,
-                "use_default_directory": not target,
-                "use_resolved_target": True,
-                "preferred_read_tool": preferred_read_tool,
-            },
-        )
-        tasks = [
-            locate_step,
-            gather_step,
-            CodexPlanTask(
-                title="Synthesize file summary",
-                kind="synthesize_answer",
-                depends_on=[gather_step.task_id],
-                metadata={"path": target},
-            ),
-        ]
-        return CodexPlan(
-            tasks=tasks,
-            metadata={
-                "workspace_root": workspace_root,
-                "workflow": workflow_name_for_task_profile(task.task_profile),
-                "task_intent": intent.as_dict(),
-            },
-        )
-    if task.task_profile == "change_and_verify":
-        locate_step = CodexPlanTask(
-            title="Locate change target",
-            kind="locate_target",
-            metadata={"target_hint": _extract_change_target(task.goal), "query": task.goal},
-        )
-        edit_step = _build_change_edit_task(task.goal, tool_names)
-        verify_step = _build_change_verify_task(task.goal, tool_names)
-        if edit_step is None:
-            return None
-        edit_step.depends_on = [locate_step.task_id]
-        edit_step.metadata["use_resolved_target"] = str(edit_step.metadata.get("tool_name") or "") != "create_workspace_path"
-        tasks = [locate_step, edit_step]
-        if verify_step is not None:
-            verify_step.depends_on = [edit_step.task_id]
-            tasks.append(verify_step)
-        tasks.append(
-            CodexPlanTask(
-                title="Synthesize change summary",
-                kind="synthesize_answer",
-                depends_on=[tasks[-1].task_id],
-            )
-        )
-        return CodexPlan(
-            tasks=tasks,
-            metadata={
-                "workspace_root": workspace_root,
-                "workflow": workflow_name_for_task_profile(task.task_profile),
-                "task_intent": intent.as_dict(),
-            },
-        )
+    builder = _fallback_plan_builder(intent)
+    if builder is not None:
+        return builder(task, tool_names=tool_names, workspace_root=workspace_root, intent=intent)
     return None
+
+
+def _fallback_plan_builder(intent: Any):
+    strategy_families = list(getattr(intent, "allowed_strategy_family", []) or [])
+    if any(item in {"workspace_overview", "repository_overview"} for item in strategy_families):
+        return _build_repository_plan_fallback
+    if "file_reader" in strategy_families:
+        return _build_file_reader_plan_fallback
+    if any(item in {"locate_modify_verify", "clarify_then_modify"} for item in strategy_families):
+        return _build_change_plan_fallback
+    return {
+        "repository_explainer": _build_repository_plan_fallback,
+        "file_reader": _build_file_reader_plan_fallback,
+        "change_and_verify": _build_change_plan_fallback,
+    }.get(str(getattr(intent, "task_kind", "") or ""))
+
+
+def _build_repository_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
+    if "inspect_workspace_path" not in tool_names:
+        return None
+    target = intent.target_ref or intent.target_hint or _extract_repository_target(task.goal)
+    locate_step = CodexPlanTask(
+        title="Locate repository target",
+        kind="locate_target",
+        metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
+    )
+    gather_step = CodexPlanTask(
+        title="Gather repository context",
+        kind="gather_context",
+        depends_on=[locate_step.task_id],
+        metadata={"path": target, "use_default_directory": not target, "use_resolved_target": True},
+    )
+    tasks = [locate_step, gather_step, CodexPlanTask(title="Synthesize repository overview", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target})]
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
+
+
+def _build_file_reader_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
+    if "resolve_workspace_target" not in tool_names:
+        return None
+    target = intent.target_ref or intent.target_hint or _extract_repository_target(task.goal)
+    preferred_read_tool = "read_workspace_excerpt" if _goal_prefers_summary(task.goal) and "read_workspace_excerpt" in tool_names else "read_workspace_text"
+    locate_step = CodexPlanTask(title="Locate file target", kind="locate_target", metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target})
+    gather_step = CodexPlanTask(title="Gather file contents", kind="gather_context", depends_on=[locate_step.task_id], metadata={"path": target, "use_default_directory": not target, "use_resolved_target": True, "preferred_read_tool": preferred_read_tool})
+    tasks = [locate_step, gather_step, CodexPlanTask(title="Synthesize file summary", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target})]
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
+
+
+def _build_change_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
+    locate_step = CodexPlanTask(title="Locate change target", kind="locate_target", metadata={"target_hint": _extract_change_target(task.goal), "query": task.goal})
+    edit_step = _build_change_edit_task(task.goal, tool_names)
+    verify_step = _build_change_verify_task(task.goal, tool_names)
+    if edit_step is None:
+        return None
+    edit_step.depends_on = [locate_step.task_id]
+    edit_step.metadata["use_resolved_target"] = str(edit_step.metadata.get("tool_name") or "") != "create_workspace_path"
+    tasks = [locate_step, edit_step]
+    if verify_step is not None:
+        verify_step.depends_on = [edit_step.task_id]
+        tasks.append(verify_step)
+    tasks.append(CodexPlanTask(title="Synthesize change summary", kind="synthesize_answer", depends_on=[tasks[-1].task_id]))
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
 
 
 def _build_task_plan_with_llm(task: CodexTask, context: Any, *, tool_names: set[str], intent: Any) -> CodexPlan | None:
@@ -806,13 +765,7 @@ def _target_semantics_from_tool_output(tool_output: dict[str, Any]) -> TargetSem
 
 
 def _build_synthesized_answer(task: CodexTask) -> str:
-    if task.task_profile == "repository_explainer":
-        return _build_repository_overview(task)
-    if task.task_profile == "file_reader":
-        return _build_file_reader_summary(task)
-    if task.task_profile == "change_and_verify":
-        return _build_change_summary(task)
-    return next((action.observation or "" for action in reversed(task.actions) if action.observation), task.goal)
+    return synthesize_answer(task)
 
 
 def _build_repository_overview(task: CodexTask) -> str:

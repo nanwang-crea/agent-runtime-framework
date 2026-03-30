@@ -23,6 +23,7 @@ from agent_runtime_framework.agents.codex.prompting import build_codex_system_pr
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context
 from agent_runtime_framework.agents.codex.semantics import infer_task_intent
+from agent_runtime_framework.agents.codex.state import build_initial_task_state
 from agent_runtime_framework.agents.codex.workflows import WorkflowRegistry
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.agents.codex.task_plans import (
@@ -107,6 +108,35 @@ def _benchmark_context(workspace: Path, *, llm_contents: list[str] | None = None
     return context, llm
 
 
+def _task(
+    goal: str,
+    *,
+    workspace: Path | None = None,
+    actions: list[CodexAction] | None = None,
+    task_profile: str | None = None,
+    plan: CodexPlan | None = None,
+    verification: VerificationResult | None = None,
+    memory: CodexTaskMemory | None = None,
+    runtime_persona: str = "",
+) -> CodexTask:
+    intent = infer_task_intent(goal, workspace)
+    if task_profile is not None:
+        intent.task_kind = task_profile
+    task = CodexTask(
+        goal=goal,
+        actions=list(actions or []),
+        task_profile=intent.task_kind,
+        intent=intent,
+        state=build_initial_task_state(intent),
+        plan=plan,
+        verification=verification,
+        runtime_persona=runtime_persona,
+    )
+    if memory is not None:
+        task.memory = memory
+    return task
+
+
 def _score_workspace_question(result, *, expected_profile: str, expected_refs: list[str], expected_tokens: list[str]) -> int:
     score = 0
     if result.status == "completed":
@@ -132,7 +162,7 @@ def test_codex_models_track_defaults_and_verification(tmp_path: Path):
 
     action = CodexAction(kind="run_command", instruction="pytest")
     verification = VerificationResult(success=True, summary="ok", evidence=["pytest passed"])
-    task = CodexTask(goal="Run tests", actions=[action], verification=verification)
+    task = _task("Run tests", actions=[action], verification=verification)
     result = CodexActionResult(
         status="completed",
         final_output="done",
@@ -166,9 +196,25 @@ def test_classify_task_profile_uses_semantic_fallback_without_model(tmp_path: Pa
     assert profile == "repository_explainer"
 
 
+def test_codex_task_carries_unified_intent_and_state(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("帮我读取 README.md 并讲一下在讲什么")
+
+    assert result.task.intent.task_kind in {"file_reader", "repository_explainer"}
+    assert result.task.state.task_intent.task_kind == result.task.intent.task_kind
+    assert result.task.state.answer_mode in {"content_explanation", "summary", "repository_overview", "file_explanation"}
+    assert isinstance(result.task.state.evidence_items, list)
+
+
 def test_codex_models_support_task_level_plan_defaults():
     plan = CodexPlan(tasks=[CodexPlanTask(title="List target", kind="list_target")])
-    task = CodexTask(goal="Explain pkg", actions=[], task_profile="repository_explainer", plan=plan)
+    task = _task("Explain pkg", actions=[], task_profile="repository_explainer", plan=plan)
 
     assert task.plan is plan
     assert task.plan.tasks[0].status == "pending"
@@ -224,7 +270,7 @@ def test_run_context_builder_collects_workspace_memory_and_plan_state(tmp_path: 
     context.application_context.services["loaded_instructions"] = ["user:~/.config/agent/instructions.md"]
     context.application_context.session_memory.remember_focus([ResourceRef.for_path(file_path)], summary="note summary")
     context.application_context.index_memory.put("loaded_instructions", ["memory:MEMORY.md"])
-    task = CodexTask(
+    task = _task(
         goal="读取 note.md",
         actions=[CodexAction(kind="call_tool", instruction="read note", status="completed", observation="note content")],
         task_profile="file_reader",
@@ -328,7 +374,7 @@ def test_run_context_builder_discovers_path_local_instructions(tmp_path: Path):
     (workspace / "AGENTS.md").write_text("root rules", encoding="utf-8")
     (docs / "AGENTS.md").write_text("docs rules", encoding="utf-8")
     context = _context(workspace)
-    task = CodexTask(
+    task = _task(
         goal="读取 docs/note.md",
         actions=[
             CodexAction(
@@ -556,7 +602,7 @@ def test_codex_loop_inserts_recovery_task_after_retriable_error_exhausts_retries
         metadata={"workspace_root": str(workspace)},
     )
 
-    context.services["action_planner"] = lambda user_input, _session, _ctx: CodexTask(
+    context.services["action_planner"] = lambda user_input, _session, _ctx: _task(
         goal=user_input,
         actions=[],
         task_profile="repository_explainer",
@@ -921,7 +967,7 @@ def test_codex_output_evaluator_marks_fallback_source_when_model_is_unavailable(
 
 
 def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
-    task = CodexTask(
+    task = _task(
         goal="总结 note.md",
         actions=[
             CodexAction(
@@ -941,7 +987,7 @@ def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
 
 
 def test_codex_output_evaluator_blocks_finish_when_verification_is_pending():
-    task = CodexTask(
+    task = _task(
         goal="检查修改是否生效",
         actions=[
             CodexAction(
@@ -1341,7 +1387,7 @@ def test_codex_llm_planner_injects_resource_semantics_and_follow_up_context(tmp_
     context.application_context.llm_client = llm
     context.application_context.llm_model = "test-model"
 
-    task = CodexTask(
+    task = _task(
         goal="继续总结刚才那个文件",
         actions=[
             CodexAction(
@@ -1732,7 +1778,7 @@ def test_evidence_sufficiency_uses_resource_semantics_instead_of_tool_name(tmp_p
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
-    task = CodexTask(
+    task = _task(
         goal="请讲解 pkg 这个 package 的结构",
         actions=[
             CodexAction(
@@ -1775,7 +1821,7 @@ def test_file_reader_evidence_sufficiency_requests_file_content_when_only_target
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
-    task = CodexTask(
+    task = _task(
         goal="总结 README.md 主要内容",
         actions=[
             CodexAction(
@@ -2035,7 +2081,7 @@ def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: P
         context.application_context.tools.register(tool)
     context.services["output_evaluator"] = evaluate_codex_output
 
-    task = CodexTask(goal="请讲解 pkg 这个 package 的结构", actions=[], task_profile="repository_explainer")
+    task = _task(goal="请讲解 pkg 这个 package 的结构", actions=[], task_profile="repository_explainer")
     task.plan = build_task_plan(task, context)
 
     assert task.plan is not None
@@ -2130,7 +2176,7 @@ def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path
     for tool in build_default_codex_tools():
         context.application_context.tools.register(tool)
 
-    task = CodexTask(goal="解释 README.md 在讲什么", actions=[], task_profile="repository_explainer")
+    task = _task(goal="解释 README.md 在讲什么", actions=[], task_profile="repository_explainer")
     task.plan = build_task_plan(task, context)
     assert task.plan is not None
 
@@ -2499,7 +2545,6 @@ def test_current_working_directory_phrase_routes_to_workspace_root(tmp_path: Pat
     assert "目录结构" in result.final_output or "entries" in result.final_output
 
 
-@pytest.mark.xfail(reason="当前对无明确 target 的根目录列举仍偏保守，容易要求澄清而不是默认落到 workspace 根目录。", strict=False)
 def test_intelligence_assessment_directory_listing_without_explicit_target_prefers_workspace_root(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2518,7 +2563,6 @@ def test_intelligence_assessment_directory_listing_without_explicit_target_prefe
     assert "docs" in result.final_output
 
 
-@pytest.mark.xfail(reason="当前对“列目录并总结/项目摘要”这类根目录概览请求仍偏保守，缺少默认 workspace 级语义。", strict=False)
 def test_intelligence_assessment_directory_listing_and_summary_uses_structure_then_representative_files(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2541,7 +2585,6 @@ def test_intelligence_assessment_directory_listing_and_summary_uses_structure_th
     assert "service.py" in result.final_output
 
 
-@pytest.mark.xfail(reason="当前“项目摘要”仍没有稳定映射为当前 workspace 的 repo overview 任务。", strict=False)
 def test_intelligence_assessment_project_summary_defaults_to_workspace_overview(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2564,7 +2607,6 @@ def test_intelligence_assessment_project_summary_defaults_to_workspace_overview(
     assert "pyproject.toml" in result.final_output or "agent_runtime_framework" in result.final_output
 
 
-@pytest.mark.xfail(reason="读取并讲解具体文件时，当前 profile 仍可能落到 repository_explainer，而不是更稳定的 file_reader。", strict=False)
 def test_intelligence_assessment_file_read_and_explanation_prefers_file_reader(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2581,6 +2623,27 @@ def test_intelligence_assessment_file_read_and_explanation_prefers_file_reader(t
     assert result.task.task_profile == "file_reader"
     assert _tool_trace(result)[:2] == ["resolve_workspace_target", "read_workspace_text"]
     assert "agent workflows" in result.final_output
+
+
+def test_create_file_waits_for_approval_before_writing_and_reject_keeps_workspace_clean(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    context = _attach_test_next_action_planner(_context(workspace))
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    loop = CodexAgentLoop(context)
+    pending = loop.run("创建 draft.txt 内容 hello world")
+
+    assert pending.status == "needs_approval"
+    assert pending.action_kind == "create_path"
+    assert not target.exists()
+
+    cancelled = loop.resume(pending.resume_token, approved=False)
+
+    assert cancelled.status == "cancelled"
+    assert not target.exists()
 
 
 def test_change_and_verify_profile_creates_task_level_plan(tmp_path: Path):
@@ -2692,7 +2755,7 @@ def test_change_task_completes_with_final_respond_summary(tmp_path: Path):
 def test_evaluator_requests_final_summary_for_change_task_without_respond(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    task = CodexTask(
+    task = _task(
         goal="编辑 draft.txt 内容 new text",
         actions=[
             CodexAction(
@@ -2791,6 +2854,74 @@ def test_codex_loop_retries_planner_once_after_invalid_json(tmp_path: Path):
     assert result.status == "completed"
     assert result.final_output == "hello"
     assert len(llm.completions.calls) == 2
+
+
+def test_codex_loop_allows_shell_touch_inside_workspace_when_model_explicitly_chooses_it(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"kind":"call_tool","tool_name":"run_shell_command","arguments":{"command":"touch 测试123.txt"}}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+    loop = CodexAgentLoop(context)
+
+    pending = loop.run("文件的名字可以就叫测试123.txt")
+
+    assert pending.status == "needs_approval"
+    assert pending.action_kind == "call_tool"
+    assert pending.task.actions[0].metadata["tool_name"] == "run_shell_command"
+    result = loop.resume(pending.resume_token, approved=True)
+    assert result.status == "completed"
+    assert (workspace / "测试123.txt").exists()
+
+
+def test_codex_loop_rejects_shell_tool_without_command_before_execution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"kind":"call_tool","tool_name":"run_shell_command","arguments":{}}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("run something")
+
+    assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
+    assert "run_shell_command action is missing command" in exc_info.value.detail
+
+
+def test_run_shell_command_blocks_workspace_mutation_outside_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "run_shell_command", "arguments": {"command": f"touch {outside}"}},
+        )
+    ]
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("touch outside file")
+
+    assert exc_info.value.code == "SANDBOX_DENIED"
+    assert "outside workspace" in exc_info.value.detail
 
 
 def test_codex_loop_requests_clarification_for_ambiguous_create_file_goal(tmp_path: Path):

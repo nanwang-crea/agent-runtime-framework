@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
 from pathlib import Path
 import json
 import re
 
+from agent_runtime_framework.agents.codex.models import TaskIntent
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
@@ -124,24 +124,6 @@ _FILE_EXTENSIONS = {
     ".sh",
 }
 
-
-@dataclass(slots=True)
-class TaskIntent:
-    task_kind: str = "chat"
-    user_intent: str = "general_chat"
-    target_hint: str = ""
-    target_type: str = "unknown"
-    expected_output: str = "direct_answer"
-    needs_grounding: bool = False
-    suggested_tool_chain: list[str] | None = None
-    confidence: float = 0.35
-
-    def as_dict(self) -> dict[str, object]:
-        payload = asdict(self)
-        payload["suggested_tool_chain"] = list(self.suggested_tool_chain or [])
-        return payload
-
-
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
 
 
@@ -172,10 +154,16 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
         return TaskIntent(
             task_kind="debug_and_fix",
             user_intent="debug_failure",
+            goal_mode="debug",
+            scope_kind=_scope_kind_for_target(target_type, target_hint),
+            target_ref=target_hint,
             target_hint=target_hint,
             target_type=target_type,
+            target_confidence=0.72 if target_hint else 0.35,
             expected_output="fix_and_explanation",
             needs_grounding=True,
+            needs_clarification=not bool(target_hint) and target_type == "unknown",
+            allowed_strategy_family=["debug", "repair", "verification"],
             suggested_tool_chain=["resolve_workspace_target", "read_workspace_text", "run_shell_command"],
             confidence=0.82,
         )
@@ -183,10 +171,16 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
         return TaskIntent(
             task_kind="change_and_verify",
             user_intent="modify_workspace",
+            goal_mode="modify",
+            scope_kind=_scope_kind_for_target(target_type, target_hint),
+            target_ref=target_hint,
             target_hint=target_hint,
             target_type=target_type,
+            target_confidence=0.72 if target_hint else 0.28,
             expected_output="change_summary",
             needs_grounding=True,
+            needs_clarification=not bool(target_hint),
+            allowed_strategy_family=["locate_modify_verify", "clarify_then_modify"],
             suggested_tool_chain=["resolve_workspace_target", "read_workspace_text", "apply_text_patch", "run_tests"],
             confidence=0.8,
         )
@@ -194,22 +188,37 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
         return TaskIntent(
             task_kind="test_and_verify",
             user_intent="run_verification",
+            goal_mode="verify",
+            scope_kind="workspace_root" if target_hint == "." else _scope_kind_for_target(target_type, target_hint),
+            target_ref=target_hint,
             target_hint=target_hint,
             target_type=target_type,
+            target_confidence=0.6 if target_hint else 0.25,
             expected_output="verification_report",
             needs_grounding=True,
+            needs_clarification=False,
+            allowed_strategy_family=["verification_only"],
             suggested_tool_chain=["run_tests"],
             confidence=0.78,
         )
 
     if _looks_like_repository_request(normalized, target_hint, target_type):
+        workspace_target = target_hint or ("." if _refers_to_current_workspace(text) or not target_hint else "")
+        scope_kind = "workspace_root" if workspace_target == "." else _scope_kind_for_target(target_type, workspace_target)
+        goal_mode = "workspace_listing" if _looks_like_listing_request(normalized) and not _contains_any(normalized, _SUMMARY_MARKERS) else "workspace_overview"
         return TaskIntent(
             task_kind="repository_explainer",
             user_intent="explain_directory",
-            target_hint=target_hint,
+            goal_mode=goal_mode,
+            scope_kind=scope_kind or "directory",
+            target_ref=workspace_target,
+            target_hint=workspace_target,
             target_type="directory" if target_type == "unknown" else target_type,
-            expected_output="repository_overview",
+            target_confidence=0.9 if workspace_target else 0.55,
+            expected_output=goal_mode,
             needs_grounding=True,
+            needs_clarification=False if workspace_target == "." else not bool(workspace_target),
+            allowed_strategy_family=["workspace_overview", "repository_overview"],
             suggested_tool_chain=[
                 "resolve_workspace_target",
                 "inspect_workspace_path",
@@ -217,7 +226,7 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
                 "extract_workspace_outline",
                 "respond",
             ],
-            confidence=0.88 if target_hint or _contains_any(normalized, _DIRECTORY_MARKERS) else 0.74,
+            confidence=0.9 if workspace_target else 0.74,
         )
 
     if _looks_like_file_request(normalized, target_hint, target_type):
@@ -225,10 +234,16 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
         return TaskIntent(
             task_kind="file_reader",
             user_intent="summarize_file" if preferred == "summarize_workspace_text" else "read_file",
+            goal_mode="file_summary" if preferred == "summarize_workspace_text" else "file_explanation",
+            scope_kind="file",
+            target_ref=target_hint,
             target_hint=target_hint,
             target_type="file" if target_type == "unknown" else target_type,
+            target_confidence=0.85 if target_hint else 0.4,
             expected_output="summary" if preferred == "summarize_workspace_text" else "content_explanation",
             needs_grounding=True,
+            needs_clarification=not bool(target_hint),
+            allowed_strategy_family=["file_reader"],
             suggested_tool_chain=["resolve_workspace_target", preferred, "respond"],
             confidence=0.86 if target_hint else 0.68,
         )
@@ -236,10 +251,16 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
     return TaskIntent(
         task_kind="chat",
         user_intent="general_chat",
+        goal_mode="direct_answer",
+        scope_kind="unknown",
+        target_ref=target_hint,
         target_hint=target_hint,
         target_type=target_type,
+        target_confidence=0.0,
         expected_output="direct_answer",
         needs_grounding=False,
+        needs_clarification=False,
+        allowed_strategy_family=["direct_answer"],
         suggested_tool_chain=["respond"],
         confidence=0.4,
     )
@@ -301,10 +322,16 @@ def _infer_task_intent_with_model(
     return TaskIntent(
         task_kind=task_kind,
         user_intent=str(parsed.get("user_intent") or "general_chat").strip() or "general_chat",
+        goal_mode=str(parsed.get("goal_mode") or parsed.get("expected_output") or "direct_answer").strip() or "direct_answer",
+        scope_kind=str(parsed.get("scope_kind") or "unknown").strip() or "unknown",
+        target_ref=str(parsed.get("target_ref") or parsed.get("target_hint") or "").strip(),
         target_hint=str(parsed.get("target_hint") or "").strip(),
         target_type=str(parsed.get("target_type") or "unknown").strip() or "unknown",
+        target_confidence=float(parsed.get("target_confidence") or parsed.get("confidence") or 0.0),
         expected_output=str(parsed.get("expected_output") or "direct_answer").strip() or "direct_answer",
+        needs_clarification=bool(parsed.get("needs_clarification")),
         needs_grounding=bool(parsed.get("needs_grounding")),
+        allowed_strategy_family=[str(item).strip() for item in parsed.get("allowed_strategy_family") or [] if str(item).strip()],
         suggested_tool_chain=[str(item).strip() for item in parsed.get("suggested_tool_chain") or [] if str(item).strip()],
         confidence=float(parsed.get("confidence") or 0.0),
     )
@@ -341,6 +368,8 @@ def build_task_intent_block(goal: str, workspace_root: Path | None = None) -> st
 def _looks_like_repository_request(normalized: str, target_hint: str, target_type: str) -> bool:
     if target_type == "directory":
         return True
+    if _refers_to_current_workspace(normalized):
+        return True
     if _contains_any(normalized, _DIRECTORY_MARKERS) and _contains_any(normalized, _DIRECTORY_EXPLANATION_MARKERS):
         return True
     if target_hint and target_type == "unknown" and _contains_any(normalized, _DIRECTORY_EXPLANATION_MARKERS):
@@ -358,6 +387,26 @@ def _looks_like_file_request(normalized: str, target_hint: str, target_type: str
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
+
+
+def _scope_kind_for_target(target_type: str, target_hint: str) -> str:
+    if target_hint == ".":
+        return "workspace_root"
+    if target_type == "directory":
+        return "directory"
+    if target_type == "file":
+        return "file"
+    return "unknown"
+
+
+def _looks_like_listing_request(normalized: str) -> bool:
+    if _contains_any(normalized, _DIRECTORY_EXPLANATION_MARKERS) or _contains_any(normalized, _SUMMARY_MARKERS):
+        return False
+    return any(marker in normalized for marker in ("列", "list", "有哪些", "都有哪些"))
+
+
+def _refers_to_current_workspace(text: str) -> bool:
+    return any(marker in text for marker in _CURRENT_WORKSPACE_MARKERS)
 
 
 def _extract_target_hint(text: str, workspace_root: Path | None) -> str:

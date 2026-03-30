@@ -70,24 +70,21 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
 
 
 def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None:
-    profile = str(getattr(task, "task_profile", "chat") or "chat")
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
-    intent = infer_task_intent(goal, _workspace_root(context), context=context, session=context.session)
-    logger.info("intent: %s", intent)
-    target_hint = intent.target_hint
-    if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
+    intent = getattr(task, "intent", None) or infer_task_intent(goal, _workspace_root(context), context=context, session=context.session)
+    if _intent_prefers_target_resolution(intent) and "resolve_workspace_target" in tool_names:
         return CodexAction(
             kind="call_tool",
             instruction=goal,
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "resolve_workspace_target",
-                "arguments": {"query": goal, "target_hint": target_hint},
+                "arguments": {"query": goal, "target_hint": intent.target_hint},
             },
         )
-    if profile == "change_and_verify":
+    if _intent_prefers_change_execution(intent):
         return _plan_change_action_from_goal(goal, intent=intent)
     return None
 
@@ -387,6 +384,14 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         metadata["tool_name"] = "move_workspace_path"
     if kind == "delete_path" and not metadata["tool_name"]:
         metadata["tool_name"] = "delete_workspace_path"
+    if kind == "call_tool" and metadata["tool_name"] in {
+        "apply_text_patch",
+        "create_workspace_path",
+        "edit_workspace_text",
+        "move_workspace_path",
+        "delete_workspace_path",
+    }:
+        kind = _action_kind_for_tool_name(metadata["tool_name"])
     if kind == "run_verification" and not instruction:
         instruction = str(metadata["arguments"].get("command") or "")
     if tool_names is not None and metadata["tool_name"] and metadata["tool_name"] not in tool_names:
@@ -401,6 +406,8 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         risk_class = "destructive"
     elif tool_name in {"apply_text_patch", "move_workspace_path", "create_workspace_path", "edit_workspace_text"}:
         risk_class = "high"
+    elif tool_name == "run_shell_command":
+        risk_class = _risk_class_for_shell_command(str(metadata["arguments"].get("command") or ""), fallback=risk_class)
     subgoal = "execute_step"
     if kind == "respond":
         subgoal = "synthesize_answer"
@@ -423,6 +430,33 @@ def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None
         risk_class=risk_class,
         metadata=metadata,
     )
+
+
+def _action_kind_for_tool_name(tool_name: str) -> str:
+    return {
+        "apply_text_patch": "apply_patch",
+        "create_workspace_path": "create_path",
+        "edit_workspace_text": "edit_text",
+        "move_workspace_path": "move_path",
+        "delete_workspace_path": "delete_path",
+    }.get(tool_name, "call_tool")
+
+
+def _risk_class_for_shell_command(command: str, *, fallback: str = "low") -> str:
+    executable = str(command or "").strip().split()[0] if str(command or "").strip() else ""
+    if executable in {"rm"}:
+        return "destructive"
+    if executable in {"touch", "mkdir", "cp", "mv"}:
+        return "high"
+    return fallback
+
+
+def _intent_prefers_target_resolution(intent: Any) -> bool:
+    return str(getattr(intent, "task_kind", "") or "") in {"repository_explainer", "file_reader"} and bool(getattr(intent, "needs_grounding", False))
+
+
+def _intent_prefers_change_execution(intent: Any) -> bool:
+    return str(getattr(intent, "task_kind", "") or "") == "change_and_verify"
 
 
 def _invalid_action_reason(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> str | None:
@@ -448,6 +482,8 @@ def _invalid_action_reason(parsed: dict[str, Any], *, tool_names: set[str] | Non
         return "respond action is missing instruction"
     if kind == "run_verification" and not instruction and not str(arguments.get("command") or "").strip():
         return "run_verification action is missing command"
+    if kind == "call_tool" and tool_name == "run_shell_command" and not str(arguments.get("command") or "").strip():
+        return "run_shell_command action is missing command"
     if bool(parsed.get("clarification_required")) and kind != "respond":
         return "clarification_required is only valid for respond actions"
     return None

@@ -15,14 +15,18 @@ from agent_runtime_framework.agents.codex.models import (
     CodexActionResult,
     CodexEvaluationDecision,
     CodexTask,
+    TaskIntent,
     VerificationResult,
 )
+from agent_runtime_framework.agents.codex.evidence_manager import record_action_evidence
 from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
+from agent_runtime_framework.agents.codex.state import build_initial_task_state, sync_task_state_from_memory
 from agent_runtime_framework.agents.codex.task_plans import (
     advance_task_plan,
     attach_action_to_plan,
@@ -99,7 +103,7 @@ class CodexAgentLoop:
     def resume(self, token: ResumeToken, *, approved: bool) -> CodexAgentLoopResult:
         pending = self._pending_approvals.pop(token.token_id, None)
         if pending is None or not approved:
-            task = pending.task if pending is not None else CodexTask(goal="", actions=[])
+            task = pending.task if pending is not None else self._new_task("", session=self._require_session())
             return CodexAgentLoopResult(
                 status="cancelled",
                 final_output="approval was rejected or expired",
@@ -128,35 +132,54 @@ class CodexAgentLoop:
         self.context.application_context.services["tool_runtime"] = runtime
         return runtime
 
+    def _workspace_root(self) -> Path | None:
+        root_value = self.context.application_context.config.get("default_directory")
+        return Path(str(root_value)) if root_value else None
+
+    def _new_task(self, goal: str, *, session: AssistantSession) -> CodexTask:
+        intent = infer_task_intent(goal, self._workspace_root(), context=self.context, session=session)
+        task = CodexTask(goal=goal, actions=[], task_profile=intent.task_kind, intent=intent, state=build_initial_task_state(intent))
+        sync_task_state_from_memory(task)
+        return task
+
     def _build_task(self, user_input: str, session: AssistantSession) -> CodexTask:
         pending = self._pending_clarifications.pop(session.session_id, None)
         if pending is None:
             pending = self._restore_persisted_pending_clarification()
         if pending is not None:
             self._clear_persisted_pending_clarification()
+            merged_goal = _merge_clarification_goal(pending.goal, user_input)
+            intent = infer_task_intent(merged_goal, self._workspace_root(), context=self.context, session=session)
             task = CodexTask(
-                goal=_merge_clarification_goal(pending.goal, user_input),
+                goal=merged_goal,
                 actions=[],
-                task_profile=pending.task_profile,
+                task_profile=intent.task_kind or pending.task_profile,
+                intent=intent,
+                state=build_initial_task_state(intent),
                 runtime_persona=str(getattr(pending, "runtime_persona", "") or ""),
             )
             task.memory = pending.memory
             task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=task.goal).name
             session.active_persona = task.runtime_persona
             task.plan = build_task_plan(task, self.context)
+            sync_task_state_from_memory(task)
             return task
-        task_profile = classify_task_profile(user_input, self.context, session=session)
+        intent = infer_task_intent(user_input, self._workspace_root(), context=self.context, session=session)
+        task_profile = intent.task_kind or classify_task_profile(user_input, self.context, session=session)
         planner = self.context.services.get("action_planner")
         if callable(planner):
             planned = planner(user_input, session, self.context)
             if isinstance(planned, CodexTask):
                 planned.task_profile = task_profile
+                planned.intent = intent
+                planned.state = build_initial_task_state(intent)
                 planned.runtime_persona = resolve_runtime_persona(self.context, task=planned, user_input=user_input).name
                 session.active_persona = planned.runtime_persona
                 for action in planned.actions:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
                         action.metadata["direct_output"] = True
+                sync_task_state_from_memory(planned)
                 return planned
             if isinstance(planned, list):
                 actions = [self._normalize_action(item) for item in planned]
@@ -164,14 +187,17 @@ class CodexAgentLoop:
                     self._ensure_action_subgoal(action)
                     if action.kind == "respond" and "direct_output" not in action.metadata:
                         action.metadata["direct_output"] = True
-                task = CodexTask(goal=user_input, actions=actions, task_profile=task_profile)
+                task = CodexTask(goal=user_input, actions=actions, task_profile=task_profile, intent=intent, state=build_initial_task_state(intent))
                 task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=user_input).name
                 session.active_persona = task.runtime_persona
+                sync_task_state_from_memory(task)
                 return task
-        task = CodexTask(goal=user_input, actions=[], task_profile=task_profile)
+        task = self._new_task(user_input, session=session)
+        task.task_profile = task_profile
         task.runtime_persona = resolve_runtime_persona(self.context, task=task, user_input=user_input).name
         session.active_persona = task.runtime_persona
         task.plan = build_task_plan(task, self.context)
+        sync_task_state_from_memory(task)
         return task
 
     def _normalize_action(self, action: Any) -> CodexAction:
@@ -292,8 +318,10 @@ class CodexAgentLoop:
             action.observation = result.final_output
             action.metadata["result"] = dict(result.metadata)
             update_task_memory(task, action, result)
+            record_action_evidence(task, action, result)
             advance_task_plan(task, action, result, self.context)
             sync_task_plan(task)
+            sync_task_state_from_memory(task)
             verification_payload = dict(result.metadata.get("verification") or {})
             if verification_payload:
                 action.metadata["verification_result"] = VerificationResult(

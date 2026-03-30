@@ -12,16 +12,20 @@ from agent_runtime_framework.core.errors import AppError
 
 _DEFAULT_ALLOWED_COMMANDS = (
     "cat",
+    "cp",
     "echo",
     "git",
     "ls",
     "make",
+    "mkdir",
+    "mv",
     "node",
     "npm",
     "pwd",
     "python",
     "python3",
     "pytest",
+    "touch",
 )
 
 _READ_ONLY_COMMANDS = (
@@ -45,6 +49,7 @@ _NETWORK_BLOCKED_COMMANDS = (
 )
 
 _SHELL_META_PATTERN = re.compile(r"[|&;><`]")
+_WORKSPACE_MUTATION_COMMANDS = {"touch", "mkdir", "cp", "mv"}
 
 
 @dataclass(slots=True)
@@ -198,3 +203,33 @@ def _assert_command_allowed(argv: list[str], sandbox: SandboxConfig) -> None:
             retriable=False,
             suggestion="请切换到 `workspace_write` 模式后再执行该命令。",
         )
+    if executable in _WORKSPACE_MUTATION_COMMANDS:
+        _assert_workspace_operands_allowed(argv, sandbox)
+
+
+def _assert_workspace_operands_allowed(argv: list[str], sandbox: SandboxConfig) -> None:
+    workspace_root = sandbox.normalized_workspace_root()
+    operands = [item for item in argv[1:] if item and not item.startswith("-")]
+    if not operands:
+        raise AppError(
+            code="SANDBOX_INVALID_COMMAND",
+            message="当前文件命令缺少路径参数。",
+            detail=f"missing operands for command: {argv[0]}",
+            stage="sandbox",
+            retriable=True,
+            suggestion="请提供 workspace 内的目标路径。",
+        )
+    for operand in operands:
+        candidate = Path(operand).expanduser()
+        target = (workspace_root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        try:
+            target.relative_to(workspace_root)
+        except ValueError as exc:
+            raise AppError(
+                code="SANDBOX_DENIED",
+                message="当前 shell 文件命令只能操作工作区内路径。",
+                detail=f"path outside workspace: {operand}",
+                stage="sandbox",
+                retriable=False,
+                suggestion="请改用工作区内的相对路径，或切换到专用 workspace tool。",
+            ) from exc

@@ -187,6 +187,17 @@
 19. 将 Markdown 记录化记忆从 demo 初始化推广到了更通用的 `ApplicationContext` 默认入口，只要存在工作区根目录就会默认落到 `.arf/memory.md`。
 20. 将 `clarify_target` 从一次性文本回复升级为可恢复的 clarification loop；当任务进入目标澄清状态时，下一轮输入会优先续跑原任务，而不是新起一个无上下文的任务。
 21. 为 clarification loop 增加了跨重启恢复能力：待澄清任务状态会持久化到工作区侧的 runtime state 中，应用重启后仍能继续原任务，而不是退化成普通聊天。
+22. 已落地统一 `TaskIntent / TaskState / EvidenceManager / AnswerSynthesizer`，主循环不再只围绕 `task_profile + memory` 运转，而是开始围绕统一中层状态对象推进。
+23. 已完成 workspace-level `listing / overview / project_summary / file_explanation` 的第一版语义化，`帮我列一下文件目录 / 帮我生成一下该项目的摘要` 这类请求不再默认掉进澄清。
+24. 已将 shell 策略从“写死禁止 workspace 修改命令”调整为“优先专用 workspace tool，但允许受 sandbox 约束的 workspace 内文件命令”，例如 `touch / mkdir / cp / mv`。
+25. 已补上 planner 对非 JSON 厂商输出的容错与重试，以及对 `run_shell_command` 缺少 `command` 的前置校验，避免错误流到执行期。
+
+## 当前还没做完的部分
+
+1. `task_plans.py` 还没有完全瘦成“纯 plan data structure + 状态推进”；目前仍保留 fallback builder。
+2. `evaluator.py` 还没有完全退化成纯 evidence sufficiency 判断器，仍有少量流程补洞逻辑。
+3. shell 支持仍是保守版，目前放开的只是受路径约束的 workspace 文件命令；更丰富的 shell 任务族策略还没建立。
+4. approval 体验仍偏基础，目前已经能正确阻塞与恢复，但变更预览还不够产品化。
 
 下一步优先做：
 1. 把可检索记忆继续扩展到用户偏好、任务约束和稳定规则，而不只存工作区知识。
