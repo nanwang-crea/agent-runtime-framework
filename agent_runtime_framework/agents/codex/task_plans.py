@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
-from agent_runtime_framework.agents.codex.answer_synthesizer import synthesize_answer
+from agent_runtime_framework.agents.codex.answer_synthesizer import build_synthesized_response_action, synthesize_answer
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, extract_task_resource_semantics, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import available_tool_names
@@ -122,7 +122,10 @@ def _build_change_plan_fallback(task: CodexTask, *, tool_names: set[str], worksp
 
 
 def _build_task_plan_with_llm(task: CodexTask, context: Any, *, tool_names: set[str], intent: Any) -> CodexPlan | None:
-    if not bool(context.services.get("model_first_task_plan")):
+    enabled = context.services.get("model_first_task_plan")
+    if enabled is False:
+        return None
+    if enabled is not True and str(getattr(task, "task_profile", "") or "") not in {"repository_explainer", "file_reader"}:
         return None
     runtime = resolve_model_runtime(context.application_context, "planner")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
@@ -472,12 +475,10 @@ def plan_next_task_action(task: CodexTask) -> CodexAction | None:
             },
         )
     if next_task.kind == "synthesize_answer":
-        return CodexAction(
-            kind="respond",
-            instruction=_build_synthesized_answer(task),
-            subgoal="synthesize_answer",
-            metadata={
-                "direct_output": True,
+        return build_synthesized_response_action(
+            task,
+            source="task_plan",
+            extra_metadata={
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },

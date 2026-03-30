@@ -18,6 +18,7 @@ from agent_runtime_framework.agents.codex.models import (
     TaskIntent,
     VerificationResult,
 )
+from agent_runtime_framework.agents.codex.answer_synthesizer import build_synthesized_response_action
 from agent_runtime_framework.agents.codex.evidence_manager import record_action_evidence
 from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
@@ -381,15 +382,7 @@ class CodexAgentLoop:
         last_action = completed[-1]
         if last_action.kind == "respond":
             return None
-        modified_paths = list(dict.fromkeys(path for path in task.memory.modified_paths if str(path).strip()))
-        last_observation = str(last_action.observation or "").strip()
-        instruction = self._build_delivery_summary(task, last_action, modified_paths, last_observation)
-        return CodexAction(
-            kind="respond",
-            instruction=instruction.strip(),
-            subgoal="synthesize_answer",
-            metadata={"direct_output": True, "from_completion_guard": True},
-        )
+        return build_synthesized_response_action(task, source="completion_guard", extra_metadata={"from_completion_guard": True})
 
     def _task_requires_user_visible_summary(self, task: CodexTask) -> bool:
         profile = str(getattr(task, "task_profile", "") or "")

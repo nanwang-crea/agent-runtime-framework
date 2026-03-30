@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_runtime_framework.agents.codex.models import CodexTask
+from agent_runtime_framework.agents.codex.models import CodexAction, CodexTask
 
 
 def synthesize_answer(task: CodexTask) -> str:
@@ -8,12 +8,24 @@ def synthesize_answer(task: CodexTask) -> str:
     if task.intent.task_kind == "repository_explainer":
         if mode in {"workspace_listing", "listing"}:
             return _append_references(_workspace_listing_answer(task), task)
-        return _append_references(_repository_overview_answer(task), task)
+        return _append_references(_repository_overview_answer(task, mode=mode), task)
     if task.intent.task_kind == "file_reader":
         return _append_references(_file_answer(task), task) if task.intent.goal_mode == "file_summary" else _file_answer(task)
     if task.intent.task_kind in {"change_and_verify", "test_and_verify"}:
         return _change_answer(task)
     return next((action.observation or "" for action in reversed(task.actions) if action.observation), task.goal)
+
+
+def build_synthesized_response_action(task: CodexTask, *, source: str, extra_metadata: dict | None = None) -> CodexAction:
+    metadata = {"direct_output": True, "answer_source": source, "uses_answer_synthesizer": True}
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    return CodexAction(
+        kind="respond",
+        instruction=synthesize_answer(task),
+        subgoal="synthesize_answer",
+        metadata=metadata,
+    )
 
 
 def _workspace_listing_answer(task: CodexTask) -> str:
@@ -26,7 +38,7 @@ def _workspace_listing_answer(task: CodexTask) -> str:
     return "目录结构：\n" + "\n".join(lines) if lines else "目录结构信息不足。"
 
 
-def _repository_overview_answer(task: CodexTask) -> str:
+def _repository_overview_answer(task: CodexTask, *, mode: str) -> str:
     lines: list[str] = []
     structure = next((item for item in task.state.evidence_items if item.source in {"inspect_workspace_path", "list_workspace_directory"}), None)
     if structure is not None:
@@ -39,8 +51,9 @@ def _repository_overview_answer(task: CodexTask) -> str:
             detail = item.summary or item.content.splitlines()[0]
             lines.append(f"- {item.path} 的作用：{detail}")
     if not lines:
-        return "项目概览信息不足。"
-    return "根据当前收集到的证据：\n" + "\n".join(lines)
+        return "项目摘要信息不足。" if mode == "project_summary" else "项目概览信息不足。"
+    heading = "项目摘要：" if mode == "project_summary" else "根据当前收集到的证据："
+    return heading + "\n" + "\n".join(lines)
 
 
 def _file_answer(task: CodexTask) -> str:

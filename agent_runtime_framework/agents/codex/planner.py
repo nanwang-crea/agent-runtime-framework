@@ -7,6 +7,8 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.agents.codex.answer_synthesizer import build_synthesized_response_action
+from agent_runtime_framework.agents.codex.evidence_manager import evidence_gap
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import (
     build_codex_system_prompt,
@@ -50,12 +52,7 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
                 metadata={"direct_output": True},
             )
         if last_action.observation and profile == "file_reader" and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path"}:
-            return CodexAction(
-                kind="respond",
-                instruction=_direct_file_reader_response(str(getattr(task, "goal", "") or ""), last_action.observation),
-                subgoal="synthesize_answer",
-                metadata={"direct_output": True},
-            )
+            return build_synthesized_response_action(task, source="planner_follow_up")
         deterministic_follow_up = _plan_follow_up_from_completed_action(task, context, last_action)
         if deterministic_follow_up is not None:
             return deterministic_follow_up
@@ -333,6 +330,8 @@ def _plan_follow_up_from_completed_action(task: Any, context: Any, last_action: 
             subgoal="gather_evidence",
             metadata={"tool_name": "extract_workspace_outline", "arguments": {"path": next_outline_path}},
         )
+    if not evidence_gap(task) and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory", "extract_workspace_outline", "rank_workspace_entries"}:
+        return build_synthesized_response_action(task, source="planner_follow_up")
     return None
 
 

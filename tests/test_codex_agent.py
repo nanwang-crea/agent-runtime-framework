@@ -271,6 +271,26 @@ def test_task_state_tracks_resolved_target_and_pending_evidence_from_recorded_ac
     assert "representative_files" in task.state.pending_actions
 
 
+def test_task_plan_uses_llm_first_by_default_when_planner_model_is_available(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM([
+        '{"tasks":[{"kind":"gather_context","title":"Gather root entries","tool_name":"list_workspace_directory","arguments":{"path":".","use_default_directory":true}}]}'
+    ])
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    task = _task("帮我列一下文件目录", workspace=workspace, task_profile="repository_explainer")
+    plan = build_task_plan(task, context)
+
+    assert plan is not None
+    assert plan.metadata.get("plan_source") == "llm"
+    assert llm.completions.calls
+
+
 def test_workspace_listing_requests_use_workspace_level_listing_mode(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1016,7 +1036,7 @@ def test_codex_output_evaluator_prefers_llm_decision_when_available(tmp_path: Pa
         )
     ]
     llm = _SequenceLLM([
-        '{"decision":"continue","kind":"respond","instruction":"这是模型判断后的总结。","direct_output":true}',
+        '{"decision":"continue","summary":"still reviewing evidence"}',
         '{"decision":"finish"}',
     ])
     context.application_context.llm_client = llm
@@ -1025,9 +1045,9 @@ def test_codex_output_evaluator_prefers_llm_decision_when_available(tmp_path: Pa
     result = CodexAgentLoop(context).run("总结 note.md 主要内容")
 
     assert result.status == "completed"
-    assert result.final_output == "这是模型判断后的总结。"
+    assert "我先基于已读取内容做一个简要说明" in result.final_output
     assert [action.kind for action in result.task.actions] == ["call_tool", "respond"]
-    assert result.task.actions[1].metadata["evaluation_source"] == "model"
+    assert result.task.actions[1].metadata["answer_source"] == "planner_follow_up"
 
 
 def test_codex_output_evaluator_marks_fallback_source_when_model_is_unavailable(tmp_path: Path):
@@ -1049,7 +1069,7 @@ def test_codex_output_evaluator_marks_fallback_source_when_model_is_unavailable(
     result = CodexAgentLoop(context).run("总结 note.md 主要内容")
 
     assert result.status == "completed"
-    assert result.task.actions[1].metadata["evaluation_source"] == "fallback"
+    assert result.task.actions[1].metadata["answer_source"] == "planner_follow_up"
 
 
 def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
@@ -2271,7 +2291,7 @@ def test_evaluator_stays_decision_focused_when_repository_evidence_is_missing(tm
 
     decision = evaluate_codex_output(task, context.session, context, ["inspect_workspace_path", "rank_workspace_entries"])
 
-    assert decision.status == "abstain"
+    assert decision.status == "continue"
     assert decision.next_action is None
 
 
@@ -2680,6 +2700,7 @@ def test_intelligence_assessment_directory_listing_without_explicit_target_prefe
     assert result.status == "completed"
     assert result.task.task_profile == "repository_explainer"
     assert _tool_trace(result)[0] == "list_workspace_directory"
+    assert result.task.actions[-1].metadata.get("uses_answer_synthesizer") is True
     assert "README.md" in result.final_output
     assert "docs" in result.final_output
 
@@ -2725,6 +2746,8 @@ def test_intelligence_assessment_project_summary_defaults_to_workspace_overview(
     assert result.task.task_profile == "repository_explainer"
     assert result.task.intent.goal_mode == "project_summary"
     assert _tool_trace(result)[:3] == ["inspect_workspace_path", "rank_workspace_entries", "list_workspace_directory"]
+    assert result.task.actions[-1].metadata.get("uses_answer_synthesizer") is True
+    assert "项目摘要：" in result.final_output
     assert "README.md" in result.final_output
     assert "pyproject.toml" in result.final_output or "agent_runtime_framework" in result.final_output
 
@@ -2869,12 +2892,13 @@ def test_change_task_completes_with_final_respond_summary(tmp_path: Path):
     assert completed_actions[-1].kind == "respond"
     assert completed_actions[-1].subgoal == "synthesize_answer"
     assert completed_actions[-1].metadata.get("direct_output") is True
+    assert completed_actions[-1].metadata.get("uses_answer_synthesizer") is True
     assert "Completed the requested update" in result.final_output
     assert "draft.txt" in result.final_output
     assert "Verification:" in result.final_output
 
 
-def test_evaluator_requests_final_summary_for_change_task_without_respond(tmp_path: Path):
+def test_evaluator_stays_decision_only_for_change_task_without_respond(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     task = _task(
@@ -2897,12 +2921,7 @@ def test_evaluator_requests_final_summary_for_change_task_without_respond(tmp_pa
     decision = evaluate_codex_output(task, context.session, context, ["run_tests", "get_git_diff"])
 
     assert decision.status == "continue"
-    assert decision.next_action is not None
-    assert decision.next_action.kind == "respond"
-    assert decision.next_action.metadata.get("evaluator_reason") == "missing_final_summary"
-    assert "Completed the requested update" in decision.next_action.instruction
-    assert "draft.txt" in decision.next_action.instruction
-    assert "Verification:" in decision.next_action.instruction
+    assert decision.next_action is None
 
 
 def test_codex_loop_surfaces_planner_runtime_missing(tmp_path: Path):
