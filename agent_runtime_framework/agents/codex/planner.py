@@ -75,6 +75,7 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
     tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
     intent = infer_task_intent(goal, _workspace_root(context), context=context, session=context.session)
+    logger.info("intent: %s", intent)
     target_hint = intent.target_hint
     if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
         return CodexAction(
@@ -168,34 +169,48 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         preferred_file_tool=preferred_file_tool,
         evidence_threshold=persona.evidence_threshold,
     )
-    try:
-        response = chat_once(
-            llm_client,
-            ChatRequest(
-                model=model_name,
-                messages=[
-                    ChatMessage(role="system", content=system_prompt),
-                    ChatMessage(role="user", content=user_prompt),
-                ],
-                temperature=0.0,
-                max_tokens=600,
-            ),
-        )
-    except Exception as exc:
-        raise AppError(
-            code="PLANNER_REQUEST_FAILED",
-            message="Planner model request failed; cannot generate the next action.",
-            detail=f"{type(exc).__name__}: {exc}",
-            stage="planner",
-            retriable=True,
-            suggestion="Check the planner model configuration, authentication, and network connectivity.",
-        ) from exc
+    retry_limit = max(0, int(context.application_context.config.get("codex_planner_retry_limit", 1) or 0))
+    last_invalid_json: AppError | None = None
+    last_normalization: AppError | None = None
+    for attempt in range(retry_limit + 1):
+        retry_suffix = ""
+        if attempt > 0:
+            retry_suffix = (
+                "\n\nRetry requirement:\n"
+                "- Output one valid planner action only.\n"
+                "- Do not include explanation text.\n"
+                "- Do not wrap the action in vendor-specific tags.\n"
+                "- Return strict JSON only."
+            )
+        try:
+            response = chat_once(
+                llm_client,
+                ChatRequest(
+                    model=model_name,
+                    messages=[
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user", content=user_prompt + retry_suffix),
+                    ],
+                    temperature=0.0,
+                    max_tokens=600,
+                ),
+            )
+        except Exception as exc:
+            if last_normalization is not None:
+                raise last_normalization
+            if last_invalid_json is not None:
+                raise last_invalid_json
+            raise AppError(
+                code="PLANNER_REQUEST_FAILED",
+                message="Planner model request failed; cannot generate the next action.",
+                detail=f"{type(exc).__name__}: {exc}",
+                stage="planner",
+                retriable=True,
+                suggestion="Check the planner model configuration, authentication, and network connectivity.",
+            ) from exc
 
-    raw_content = (response.content or "").strip()
-    try:
-        parsed = json.loads(extract_json_block(raw_content))
-    except Exception as exc:
-        repaired = _repair_planner_output_with_llm(
+        raw_content = (response.content or "").strip()
+        parsed = _parse_planner_payload(
             raw_content,
             task=task,
             context=context,
@@ -204,24 +219,24 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
             model_name=model_name,
             persona=persona,
         )
-        if repaired is None:
-            logger.warning("planner invalid json: raw=%s", raw_content[:400])
-            raise AppError(
+        if parsed is None:
+            last_invalid_json = AppError(
                 code="PLANNER_INVALID_JSON",
                 message="Planner model returned a response but it is not valid JSON.",
                 detail=raw_content[:400],
                 stage="planner",
                 retriable=True,
                 suggestion="Check the planner prompt or switch to a more reliable model.",
-            ) from exc
-        parsed = repaired
+            )
+            logger.warning("planner invalid json: raw=%s", raw_content[:400])
+            continue
 
-    invalid_reason = _invalid_action_reason(parsed, tool_names=set(tool_names))
-    planned = None if invalid_reason else _normalize_llm_action(parsed, tool_names=set(tool_names))
-    if planned is None:
+        invalid_reason = _invalid_action_reason(parsed, tool_names=set(tool_names))
+        planned = None if invalid_reason else _normalize_llm_action(parsed, tool_names=set(tool_names))
+        if planned is not None:
+            return planned
         detail = f"reason={invalid_reason or 'unknown'}; parsed={json.dumps(parsed, ensure_ascii=False)[:400]}"
-        logger.warning("planner normalization failed: %s", detail)
-        raise AppError(
+        last_normalization = AppError(
             code="PLANNER_NORMALIZATION_FAILED",
             message="Planner model returned JSON but the content does not satisfy the action constraints.",
             detail=detail,
@@ -229,7 +244,12 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
             retriable=True,
             suggestion="Check that tool_name, kind, and arguments satisfy the constraints.",
         )
-    return planned
+        logger.warning("planner normalization failed: %s", detail)
+    if last_normalization is not None:
+        raise last_normalization
+    if last_invalid_json is not None:
+        raise last_invalid_json
+    return None
 
 
 def _goal_prefers_summary(goal: str) -> bool:
@@ -483,6 +503,65 @@ def _repair_planner_output_with_llm(
         return json.loads(extract_json_block(str(response.content or "")))
     except Exception:
         return None
+
+
+def _parse_planner_payload(
+    raw_content: str,
+    *,
+    task: Any,
+    context: Any,
+    session: Any | None,
+    llm_client: Any,
+    model_name: str,
+    persona: Any,
+) -> dict[str, Any] | None:
+    stripped = str(raw_content or "").strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(extract_json_block(stripped))
+    except Exception:
+        pass
+    minimax_payload = _parse_minimax_tool_call_payload(stripped)
+    if minimax_payload is not None:
+        return minimax_payload
+    return _repair_planner_output_with_llm(
+        stripped,
+        task=task,
+        context=context,
+        session=session,
+        llm_client=llm_client,
+        model_name=model_name,
+        persona=persona,
+    )
+
+
+def _parse_minimax_tool_call_payload(raw_content: str) -> dict[str, Any] | None:
+    if "<minimax:tool_call>" not in raw_content:
+        return None
+    kind_match = re.search(r"\.kind:\s*([A-Za-z_]+)", raw_content)
+    tool_match = re.search(r"\.tool_name:\s*([A-Za-z0-9_]+)", raw_content)
+    risk_match = re.search(r"\.risk_class:\s*([A-Za-z_]+)", raw_content)
+    args_match = re.search(r"\.arguments:\s*(\{.*?\})\s*(?:\.[A-Za-z_]+:|</invoke>|$)", raw_content, flags=re.DOTALL)
+    if kind_match is None or tool_match is None:
+        return None
+    arguments: dict[str, Any] = {}
+    if args_match is not None:
+        try:
+            arguments = json.loads(args_match.group(1))
+        except Exception:
+            return None
+    payload: dict[str, Any] = {
+        "kind": kind_match.group(1).strip(),
+        "tool_name": tool_match.group(1).strip(),
+        "arguments": arguments,
+    }
+    if risk_match is not None:
+        payload["risk_class"] = risk_match.group(1).strip()
+    if payload["kind"] == "respond" and "instruction" not in payload:
+        instruction_match = re.search(r"^(.*?)<minimax:tool_call>", raw_content, flags=re.DOTALL)
+        payload["instruction"] = str(instruction_match.group(1) if instruction_match else "").strip()
+    return payload
 
 
 def _risk_hint_for_permission(permission_level: str) -> str:

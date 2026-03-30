@@ -432,11 +432,13 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
 
 
 def _list_workspace_directory(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    path_arg = str(arguments.get("path") or "").strip()
+    use_default_directory = bool(arguments.get("use_default_directory")) or not path_arg
     ref = _resolve_resource_ref(
         context,
-        str(arguments.get("path") or ""),
+        path_arg,
         use_last_focus=bool(arguments.get("use_last_focus")),
-        use_default_directory=bool(arguments.get("use_default_directory")),
+        use_default_directory=use_default_directory,
     )
     items = context.application_context.resource_repository.list_directory(ref)
     directories = [item.title for item in items if item.kind == "directory"]

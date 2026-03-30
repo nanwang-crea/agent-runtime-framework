@@ -122,6 +122,10 @@ def _score_workspace_question(result, *, expected_profile: str, expected_refs: l
     return score
 
 
+def _tool_trace(result) -> list[str]:
+    return [str(action.metadata.get("tool_name") or "") for action in result.task.actions if action.kind == "call_tool"]
+
+
 def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     context = _context(tmp_path / "workspace")
     context.application_context.resource_repository.allowed_roots[0].mkdir(parents=True, exist_ok=True)
@@ -2478,6 +2482,107 @@ def test_benchmark_current_directory_question_scores_high(tmp_path: Path):
     ) >= 4
 
 
+def test_current_working_directory_phrase_routes_to_workspace_root(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (workspace / "src").mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("给我列一下我当前的工作目录都有哪些文件呢")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
+    assert "README.md" in result.final_output
+    assert "目录结构" in result.final_output or "entries" in result.final_output
+
+
+@pytest.mark.xfail(reason="当前对无明确 target 的根目录列举仍偏保守，容易要求澄清而不是默认落到 workspace 根目录。", strict=False)
+def test_intelligence_assessment_directory_listing_without_explicit_target_prefers_workspace_root(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (workspace / "docs").mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("帮我列一下文件目录")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
+    assert _tool_trace(result)[:2] == ["resolve_workspace_target", "list_workspace_directory"]
+    assert "README.md" in result.final_output
+    assert "docs" in result.final_output
+
+
+@pytest.mark.xfail(reason="当前对“列目录并总结/项目摘要”这类根目录概览请求仍偏保守，缺少默认 workspace 级语义。", strict=False)
+def test_intelligence_assessment_directory_listing_and_summary_uses_structure_then_representative_files(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nProject overview.\n", encoding="utf-8")
+    pkg = workspace / "src"
+    pkg.mkdir()
+    (pkg / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("帮我列一下文件目录并帮我总结")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
+    assert "inspect_workspace_path" in _tool_trace(result)
+    assert any(tool in _tool_trace(result) for tool in {"rank_workspace_entries", "read_workspace_text", "extract_workspace_outline"})
+    assert "README.md" in result.final_output
+    assert "service.py" in result.final_output
+
+
+@pytest.mark.xfail(reason="当前“项目摘要”仍没有稳定映射为当前 workspace 的 repo overview 任务。", strict=False)
+def test_intelligence_assessment_project_summary_defaults_to_workspace_overview(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nA smart agent runtime framework.\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    pkg = workspace / "agent_runtime_framework"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["output_evaluator"] = evaluate_codex_output
+
+    result = CodexAgentLoop(context).run("帮我生成一下该项目的摘要")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "repository_explainer"
+    assert _tool_trace(result)[0] == "resolve_workspace_target"
+    assert "README.md" in result.final_output
+    assert "pyproject.toml" in result.final_output or "agent_runtime_framework" in result.final_output
+
+
+@pytest.mark.xfail(reason="读取并讲解具体文件时，当前 profile 仍可能落到 repository_explainer，而不是更稳定的 file_reader。", strict=False)
+def test_intelligence_assessment_file_read_and_explanation_prefers_file_reader(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Guide\nThis project orchestrates agent workflows.\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("帮我读取 docs/guide.md 并讲一下在讲什么")
+
+    assert result.status == "completed"
+    assert result.task.task_profile == "file_reader"
+    assert _tool_trace(result)[:2] == ["resolve_workspace_target", "read_workspace_text"]
+    assert "agent workflows" in result.final_output
+
+
 def test_change_and_verify_profile_creates_task_level_plan(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2641,6 +2746,51 @@ def test_codex_loop_surfaces_planner_invalid_json(tmp_path: Path):
         CodexAgentLoop(context).run("please inspect the note for me")
 
     assert exc_info.value.code == "PLANNER_INVALID_JSON"
+
+
+def test_codex_loop_accepts_minimax_tool_call_planner_format(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("hello", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '我来帮你读取文件。\n<minimax:tool_call>\n.kind: call_tool\n.tool_name: read_workspace_text\n.arguments: {\n  "path": "note.md"\n}\n.risk_class: low\n</invoke>'
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("please inspect the note for me")
+
+    assert result.status == "completed"
+    assert result.final_output == "hello"
+    assert result.task.actions[0].metadata["tool_name"] == "read_workspace_text"
+
+
+def test_codex_loop_retries_planner_once_after_invalid_json(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "note.md").write_text("hello", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            "not json",
+            '{"kind":"call_tool","tool_name":"read_workspace_text","arguments":{"path":"note.md"}}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    result = CodexAgentLoop(context).run("please inspect the note for me")
+
+    assert result.status == "completed"
+    assert result.final_output == "hello"
+    assert len(llm.completions.calls) == 2
 
 
 def test_codex_loop_requests_clarification_for_ambiguous_create_file_goal(tmp_path: Path):
