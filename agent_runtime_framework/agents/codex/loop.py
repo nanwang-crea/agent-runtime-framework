@@ -25,7 +25,7 @@ from agent_runtime_framework.agents.codex.personas import resolve_runtime_person
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
-from agent_runtime_framework.agents.codex.semantics import infer_task_intent
+from agent_runtime_framework.agents.codex.semantics import resolve_task_intent
 from agent_runtime_framework.agents.codex.state import build_initial_task_state, sync_task_state_from_memory
 from agent_runtime_framework.agents.codex.task_plans import (
     advance_task_plan,
@@ -137,7 +137,7 @@ class CodexAgentLoop:
         return Path(str(root_value)) if root_value else None
 
     def _new_task(self, goal: str, *, session: AssistantSession) -> CodexTask:
-        intent = infer_task_intent(goal, self._workspace_root(), context=self.context, session=session)
+        intent = resolve_task_intent(goal, self.context, session=session)
         task = CodexTask(goal=goal, actions=[], task_profile=intent.task_kind, intent=intent, state=build_initial_task_state(intent))
         sync_task_state_from_memory(task)
         return task
@@ -149,7 +149,7 @@ class CodexAgentLoop:
         if pending is not None:
             self._clear_persisted_pending_clarification()
             merged_goal = _merge_clarification_goal(pending.goal, user_input)
-            intent = infer_task_intent(merged_goal, self._workspace_root(), context=self.context, session=session)
+            intent = resolve_task_intent(merged_goal, self.context, session=session)
             task = CodexTask(
                 goal=merged_goal,
                 actions=[],
@@ -164,7 +164,7 @@ class CodexAgentLoop:
             task.plan = build_task_plan(task, self.context)
             sync_task_state_from_memory(task)
             return task
-        intent = infer_task_intent(user_input, self._workspace_root(), context=self.context, session=session)
+        intent = resolve_task_intent(user_input, self.context, session=session)
         task_profile = intent.task_kind or classify_task_profile(user_input, self.context, session=session)
         planner = self.context.services.get("action_planner")
         if callable(planner):

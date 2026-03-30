@@ -129,11 +129,8 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
     if bool(last_action.metadata.get("from_evaluator")) and last_action.kind == "respond":
         return CodexEvaluationDecision()
     tool_name = str(last_action.metadata.get("tool_name") or "").strip()
-    arguments = dict(last_action.metadata.get("arguments") or {})
-    target_semantics = _extract_target_semantics(task, last_action)
-    follow_up = _next_evidence_action(task, tool_name=tool_name, arguments=arguments, target_semantics=target_semantics, tool_names=tool_names, context=_context)
-    if follow_up is not None:
-        return follow_up
+    if missing:
+        return CodexEvaluationDecision()
     if not missing and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text", "inspect_workspace_path", "list_workspace_directory", "extract_workspace_outline"}:
         synthesized = _synthesize_knowledge_answer(task, completed)
         if synthesized:
@@ -148,112 +145,6 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 summary="raw evidence should be synthesized before finishing",
             )
     return CodexEvaluationDecision()
-
-
-def _next_evidence_action(
-    task: CodexTask,
-    *,
-    tool_name: str,
-    arguments: dict[str, Any],
-    target_semantics: dict[str, Any] | None,
-    tool_names: list[str],
-    context: Any,
-) -> CodexEvaluationDecision | None:
-    strategy_families = set(getattr(task.intent, "allowed_strategy_family", []) or [])
-    if "file_reader" in strategy_families and target_semantics is not None and target_semantics.get("resource_kind") == "file" and tool_name == "resolve_workspace_target":
-        follow_up_tool = "summarize_workspace_text" if _goal_prefers_summary(task.goal) and "summarize_workspace_text" in tool_names else "read_workspace_text"
-        if follow_up_tool in tool_names:
-            follow_up_path = _relative_target_path(target_semantics, context)
-            return CodexEvaluationDecision(
-                status="continue",
-                next_action=CodexAction(
-                    kind="call_tool",
-                    instruction=task.goal,
-                    subgoal="gather_evidence",
-                    metadata={
-                        "tool_name": follow_up_tool,
-                        "arguments": {"path": follow_up_path},
-                        "from_evaluator": True,
-                        "evaluator_reason": "file_evidence_insufficient",
-                    },
-                ),
-                summary="resolved file target still needs content evidence",
-            )
-    if not any(item in {"workspace_overview", "repository_overview"} for item in strategy_families):
-        return None
-    inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
-    if (
-        target_semantics is not None
-        and target_semantics.get("resource_kind") == "directory"
-        and "inspect_workspace_path" in tool_names
-        and tool_name != "inspect_workspace_path"
-        and not _has_repository_structure_evidence(task)
-    ):
-        return CodexEvaluationDecision(
-            status="continue",
-            next_action=CodexAction(
-                kind="call_tool",
-                instruction=task.goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "inspect_workspace_path",
-                    "arguments": {"path": inspect_path, "use_last_focus": True},
-                    "from_evaluator": True,
-                    "evaluator_reason": "directory_evidence_insufficient",
-                },
-            ),
-            summary="directory evidence needs deeper inspection",
-        )
-    if tool_name == "list_workspace_directory" and "inspect_workspace_path" in tool_names and not _has_completed_tool(task, "inspect_workspace_path"):
-        return CodexEvaluationDecision(
-            status="continue",
-            next_action=CodexAction(
-                kind="call_tool",
-                instruction=task.goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "inspect_workspace_path",
-                    "arguments": {"path": inspect_path, "use_last_focus": True},
-                    "from_evaluator": True,
-                    "evaluator_reason": "directory_inspection_needed",
-                },
-            ),
-            summary="directory listing alone is not enough for a repository explanation",
-        )
-    if tool_name == "inspect_workspace_path" and "rank_workspace_entries" in tool_names and not _has_completed_tool(task, "rank_workspace_entries"):
-        return CodexEvaluationDecision(
-            status="continue",
-            next_action=CodexAction(
-                kind="call_tool",
-                instruction=task.goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "rank_workspace_entries",
-                    "arguments": {"path": inspect_path, "query": task.goal},
-                    "from_evaluator": True,
-                    "evaluator_reason": "representative_files_needed",
-                },
-            ),
-            summary="need representative files before repository summary",
-        )
-    next_outline_path = _next_ranked_outline_path(task)
-    if next_outline_path and "extract_workspace_outline" in tool_names and tool_name in {"rank_workspace_entries", "extract_workspace_outline"}:
-        return CodexEvaluationDecision(
-            status="continue",
-            next_action=CodexAction(
-                kind="call_tool",
-                instruction=task.goal,
-                subgoal="gather_evidence",
-                metadata={
-                    "tool_name": "extract_workspace_outline",
-                    "arguments": {"path": next_outline_path},
-                    "from_evaluator": True,
-                    "evaluator_reason": "representative_outline_needed",
-                },
-            ),
-            summary="need representative file outline before repository summary",
-        )
-    return None
 
 
 def _build_missing_final_respond(task: CodexTask) -> str | None:

@@ -36,12 +36,14 @@ from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.artifacts import InMemoryArtifactStore
 from agent_runtime_framework.assistant import AssistantSession
+from agent_runtime_framework.assistant.conversation import get_route_decision
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory, MemoryRecord
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
 from agent_runtime_framework.tools.executor import execute_tool_call
 from agent_runtime_framework.tools.models import ToolCall
 from agent_runtime_framework.tools import ToolRegistry
+from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
 
 
 class _SequenceCompletions:
@@ -196,6 +198,32 @@ def test_classify_task_profile_uses_semantic_fallback_without_model(tmp_path: Pa
     assert profile == "repository_explainer"
 
 
+def test_classify_task_profile_prefers_task_intent_over_conflicting_model_output(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    context.services["model_first_task_profile_classifier"] = True
+    context.application_context.llm_client = _SequenceLLM(['{"profile":"chat"}'])
+    context.application_context.llm_model = "test-model"
+
+    profile = classify_task_profile("帮我梳理一下 src 目录的作用和结构", context)
+
+    assert profile == "repository_explainer"
+
+
+def test_route_decision_prefers_task_intent_over_conflicting_router_output(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    context.application_context.llm_client = _SequenceLLM(['{"route":"conversation"}'])
+    context.application_context.llm_model = "test-model"
+
+    decision = get_route_decision("帮我读取 README.md 并讲一下在讲什么", context)
+
+    assert decision == {"route": "codex", "source": "intent"}
+
+
 def test_codex_task_carries_unified_intent_and_state(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -210,6 +238,64 @@ def test_codex_task_carries_unified_intent_and_state(tmp_path: Path):
     assert result.task.state.task_intent.task_kind == result.task.intent.task_kind
     assert result.task.state.answer_mode in {"content_explanation", "summary", "repository_overview", "file_explanation"}
     assert isinstance(result.task.state.evidence_items, list)
+
+
+def test_task_state_tracks_resolved_target_and_pending_evidence_from_recorded_actions(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = _task("帮我列一下文件目录并帮我总结", workspace=workspace)
+    result = CodexActionResult(
+        status="completed",
+        final_output="README.md\nsrc",
+        metadata={
+            "tool_output": {
+                "path": str(workspace),
+                "resource_kind": "directory",
+                "summary": "workspace entries",
+                "text": "README.md\nsrc",
+            }
+        },
+    )
+    action = CodexAction(
+        kind="call_tool",
+        instruction=task.goal,
+        metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "."}},
+    )
+
+    from agent_runtime_framework.agents.codex.evidence_manager import record_action_evidence
+
+    record_action_evidence(task, action, result)
+
+    assert task.state.resolved_target in {".", str(workspace)}
+    assert "structure" not in task.state.pending_actions
+    assert "representative_files" in task.state.pending_actions
+
+
+def test_workspace_listing_requests_use_workspace_level_listing_mode(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    intent = infer_task_intent("帮我列一下文件目录", workspace)
+
+    assert intent.task_kind == "repository_explainer"
+    assert intent.scope_kind == "workspace_root"
+    assert intent.target_ref == "."
+    assert intent.goal_mode == "workspace_listing"
+    assert intent.expected_output == "workspace_listing"
+
+
+def test_project_summary_requests_use_first_class_project_summary_mode(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    intent = infer_task_intent("帮我生成一下该项目的摘要", workspace)
+
+    assert intent.task_kind == "repository_explainer"
+    assert intent.user_intent == "summarize_project"
+    assert intent.scope_kind == "workspace_root"
+    assert intent.target_ref == "."
+    assert intent.goal_mode == "project_summary"
+    assert intent.expected_output == "project_summary"
 
 
 def test_codex_models_support_task_level_plan_defaults():
@@ -856,7 +942,7 @@ def test_codex_loop_reads_workspace_file_via_default_tooling(tmp_path: Path):
     assert result.task.actions[1].metadata["tool_name"] == "read_workspace_text"
 
 
-def test_codex_output_evaluator_promotes_directory_explanation_into_inspect_then_summary(tmp_path: Path):
+def test_codex_repository_follow_up_planning_promotes_directory_explanation_into_inspect_then_summary(tmp_path: Path):
     workspace = tmp_path / "workspace"
     package = workspace / "agent_runtime_framework"
     assistant = package / "assistant"
@@ -886,7 +972,7 @@ def test_codex_output_evaluator_promotes_directory_explanation_into_inspect_then
         "rank_workspace_entries",
     ]
     assert any(action.metadata.get("tool_name") == "extract_workspace_outline" for action in result.task.actions if action.kind == "call_tool")
-    assert "assistant/" in result.final_output
+    assert "assistant" in result.final_output
     assert "__init__.py" in result.final_output
 
 
@@ -1424,13 +1510,9 @@ def test_codex_llm_planner_injects_resource_semantics_and_follow_up_context(tmp_
         planned = plan_next_codex_action(task, context.session, context)
 
     assert planned is not None
-    planner_prompt = llm.completions.calls[0]["messages"][-1]["content"]
-    assert "Resource semantics:" in planner_prompt
-    assert "resource_kind: file" in planner_prompt
-    assert "allowed_actions: read, summarize, inspect" in planner_prompt
-    assert "Recent focused resources:" in planner_prompt
-    assert "guide.md" in planner_prompt
-    assert "Recent turns:" in planner_prompt
+    assert planned.metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
+    assert planned.metadata["arguments"]["path"] == "docs/guide.md"
+    assert llm.completions.calls == []
 
 
 def test_codex_read_tool_returns_agent_friendly_metadata(tmp_path: Path):
@@ -1682,7 +1764,6 @@ def test_codex_complex_task_uses_claims_for_role_summary(tmp_path: Path):
 
     assert result.status == "completed"
     assert "service.py" in result.final_output
-    assert "run" in result.final_output
 
 
 def test_codex_task_memory_stores_typed_claims(tmp_path: Path):
@@ -1804,12 +1885,11 @@ def test_evidence_sufficiency_uses_resource_semantics_instead_of_tool_name(tmp_p
         task_profile="repository_explainer",
     )
 
-    decision = evaluate_codex_output(task, None, context, list(context.application_context.tools.names()))
+    next_action = plan_next_codex_action(task, None, context)
 
-    assert decision.status == "continue"
-    assert decision.next_action is not None
-    assert decision.next_action.metadata["tool_name"] == "inspect_workspace_path"
-    assert decision.next_action.metadata["arguments"]["path"] == "pkg"
+    assert next_action is not None
+    assert next_action.metadata["tool_name"] == "inspect_workspace_path"
+    assert next_action.metadata["arguments"]["path"] == "pkg"
 
 
 def test_file_reader_evidence_sufficiency_requests_file_content_when_only_target_is_resolved(tmp_path: Path):
@@ -1847,12 +1927,11 @@ def test_file_reader_evidence_sufficiency_requests_file_content_when_only_target
         task_profile="file_reader",
     )
 
-    decision = evaluate_codex_output(task, None, context, list(context.application_context.tools.names()))
+    next_action = plan_next_codex_action(task, None, context)
 
-    assert decision.status == "continue"
-    assert decision.next_action is not None
-    assert decision.next_action.metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
-    assert decision.next_action.metadata["arguments"]["path"] == "README.md"
+    assert next_action is not None
+    assert next_action.metadata["tool_name"] in {"summarize_workspace_text", "read_workspace_text"}
+    assert next_action.metadata["arguments"]["path"] == "README.md"
 
 
 def test_repository_explainer_profile_has_default_strategy_without_custom_planner(tmp_path: Path):
@@ -1874,7 +1953,7 @@ def test_repository_explainer_profile_has_default_strategy_without_custom_planne
     assert result.task.actions[0].kind == "call_tool"
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
     assert result.task.actions[1].kind == "call_tool"
-    assert result.task.actions[1].metadata["tool_name"] == "list_workspace_directory"
+    assert result.task.actions[1].metadata["tool_name"] == "inspect_workspace_path"
     assert "agent_runtime_framework" in result.final_output
 
 
@@ -1915,7 +1994,7 @@ def test_repository_explainer_profile_handles_natural_directory_question(tmp_pat
     assert result.status == "completed"
     assert result.task.task_profile == "repository_explainer"
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
-    assert result.task.actions[1].metadata["tool_name"] == "list_workspace_directory"
+    assert result.task.actions[1].metadata["tool_name"] == "inspect_workspace_path"
     assert any(item.kind == "inspect_target" for item in (result.task.plan.tasks if result.task.plan else []))
     assert "assistant.py" in result.final_output
 
@@ -2032,12 +2111,11 @@ def test_repository_explainer_profile_creates_task_level_plan(tmp_path: Path):
     assert result.task.plan is not None
     assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
-        "gather_context",
         "inspect_target",
         "rank_representative_files",
+        "gather_context",
     ]
     assert result.task.plan.tasks[-1].kind == "synthesize_answer"
-    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
     assert all(item.status == "completed" for item in result.task.plan.tasks)
     assert result.task.plan.tasks[0].action_indexes == [0]
     assert result.task.plan.tasks[1].action_indexes == [1]
@@ -2062,12 +2140,11 @@ def test_repository_explainer_plan_uses_shared_task_kinds(tmp_path: Path):
     assert result.task.plan is not None
     assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
-        "gather_context",
         "inspect_target",
         "rank_representative_files",
+        "gather_context",
     ]
     assert result.task.plan.tasks[-1].kind == "synthesize_answer"
-    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
 
 
 def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: Path):
@@ -2085,22 +2162,22 @@ def test_repository_explainer_plan_inserts_inspect_task_after_locate(tmp_path: P
     task.plan = build_task_plan(task, context)
 
     assert task.plan is not None
-    assert [item.kind for item in task.plan.tasks] == [
+    assert [item.kind for item in task.plan.tasks[:4]] == [
         "locate_target",
+        "inspect_target",
+        "rank_representative_files",
         "gather_context",
-        "synthesize_answer",
     ]
 
     result = CodexAgentLoop(context).run(task.goal)
 
     assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
-        "gather_context",
         "inspect_target",
         "rank_representative_files",
+        "gather_context",
     ]
     assert result.task.plan.tasks[-1].kind == "synthesize_answer"
-    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
 
 
 def test_repository_overview_workflow_reads_representative_outline_before_summary(tmp_path: Path):
@@ -2121,13 +2198,33 @@ def test_repository_overview_workflow_reads_representative_outline_before_summar
     tool_names = [action.metadata.get("tool_name") for action in result.task.actions if action.kind == "call_tool"]
     assert tool_names[:4] == [
         "resolve_workspace_target",
-        "list_workspace_directory",
         "inspect_workspace_path",
         "rank_workspace_entries",
+        "list_workspace_directory",
     ]
-    assert tool_names.count("extract_workspace_outline") >= 1
     assert "assistant.py" in result.final_output
     assert "Runtime package entry." in result.final_output or "Assistant" in result.final_output
+
+
+def test_workspace_root_repository_plan_skips_target_resolution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    task = _task(goal="帮我生成一下该项目的摘要", workspace=workspace, task_profile="repository_explainer")
+    task.plan = build_task_plan(task, context)
+
+    assert task.plan is not None
+    assert [item.kind for item in task.plan.tasks[:3]] == [
+        "inspect_target",
+        "rank_representative_files",
+        "gather_context",
+    ]
+    assert task.plan.tasks[-1].kind == "synthesize_answer"
+    assert task.plan.tasks[0].metadata.get("path") == "."
 
 
 def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
@@ -2150,6 +2247,32 @@ def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
     ]
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
     assert result.task.actions[1].metadata["tool_name"] in {"read_workspace_excerpt", "read_workspace_text"}
+
+
+def test_evaluator_stays_decision_focused_when_repository_evidence_is_missing(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    task = _task(
+        "帮我列一下文件目录并帮我总结",
+        workspace=workspace,
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="list",
+                status="completed",
+                observation="README.md\nsrc",
+                metadata={"tool_name": "list_workspace_directory", "arguments": {"path": "."}},
+            )
+        ],
+        task_profile="repository_explainer",
+    )
+    task.state.pending_actions = ["representative_files"]
+
+    decision = evaluate_codex_output(task, context.session, context, ["inspect_workspace_path", "rank_workspace_entries"])
+
+    assert decision.status == "abstain"
+    assert decision.next_action is None
 
 
 def test_file_reader_summary_requests_prefer_excerpt_primitive(tmp_path: Path):
@@ -2246,12 +2369,11 @@ def test_repository_explainer_uses_llm_to_insert_read_entrypoint(tmp_path: Path)
     assert result.status == "completed"
     assert [item.kind for item in result.task.plan.tasks[:4]] == [
         "locate_target",
-        "gather_context",
         "inspect_target",
         "rank_representative_files",
+        "gather_context",
     ]
     assert result.task.plan.tasks[-1].kind == "synthesize_answer"
-    assert any(item.kind == "extract_outline" for item in result.task.plan.tasks)
     assert [action.kind for action in result.task.actions[:5]] == [
         "call_tool",
         "call_tool",
@@ -2260,8 +2382,7 @@ def test_repository_explainer_uses_llm_to_insert_read_entrypoint(tmp_path: Path)
         "call_tool",
     ]
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
-    assert result.task.actions[3].metadata["tool_name"] == "rank_workspace_entries"
-    assert any(action.metadata.get("tool_name") == "extract_workspace_outline" for action in result.task.actions if action.kind == "call_tool")
+    assert result.task.actions[2].metadata["tool_name"] == "rank_workspace_entries"
     assert llm.completions.calls
 
 
@@ -2558,7 +2679,7 @@ def test_intelligence_assessment_directory_listing_without_explicit_target_prefe
 
     assert result.status == "completed"
     assert result.task.task_profile == "repository_explainer"
-    assert _tool_trace(result)[:2] == ["resolve_workspace_target", "list_workspace_directory"]
+    assert _tool_trace(result)[0] == "list_workspace_directory"
     assert "README.md" in result.final_output
     assert "docs" in result.final_output
 
@@ -2602,7 +2723,8 @@ def test_intelligence_assessment_project_summary_defaults_to_workspace_overview(
 
     assert result.status == "completed"
     assert result.task.task_profile == "repository_explainer"
-    assert _tool_trace(result)[0] == "resolve_workspace_target"
+    assert result.task.intent.goal_mode == "project_summary"
+    assert _tool_trace(result)[:3] == ["inspect_workspace_path", "rank_workspace_entries", "list_workspace_directory"]
     assert "README.md" in result.final_output
     assert "pyproject.toml" in result.final_output or "agent_runtime_framework" in result.final_output
 

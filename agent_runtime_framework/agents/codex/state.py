@@ -30,12 +30,18 @@ def sync_task_state_from_memory(task: object) -> None:
         return
     state.known_facts = list(getattr(memory, "known_facts", []) or [])
     state.open_questions = list(getattr(memory, "open_questions", []) or [])
+    state.pending_actions = list(getattr(state, "pending_actions", []) or [])
     if getattr(task, "plan", None) is not None:
         plan = getattr(task, "plan")
         state.plan_state = {
             "status": getattr(plan, "status", ""),
             "tasks": [f"{item.title}:{item.kind}:{item.status}" for item in getattr(plan, "tasks", [])],
         }
+        state.pending_actions = [
+            getattr(item, "kind", "")
+            for item in getattr(plan, "tasks", [])
+            if getattr(item, "status", "") != "completed"
+        ]
     if getattr(plan := getattr(task, "plan", None), "target_semantics", None) is not None:
         semantics = getattr(plan, "target_semantics")
         state.resource_semantics = {
@@ -44,7 +50,7 @@ def sync_task_state_from_memory(task: object) -> None:
             "is_container": bool(getattr(semantics, "is_container", False)),
             "allowed_actions": list(getattr(semantics, "allowed_actions", []) or []),
         }
-        if not state.resolved_target:
+        if state.resource_semantics.get("path"):
             state.resolved_target = state.resource_semantics.get("path", "")
 
 

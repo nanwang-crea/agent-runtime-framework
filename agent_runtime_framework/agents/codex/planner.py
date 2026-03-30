@@ -56,6 +56,9 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
                 subgoal="synthesize_answer",
                 metadata={"direct_output": True},
             )
+        deterministic_follow_up = _plan_follow_up_from_completed_action(task, context, last_action)
+        if deterministic_follow_up is not None:
+            return deterministic_follow_up
     llm_planned = _plan_next_action_with_llm(task, context, session=session)
     if llm_planned is not None:
         return llm_planned
@@ -84,6 +87,16 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
                 "arguments": {"query": goal, "target_hint": intent.target_hint},
             },
         )
+    if _intent_prefers_workspace_listing(intent):
+        return CodexAction(
+            kind="call_tool",
+            instruction=goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "list_workspace_directory",
+                "arguments": {"path": ".", "use_default_directory": True},
+            },
+        )
     if _intent_prefers_change_execution(intent):
         return _plan_change_action_from_goal(goal, intent=intent)
     return None
@@ -91,6 +104,16 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
 
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:
     intent = infer_task_intent(user_input)
+    if _intent_prefers_workspace_listing(intent) and "list_workspace_directory" in tool_names:
+        return CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "list_workspace_directory",
+                "arguments": {"path": ".", "use_default_directory": True},
+            },
+        )
     if intent.task_kind in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
         return CodexAction(
             kind="call_tool",
@@ -261,11 +284,114 @@ def _direct_file_reader_response(goal: str, observation: str) -> str:
     return observation.strip()
 
 
+def _plan_follow_up_from_completed_action(task: Any, context: Any, last_action: Any) -> CodexAction | None:
+    tool_names = set(available_tool_names(context, persona=resolve_runtime_persona(context, task=task)))
+    tool_name = str(getattr(last_action, "metadata", {}).get("tool_name") or "").strip()
+    profile = str(getattr(task, "task_profile", "") or "")
+    if profile == "file_reader" and tool_name == "resolve_workspace_target":
+        target_path = _resolved_target_argument(task, last_action, context)
+        read_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) and "summarize_workspace_text" in tool_names else "read_workspace_text"
+        if target_path and read_tool in tool_names:
+            return CodexAction(
+                kind="call_tool",
+                instruction=str(getattr(task, "goal", "") or ""),
+                subgoal="gather_evidence",
+                metadata={"tool_name": read_tool, "arguments": {"path": target_path}},
+            )
+    if profile != "repository_explainer":
+        return None
+    inspect_path = _resolved_target_argument(task, last_action, context)
+    resolved_kind = _resolved_target_kind(last_action)
+    if (
+        tool_name == "resolve_workspace_target" or (resolved_kind == "directory" and "inspect" in _resolved_target_actions(last_action))
+    ) and "inspect_workspace_path" in tool_names and resolved_kind != "file":
+        return CodexAction(
+            kind="call_tool",
+            instruction=str(getattr(task, "goal", "") or ""),
+            subgoal="gather_evidence",
+            metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": inspect_path, "use_last_focus": True}},
+        )
+    if tool_name == "list_workspace_directory" and "inspect_workspace_path" in tool_names and not _has_completed_tool(task, "inspect_workspace_path"):
+        return CodexAction(
+            kind="call_tool",
+            instruction=str(getattr(task, "goal", "") or ""),
+            subgoal="gather_evidence",
+            metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": inspect_path, "use_last_focus": True}},
+        )
+    if tool_name == "inspect_workspace_path" and "rank_workspace_entries" in tool_names and not _has_completed_tool(task, "rank_workspace_entries"):
+        return CodexAction(
+            kind="call_tool",
+            instruction=str(getattr(task, "goal", "") or ""),
+            subgoal="gather_evidence",
+            metadata={"tool_name": "rank_workspace_entries", "arguments": {"path": inspect_path, "query": str(getattr(task, 'goal', '') or '')}},
+        )
+    next_outline_path = _next_ranked_outline_path(task)
+    if tool_name in {"rank_workspace_entries", "extract_workspace_outline"} and next_outline_path and "extract_workspace_outline" in tool_names:
+        return CodexAction(
+            kind="call_tool",
+            instruction=str(getattr(task, "goal", "") or ""),
+            subgoal="gather_evidence",
+            metadata={"tool_name": "extract_workspace_outline", "arguments": {"path": next_outline_path}},
+        )
+    return None
+
+
 def _workspace_root(context: Any) -> Path | None:
     root_value = context.application_context.config.get("default_directory") if context is not None else None
     if not root_value:
         return None
     return Path(str(root_value))
+
+
+def _has_completed_tool(task: Any, tool_name: str) -> bool:
+    return any(
+        str(getattr(action, "metadata", {}).get("tool_name") or "").strip() == tool_name and getattr(action, "status", "") == "completed"
+        for action in getattr(task, "actions", [])
+    )
+
+
+def _resolved_target_argument(task: Any, last_action: Any, context: Any) -> str:
+    result = dict(getattr(last_action, "metadata", {}).get("result") or {})
+    tool_output = dict(result.get("tool_output") or {})
+    path = str(tool_output.get("resolved_path") or tool_output.get("path") or "").strip()
+    if path:
+        workspace_root = str(getattr(getattr(context, "application_context", context), "config", {}).get("default_directory") or "")
+        if workspace_root and path.startswith(workspace_root):
+            relative = path[len(workspace_root):].lstrip("/").lstrip("\\")
+            return relative or "."
+        return path
+    arguments = dict(getattr(last_action, "metadata", {}).get("arguments") or {})
+    return str(arguments.get("path") or getattr(getattr(task, "intent", None), "target_ref", "") or ".").strip() or "."
+
+
+def _resolved_target_kind(last_action: Any) -> str:
+    result = dict(getattr(last_action, "metadata", {}).get("result") or {})
+    tool_output = dict(result.get("tool_output") or {})
+    return str(tool_output.get("resource_kind") or "").strip()
+
+
+def _resolved_target_actions(last_action: Any) -> set[str]:
+    result = dict(getattr(last_action, "metadata", {}).get("result") or {})
+    tool_output = dict(result.get("tool_output") or {})
+    return {str(item).strip() for item in tool_output.get("allowed_actions") or [] if str(item).strip()}
+
+
+def _next_ranked_outline_path(task: Any) -> str:
+    outlined = {
+        str(getattr(action, "metadata", {}).get("arguments", {}).get("path") or "").strip()
+        for action in getattr(task, "actions", [])
+        if str(getattr(action, "metadata", {}).get("tool_name") or "").strip() == "extract_workspace_outline"
+    }
+    for action in reversed(getattr(task, "actions", [])):
+        if str(getattr(action, "metadata", {}).get("tool_name") or "").strip() != "rank_workspace_entries":
+            continue
+        result = dict(getattr(action, "metadata", {}).get("result") or {})
+        tool_output = dict(result.get("tool_output") or {})
+        for path in tool_output.get("ranked_paths") or []:
+            normalized = str(path).strip()
+            if normalized and normalized not in outlined:
+                return normalized
+    return ""
 
 
 def _plan_change_action_from_goal(goal: str, *, intent: Any) -> CodexAction | None:
@@ -452,7 +578,27 @@ def _risk_class_for_shell_command(command: str, *, fallback: str = "low") -> str
 
 
 def _intent_prefers_target_resolution(intent: Any) -> bool:
+    if _intent_prefers_workspace_listing(intent) or _intent_prefers_workspace_overview(intent):
+        return False
     return str(getattr(intent, "task_kind", "") or "") in {"repository_explainer", "file_reader"} and bool(getattr(intent, "needs_grounding", False))
+
+
+def _intent_prefers_workspace_listing(intent: Any) -> bool:
+    return (
+        str(getattr(intent, "task_kind", "") or "") == "repository_explainer"
+        and str(getattr(intent, "scope_kind", "") or "") == "workspace_root"
+        and str(getattr(intent, "target_ref", "") or "") == "."
+        and str(getattr(intent, "goal_mode", "") or "") == "workspace_listing"
+    )
+
+
+def _intent_prefers_workspace_overview(intent: Any) -> bool:
+    return (
+        str(getattr(intent, "task_kind", "") or "") == "repository_explainer"
+        and str(getattr(intent, "scope_kind", "") or "") == "workspace_root"
+        and str(getattr(intent, "target_ref", "") or "") == "."
+        and str(getattr(intent, "goal_mode", "") or "") in {"workspace_overview", "project_summary"}
+    )
 
 
 def _intent_prefers_change_execution(intent: Any) -> bool:

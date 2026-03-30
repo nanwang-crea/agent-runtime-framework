@@ -31,6 +31,9 @@ def _repository_overview_answer(task: CodexTask) -> str:
     structure = next((item for item in task.state.evidence_items if item.source in {"inspect_workspace_path", "list_workspace_directory"}), None)
     if structure is not None:
         lines.append(f"- 目录结构：{structure.summary or structure.content.splitlines()[0]}")
+        if structure.source == "list_workspace_directory" and structure.content:
+            entries = [line.strip() for line in structure.content.splitlines() if line.strip()][:4]
+            lines.extend(f"- 条目：{entry}" for entry in entries)
     for item in task.state.evidence_items:
         if item.source in {"read_workspace_text", "extract_workspace_outline", "rank_workspace_entries"} and item.path:
             detail = item.summary or item.content.splitlines()[0]

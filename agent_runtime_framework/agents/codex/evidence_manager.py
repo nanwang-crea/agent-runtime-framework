@@ -23,6 +23,7 @@ def record_action_evidence(task: CodexTask, action: object, result: object) -> N
                 relevance=0.8 if summary else 0.5,
             ),
         )
+    _sync_state_from_evidence(task, path=path)
     sync_task_state_from_memory(task)
 
 
@@ -42,3 +43,9 @@ def evidence_gap(task: CodexTask) -> list[str]:
     if intent.task_kind in {"change_and_verify", "test_and_verify"} and getattr(task.memory, "pending_verifications", []):
         missing.append("verification")
     return missing
+
+
+def _sync_state_from_evidence(task: CodexTask, *, path: str) -> None:
+    if path and not str(getattr(task.state, "resolved_target", "") or "").strip():
+        task.state.resolved_target = path
+    task.state.pending_actions = evidence_gap(task)

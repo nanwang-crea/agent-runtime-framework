@@ -142,6 +142,16 @@ def infer_task_intent(
     return _infer_task_intent_heuristically(text, workspace_root)
 
 
+def resolve_task_intent(
+    user_input: str,
+    context: object | None = None,
+    *,
+    session: object | None = None,
+) -> TaskIntent:
+    workspace_root = _workspace_root_from_context(context)
+    return infer_task_intent(user_input, workspace_root, context=context, session=session)
+
+
 def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | None = None) -> TaskIntent:
     text = str(user_input or "").strip()
     if not text:
@@ -205,10 +215,11 @@ def _infer_task_intent_heuristically(user_input: str, workspace_root: Path | Non
     if _looks_like_repository_request(normalized, target_hint, target_type):
         workspace_target = target_hint or ("." if _refers_to_current_workspace(text) or not target_hint else "")
         scope_kind = "workspace_root" if workspace_target == "." else _scope_kind_for_target(target_type, workspace_target)
-        goal_mode = "workspace_listing" if _looks_like_listing_request(normalized) and not _contains_any(normalized, _SUMMARY_MARKERS) else "workspace_overview"
+        goal_mode = _repository_goal_mode(normalized, text, workspace_target)
+        user_intent = "summarize_project" if goal_mode == "project_summary" else "explain_directory"
         return TaskIntent(
             task_kind="repository_explainer",
-            user_intent="explain_directory",
+            user_intent=user_intent,
             goal_mode=goal_mode,
             scope_kind=scope_kind or "directory",
             target_ref=workspace_target,
@@ -405,6 +416,22 @@ def _looks_like_listing_request(normalized: str) -> bool:
     return any(marker in normalized for marker in ("列", "list", "有哪些", "都有哪些"))
 
 
+def _repository_goal_mode(normalized: str, text: str, workspace_target: str) -> str:
+    if _looks_like_project_summary_request(normalized, text, workspace_target):
+        return "project_summary"
+    if _looks_like_listing_request(normalized):
+        return "workspace_listing"
+    return "workspace_overview"
+
+
+def _looks_like_project_summary_request(normalized: str, text: str, workspace_target: str) -> bool:
+    if not _contains_any(normalized, _SUMMARY_MARKERS):
+        return False
+    if workspace_target == ".":
+        return True
+    return any(marker in text for marker in ("该项目", "这个项目", "当前项目", "整个项目", "整个仓库"))
+
+
 def _refers_to_current_workspace(text: str) -> bool:
     return any(marker in text for marker in _CURRENT_WORKSPACE_MARKERS)
 
@@ -498,6 +525,14 @@ def _workspace_candidates_block(workspace_root: Path | None) -> str:
         return "(unknown)"
     entries = sorted(path.name for path in workspace_root.iterdir())[:20]
     return "\n".join(f"- {entry}" for entry in entries) if entries else "(empty)"
+
+
+def _workspace_root_from_context(context: object | None) -> Path | None:
+    if context is None:
+        return None
+    application_context = getattr(context, "application_context", context)
+    root_value = getattr(application_context, "config", {}).get("default_directory")
+    return Path(str(root_value)) if root_value else None
 
 
 def _load_prompt(name: str) -> str:

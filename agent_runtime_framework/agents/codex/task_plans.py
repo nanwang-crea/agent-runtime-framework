@@ -45,21 +45,52 @@ def _fallback_plan_builder(intent: Any):
 
 
 def _build_repository_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
-    if "inspect_workspace_path" not in tool_names:
+    if "list_workspace_directory" not in tool_names:
         return None
     target = intent.target_ref or intent.target_hint or _extract_repository_target(task.goal)
-    locate_step = CodexPlanTask(
-        title="Locate repository target",
-        kind="locate_target",
-        metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
-    )
+    goal_mode = str(getattr(intent, "goal_mode", "") or "")
+    is_workspace_root = target == "."
+    tasks: list[CodexPlanTask] = []
+    dependency_ids: list[str] = []
+    if not is_workspace_root:
+        locate_step = CodexPlanTask(
+            title="Locate repository target",
+            kind="locate_target",
+            metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target},
+        )
+        tasks.append(locate_step)
+        dependency_ids = [locate_step.task_id]
+    if goal_mode in {"workspace_overview", "project_summary"} and "inspect_workspace_path" in tool_names:
+        inspect_step = CodexPlanTask(
+            title="Inspect repository target",
+            kind="inspect_target",
+            depends_on=list(dependency_ids),
+            metadata={"path": target or ".", "use_last_focus": not is_workspace_root},
+        )
+        tasks.append(inspect_step)
+        dependency_ids = [inspect_step.task_id]
+        if "rank_workspace_entries" in tool_names:
+            rank_step = CodexPlanTask(
+                title="Rank representative files",
+                kind="rank_representative_files",
+                depends_on=list(dependency_ids),
+                metadata={"path": target or "."},
+            )
+            tasks.append(rank_step)
+            dependency_ids = [rank_step.task_id]
     gather_step = CodexPlanTask(
         title="Gather repository context",
         kind="gather_context",
-        depends_on=[locate_step.task_id],
-        metadata={"path": target, "use_default_directory": not target, "use_resolved_target": True},
+        depends_on=list(dependency_ids),
+        metadata={
+            "path": target or ".",
+            "tool_name": "list_workspace_directory",
+            "use_default_directory": is_workspace_root,
+            "use_resolved_target": not is_workspace_root,
+        },
     )
-    tasks = [locate_step, gather_step, CodexPlanTask(title="Synthesize repository overview", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target})]
+    tasks.append(gather_step)
+    tasks.append(CodexPlanTask(title="Synthesize repository overview", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target or "."}))
     return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
 
 
@@ -302,12 +333,14 @@ def plan_next_task_action(task: CodexTask) -> CodexAction | None:
     if next_task.kind == "gather_context":
         resource_kind = str(next_task.metadata.get("resource_kind") or "")
         preferred_read_tool = str(next_task.metadata.get("preferred_read_tool") or "read_workspace_text")
-        if resource_kind == "file":
-            tool_name = preferred_read_tool
-        elif getattr(task, "task_profile", "") == "file_reader":
-            tool_name = "inspect_workspace_path"
-        else:
-            tool_name = "list_workspace_directory"
+        tool_name = str(next_task.metadata.get("tool_name") or "")
+        if not tool_name:
+            if resource_kind == "file":
+                tool_name = preferred_read_tool
+            elif getattr(task, "task_profile", "") == "file_reader":
+                tool_name = "inspect_workspace_path"
+            else:
+                tool_name = "list_workspace_directory"
         arguments = {"path": _resolved_plan_path(next_task)}
         if tool_name == "list_workspace_directory":
             arguments["use_default_directory"] = bool(next_task.metadata.get("use_default_directory"))
@@ -503,6 +536,8 @@ def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context
             plan.target_semantics = semantics
             plan.metadata["resource_kind"] = semantics.resource_kind
             _propagate_target_semantics(plan, semantics)
+            if task.task_profile == "repository_explainer" and semantics.resource_kind == "file":
+                _rewrite_repository_plan_for_file_target(plan, resolved_path, depends_on=[plan_task.task_id])
         if (
             task.task_profile == "repository_explainer"
             and resolved_path
@@ -521,24 +556,6 @@ def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context
                     metadata={"path": resolved_path, "use_last_focus": False},
                 ),
             )
-    if (
-        action.kind == "call_tool"
-        and str(action.metadata.get("tool_name") or "") == "inspect_workspace_path"
-        and task.task_profile == "repository_explainer"
-        and str(plan.metadata.get("workflow") or "") == "repository_overview"
-        and _find_task_by_kind(plan, "rank_representative_files") is None
-        and "rank_workspace_entries" in set(context.application_context.tools.names())
-    ):
-        _insert_task_before_kind(
-            plan,
-            before_kind="synthesize_answer",
-            new_task=CodexPlanTask(
-                title="Rank representative files",
-                kind="rank_representative_files",
-                depends_on=[plan_task.task_id] if plan_task is not None else [],
-                metadata={"path": _resolved_plan_path(plan_task) if plan_task is not None else ""},
-            ),
-        )
     if (
         action.kind == "call_tool"
         and str(action.metadata.get("tool_name") or "") == "rank_workspace_entries"
@@ -748,6 +765,26 @@ def _propagate_target_semantics(plan: CodexPlan, semantics: TargetSemantics) -> 
         plan_task.metadata["is_container"] = semantics.is_container
         if plan_task.metadata.get("use_resolved_target") and semantics.path:
             plan_task.metadata["resolved_path"] = semantics.path
+
+
+def _rewrite_repository_plan_for_file_target(plan: CodexPlan, resolved_path: str, *, depends_on: list[str]) -> None:
+    rewritten: list[CodexPlanTask] = []
+    synth_task = _find_task_by_kind(plan, "synthesize_answer")
+    for plan_task in plan.tasks:
+        if plan_task.kind == "locate_target":
+            rewritten.append(plan_task)
+            continue
+        if plan_task.kind == "gather_context":
+            plan_task.depends_on = list(depends_on)
+            plan_task.metadata["resource_kind"] = "file"
+            plan_task.metadata["path"] = resolved_path
+            plan_task.metadata["resolved_path"] = resolved_path
+            plan_task.metadata["tool_name"] = "read_workspace_text"
+            rewritten.append(plan_task)
+    if synth_task is not None and rewritten:
+        synth_task.depends_on = [rewritten[-1].task_id]
+        rewritten.append(synth_task)
+    plan.tasks = rewritten
 
 
 def _target_semantics_from_tool_output(tool_output: dict[str, Any]) -> TargetSemantics | None:
