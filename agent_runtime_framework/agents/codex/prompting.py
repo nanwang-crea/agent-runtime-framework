@@ -7,6 +7,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.codex.personas import RuntimePersona
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
+from agent_runtime_framework.agents.codex.semantics import build_task_intent_block as _build_task_intent_block
 
 
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
@@ -129,6 +130,11 @@ def build_resource_semantics_block(task: Any) -> str:
         f"- is_container: {str(bool(semantics['is_container'])).lower()}\n"
         f"- allowed_actions: {allowed}"
     )
+
+
+def build_task_intent_block(goal: str, workspace_root: str = "") -> str:
+    root = Path(workspace_root) if workspace_root else None
+    return _build_task_intent_block(goal, root)
 
 
 def _risk_hint_for_permission(permission_level: str) -> str:

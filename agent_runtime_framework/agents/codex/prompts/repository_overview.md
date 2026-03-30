@@ -3,6 +3,9 @@ repository_overview workflow:
 - For directory targets, observe the structure before selecting representative files.
 - Prioritize README, configuration entry points, package entry points, and core files (main/app/service) as representative files.
 - After reading or extracting outlines of representative files, provide a synthesized explanation of directory responsibilities and key module roles.
+- Treat requests such as "这个目录是做什么的", "梳理一下这个文件夹", "看看这个 package 的职责分布", and "介绍下模块结构" as the same repository-overview task family.
+- A good repository answer usually covers: overall responsibility, important subfolders/files, likely entry points, and why those files matter.
+- If the target resolves to a file instead of a directory, switch to a file-reader style explanation rather than forcing a directory overview.
 
 Example:
 - Goal: "Explain the backend package structure under agent_runtime_framework/demo"

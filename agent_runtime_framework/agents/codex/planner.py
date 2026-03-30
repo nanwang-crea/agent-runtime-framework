@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
+import re
 from typing import Any
 
 from agent_runtime_framework.agents.codex.models import CodexAction
@@ -15,6 +17,7 @@ from agent_runtime_framework.agents.codex.prompting import (
     render_codex_prompt_doc,
 )
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
+from agent_runtime_framework.agents.codex.semantics import build_task_intent_block, goal_is_raw_read, goal_prefers_summary, infer_task_intent
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -71,6 +74,8 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
     goal = str(getattr(task, "goal", "") or "")
+    intent = infer_task_intent(goal, _workspace_root(context), context=context, session=context.session)
+    target_hint = intent.target_hint
     if profile in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
         return CodexAction(
             kind="call_tool",
@@ -78,13 +83,42 @@ def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "resolve_workspace_target",
-                "arguments": {"query": goal, "target_hint": ""},
+                "arguments": {"query": goal, "target_hint": target_hint},
             },
         )
+    if profile == "change_and_verify":
+        return _plan_change_action_from_goal(goal, intent=intent)
     return None
 
 
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> CodexAction | None:
+    intent = infer_task_intent(user_input)
+    if intent.task_kind in {"repository_explainer", "file_reader"} and "resolve_workspace_target" in tool_names:
+        return CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "resolve_workspace_target",
+                "arguments": {"query": user_input, "target_hint": intent.target_hint},
+            },
+        )
+    if intent.task_kind == "test_and_verify":
+        return CodexAction(
+            kind="run_verification",
+            instruction=_extract_verification_command(user_input) or user_input,
+            subgoal="verify_changes",
+            metadata={"command": _extract_verification_command(user_input) or user_input},
+        )
+    if intent.task_kind == "change_and_verify":
+        return _plan_change_action_from_goal(user_input, intent=intent)
+    if intent.task_kind == "chat" and not tool_names:
+        return CodexAction(
+            kind="respond",
+            instruction="你好，我可以继续和你对话。",
+            subgoal="synthesize_answer",
+            metadata={"direct_output": True},
+        )
     return None
 
 
@@ -121,6 +155,10 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         goal=task.goal,
         task_profile=getattr(task, "task_profile", "chat"),
         persona_name=persona.name,
+        task_intent_block=build_task_intent_block(
+            str(getattr(task, "goal", "") or ""),
+            _workspace_root(context),
+        ),
         resource_semantics_block=build_resource_semantics_block(task),
         run_context_block=run_context_block,
         recent_actions=chr(10).join(action_lines) if action_lines else "(none)",
@@ -195,15 +233,119 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
 
 
 def _goal_prefers_summary(goal: str) -> bool:
-    return False
+    return goal_prefers_summary(goal)
 
 
 def _goal_is_raw_read(goal: str) -> bool:
-    return False
+    return goal_is_raw_read(goal)
 
 
 def _direct_file_reader_response(goal: str, observation: str) -> str:
     return observation.strip()
+
+
+def _workspace_root(context: Any) -> Path | None:
+    root_value = context.application_context.config.get("default_directory") if context is not None else None
+    if not root_value:
+        return None
+    return Path(str(root_value))
+
+
+def _plan_change_action_from_goal(goal: str, *, intent: Any) -> CodexAction | None:
+    path = intent.target_hint
+    if not path:
+        return CodexAction(
+            kind="respond",
+            instruction="可以，不过我还需要文件名或路径，以及是否需要初始内容。",
+            subgoal="synthesize_answer",
+            metadata={"direct_output": True, "clarification_required": True},
+        )
+    replace_match = re.search(r'([A-Za-z0-9_./-]+).*?[“"]([^“”"]+)[”"].*?(?:替换成|替换为|替换|改成|为|replace(?:\s+with)?)\s*[“"]([^“”"]+)[”"]', goal)
+    if replace_match:
+        return CodexAction(
+            kind="apply_patch",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "apply_text_patch",
+                "arguments": {
+                    "path": replace_match.group(1),
+                    "search_text": replace_match.group(2),
+                    "replace_text": replace_match.group(3),
+                },
+            },
+        )
+    append_match = re.search(r'([A-Za-z0-9_./-]+).*(?:追加|append).*?[“"]([^“”"]*)[”"]', goal)
+    if append_match:
+        return CodexAction(
+            kind="edit_text",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "append_workspace_text",
+                "arguments": {"path": append_match.group(1), "content": append_match.group(2).encode("utf-8").decode("unicode_escape")},
+            },
+        )
+    move_match = re.search(r'把\s*([A-Za-z0-9_./-]+)\s*移动到\s*([A-Za-z0-9_./-]+)', goal)
+    if move_match:
+        return CodexAction(
+            kind="move_path",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "move_workspace_path",
+                "arguments": {"path": move_match.group(1), "destination_path": move_match.group(2)},
+            },
+        )
+    delete_match = re.search(r'(?:删除|delete)\s*([A-Za-z0-9_./-]+)', goal)
+    if delete_match:
+        return CodexAction(
+            kind="delete_path",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="destructive",
+            metadata={
+                "tool_name": "delete_workspace_path",
+                "arguments": {"path": delete_match.group(1)},
+            },
+        )
+    create_match = re.search(r'(?:创建|新建)\s*([A-Za-z0-9_./-]+)(?:\s*内容\s*(.+))?$', goal)
+    if create_match:
+        return CodexAction(
+            kind="create_path",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "create_workspace_path",
+                "arguments": {
+                    "path": create_match.group(1),
+                    "kind": "file",
+                    "content": str(create_match.group(2) or "").strip(),
+                },
+            },
+        )
+    edit_match = re.search(r'(?:编辑|修改)\s*([A-Za-z0-9_./-]+)(?:\s*内容\s*(.+?))?(?:\s*并运行验证\s+(.+))?$', goal)
+    if edit_match:
+        return CodexAction(
+            kind="edit_text",
+            instruction=goal,
+            subgoal="modify_workspace",
+            risk_class="high",
+            metadata={
+                "tool_name": "edit_workspace_text",
+                "arguments": {"path": edit_match.group(1), "content": str(edit_match.group(2) or "").strip()},
+            },
+        )
+    return None
+
+
+def _extract_verification_command(goal: str) -> str:
+    match = re.search(r'(?:运行验证|验证|run verification)\s+(.+)$', goal, flags=re.IGNORECASE)
+    return str(match.group(1) if match else "").strip()
 
 
 def _normalize_llm_action(parsed: dict[str, Any], *, tool_names: set[str] | None = None) -> CodexAction | None:

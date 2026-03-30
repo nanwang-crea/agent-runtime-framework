@@ -20,7 +20,9 @@ from agent_runtime_framework.agents.codex import (
 )
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
+from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
 from agent_runtime_framework.agents.codex.workflows import WorkflowRegistry
 from agent_runtime_framework.agents.codex.runtime import CodexSessionRuntime
 from agent_runtime_framework.agents.codex.task_plans import (
@@ -138,6 +140,26 @@ def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     assert task.verification is verification
     assert task.memory.known_facts == []
     assert result.artifacts[0]["artifact_type"] == "command_log"
+
+
+def test_infer_task_intent_detects_directory_explanation_variant():
+    intent = infer_task_intent("能不能带我看看 agent_runtime_framework 这个文件夹的职责分布")
+
+    assert intent.task_kind == "repository_explainer"
+    assert intent.user_intent == "explain_directory"
+    assert intent.target_hint == "agent_runtime_framework"
+    assert intent.target_type == "directory"
+    assert "inspect_workspace_path" in intent.suggested_tool_chain
+
+
+def test_classify_task_profile_uses_semantic_fallback_without_model(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+
+    profile = classify_task_profile("帮我梳理一下 src 目录的作用和结构", context)
+
+    assert profile == "repository_explainer"
 
 
 def test_codex_models_support_task_level_plan_defaults():

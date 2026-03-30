@@ -10,6 +10,7 @@ from agent_runtime_framework.agents.codex.models import CodexAction
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.demo.app import _build_demo_next_action_planner
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
 
@@ -81,6 +82,22 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
     assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "call_tool"
+
+
+def test_demo_planner_uses_semantic_directory_detection_before_default_planner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    package = workspace / "agent_runtime_framework"
+    package.mkdir()
+    planner = _build_demo_next_action_planner(workspace)
+    task = SimpleNamespace(goal="能不能带我看看 agent_runtime_framework 这个文件夹的职责分布", actions=[])
+
+    action = planner(task, SimpleNamespace(), SimpleNamespace(), ["inspect_workspace_path"])
+
+    assert action is not None
+    assert action.kind == "call_tool"
+    assert action.metadata["tool_name"] == "inspect_workspace_path"
+    assert action.metadata["arguments"] == {"path": "agent_runtime_framework"}
 
 
 def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):

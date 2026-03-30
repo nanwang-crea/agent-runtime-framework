@@ -343,6 +343,8 @@ class CodexAgentLoop:
         )
 
     def _build_completion_guard_action(self, task: CodexTask) -> CodexAction | None:
+        if has_pending_plan_task(task):
+            return None
         if not self._task_requires_user_visible_summary(task):
             return None
         completed = [action for action in task.actions if action.status == "completed"]
@@ -403,7 +405,11 @@ class CodexAgentLoop:
         if verification is not None:
             summary = self._compact_summary(str(getattr(verification, "summary", "") or ""))
             return ("passed" if bool(getattr(verification, "success", False)) else "failed", summary)
-        payload = dict(last_action.metadata.get("verification_result") or {})
+        payload_value = last_action.metadata.get("verification_result")
+        if hasattr(payload_value, "success") and hasattr(payload_value, "summary"):
+            summary = self._compact_summary(str(getattr(payload_value, "summary", "") or ""))
+            return ("passed" if bool(getattr(payload_value, "success", False)) else "failed", summary)
+        payload = dict(payload_value or {})
         if payload:
             summary = self._compact_summary(str(payload.get("summary") or ""))
             return ("passed" if bool(payload.get("success")) else "failed", summary)

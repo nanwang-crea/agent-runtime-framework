@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 
@@ -13,7 +15,12 @@ def classify_task_profile(user_input: str, context: Any | None = None, session: 
     llm_profile = _classify_task_profile_with_model(user_input, context, session=session)
     if llm_profile is not None:
         return llm_profile
-    return "chat"
+    workspace_root = None
+    if context is not None:
+        root_value = context.application_context.config.get("default_directory")
+        if root_value:
+            workspace_root = Path(str(root_value))
+    return infer_task_intent(user_input, workspace_root, context=context, session=session).task_kind
 
 
 def extract_workspace_target_hint(user_input: str) -> str:
@@ -28,6 +35,8 @@ def is_list_only_request(goal: str) -> bool:
 
 def _classify_task_profile_with_model(user_input: str, context: Any | None = None, *, session: Any | None = None) -> str | None:
     if context is None:
+        return None
+    if not bool(context.services.get("model_first_task_profile_classifier")):
         return None
     runtime = resolve_model_runtime(context.application_context, "planner")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client

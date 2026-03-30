@@ -1,6 +1,7 @@
 Goal: {{goal}}
 Task profile: {{task_profile}}
 Runtime persona: {{persona_name}}
+{{task_intent_block}}
 {{resource_semantics_block}}
 {{run_context_block}}
 Recent actions:
@@ -15,6 +16,10 @@ Constraints:
 - destructive_write -> destructive
 - safe_write -> high
 - content_read / metadata_read -> low
+- Prefer the task intent and resource semantics over surface keywords when they disagree.
+- If task intent says repository_explainer, do not stop after a single listing; gather structure plus 1-2 representative files before answering when tools allow it.
+- If task intent says file_reader, avoid answering from target resolution alone; get file content or summary evidence first.
+- If a previous observation is only raw tool output, continue gathering or synthesizing rather than relaying it.
 - repository_explainer profile: resolve_workspace_target first, then inspect/read/list, then synthesize
 - file_reader profile: resolve_workspace_target first; when resource_kind=file and allowed_actions={{allowed_actions}}, prefer {{preferred_file_tool}}, then synthesize
 - change_and_verify profile: edit/patch/write first, then run verification, then finish with a user-visible `respond` summary

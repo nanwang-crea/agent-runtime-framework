@@ -29,7 +29,7 @@ def _truncate_text(text: str, *, limit: int, label: str = "output") -> str:
     stripped = text.strip()
     if len(stripped) <= limit:
         return stripped
-    return f"{stripped[:limit].rstrip()}\n\n[{label} truncated — showing first {limit} characters.]"
+    return f"{stripped[:limit].rstrip()}\n\n[输出已截断：{label}，仅展示前 {limit} 个字符。]"
 
 
 def _build_agent_output(
@@ -399,13 +399,13 @@ def _resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any]
         }
     if state.status == "ambiguous":
         candidate_paths = [_relative_workspace_path(context, item.ref.location) for item in state.candidates]
-        text = "Multiple possible targets found, please specify one:\n" + "\n".join(f"- {item}" for item in candidate_paths[:6])
+        text = "发现多个可能目标，请明确指定其中一个：\n" + "\n".join(f"- {item}" for item in candidate_paths[:6])
         return {
             **_build_agent_output(
                 path="",
                 text=text,
-                summary="Found multiple possible targets.",
-                next_hint="Specify one of the candidate paths or names directly.",
+                summary="发现多个可能目标。",
+                next_hint="请直接指定其中一个候选路径或名称。",
                 items=candidate_paths[:12],
             ),
             "resolved_path": "",

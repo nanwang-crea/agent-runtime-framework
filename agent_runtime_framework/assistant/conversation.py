@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import ssl
 from typing import Any, Iterable
@@ -11,6 +12,7 @@ from urllib.error import URLError
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
 from agent_runtime_framework.agents.codex.prompting import extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
@@ -104,7 +106,13 @@ def get_route_decision(user_input: str, context: Any | None = None) -> dict[str,
     model_route = _route_with_model(user_input, context)
     if model_route in {"conversation", "codex"}:
         return {"route": model_route, "source": "model"}
-    return {"route": "codex", "source": "default"}
+    workspace_root = None
+    if context is not None:
+        root_value = getattr(getattr(context, "application_context", context), "config", {}).get("default_directory")
+        if root_value:
+            workspace_root = Path(str(root_value))
+    intent = infer_task_intent(user_input, workspace_root, context=context, session=getattr(context, "session", None))
+    return {"route": "conversation" if intent.task_kind == "chat" else "codex", "source": "intent_fallback"}
 
 
 def should_route_to_conversation(user_input: str, context: Any | None = None) -> bool:

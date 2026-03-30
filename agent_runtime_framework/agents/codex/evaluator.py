@@ -10,6 +10,7 @@ from agent_runtime_framework.agents.codex.models import CodexAction, CodexEvalua
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
+from agent_runtime_framework.agents.codex.semantics import goal_is_raw_read, goal_prefers_summary
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
@@ -179,6 +180,28 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
                 },
             ),
             summary="directory evidence needs deeper inspection",
+        )
+    if (
+        task.task_profile == "repository_explainer"
+        and tool_name == "list_workspace_directory"
+        and "inspect_workspace_path" in tool_names
+        and not _has_completed_tool(task, "inspect_workspace_path")
+    ):
+        inspect_path = str(arguments.get("path") or (target_semantics.get("path") if target_semantics else "")).strip()
+        return CodexEvaluationDecision(
+            status="continue",
+            next_action=CodexAction(
+                kind="call_tool",
+                instruction=task.goal,
+                subgoal="gather_evidence",
+                metadata={
+                    "tool_name": "inspect_workspace_path",
+                    "arguments": {"path": inspect_path, "use_last_focus": True},
+                    "from_evaluator": True,
+                    "evaluator_reason": "directory_inspection_needed",
+                },
+            ),
+            summary="directory listing alone is not enough for a repository explanation",
         )
     if (
         task.task_profile == "repository_explainer"
@@ -438,6 +461,14 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
     observation = (last.observation or "").strip()
     if not observation:
         return ""
+    if task.task_profile == "file_reader" and tool_name in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text"}:
+        if tool_name == "read_workspace_text":
+            if goal_is_raw_read(task.goal):
+                return observation
+            return f"我先基于已读取内容做一个简要说明：\n{_summarize_read_content(observation)}"
+        if tool_name == "read_workspace_excerpt":
+            return f"我先基于关键片段做一个简要说明：\n{observation}"
+        return f"我先基于已读取内容做一个简要说明：\n{observation}"
     if task.task_profile == "repository_explainer":
         repository_summary = _build_repository_claim_summary(task)
         if repository_summary:
@@ -451,12 +482,19 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
         return role_summary
     if tool_name == "inspect_workspace_path":
         return f"Here is a summary of the structure and key file roles for `{_extract_target_label(task.goal)}`:\n{observation}"
+    if tool_name == "list_workspace_directory":
+        key_files = ""
+        if "Files:" in observation:
+            key_files = "\n关键文件：" + observation.split("Files:", 1)[1].strip()
+        return f"我先根据目录证据做一个结构说明：\n目录结构：\n{observation}{key_files}"
     if tool_name == "summarize_workspace_text":
-        return f"Here is an initial summary based on your question:\n{observation}"
+        return f"我先基于已读取内容做一个简要说明：\n{observation}"
     if tool_name == "read_workspace_excerpt":
-        return f"Here is a brief explanation based on the key excerpt:\n{observation}"
+        return f"我先基于关键片段做一个简要说明：\n{observation}"
     if tool_name == "read_workspace_text":
-        return f"Here is an initial explanation based on the file content:\n{_summarize_read_content(observation)}"
+        if goal_is_raw_read(task.goal):
+            return observation
+        return f"我先基于已读取内容做一个简要说明：\n{_summarize_read_content(observation)}"
     return observation
 
 
@@ -465,15 +503,15 @@ def _build_repository_claim_summary(task: CodexTask) -> str:
     role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
-        lines.append(f"Directory structure: {structure_claims[0].get('detail', '')}")
+        lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
     for claim in role_claims[:4]:
         subject = str(claim.get("subject") or "").strip()
         detail = str(claim.get("detail") or "").strip()
         if subject and detail:
-            lines.append(f"{subject}: {detail}")
+            lines.append(f"{subject} 的作用：{detail}")
     if not lines:
         return ""
-    return "Based on collected information:\n" + "\n".join(f"- {line}" for line in lines)
+    return "根据当前收集到的证据：\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[dict[str, str]]) -> str:
@@ -485,15 +523,15 @@ def _build_claim_based_answer(goal: str, claims: list[str], typed_claims: list[d
     role_claims = [claim for claim in typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
-        lines.append(f"Directory structure: {structure_claims[0].get('detail', '')}")
+        lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
     if role_claims:
         for claim in role_claims[:3]:
-            lines.append(f"{claim.get('subject', '')}: {claim.get('detail', '')}")
+            lines.append(f"{claim.get('subject', '')} 的作用：{claim.get('detail', '')}")
     elif selected:
         lines.extend(selected)
     if not lines:
         return ""
-    return "Based on collected information:\n" + "\n".join(f"- {line}" for line in lines if line)
+    return "根据当前收集到的证据：\n" + "\n".join(f"- {line}" for line in lines if line)
 
 
 def _goal_target_tokens(goal: str) -> list[str]:
@@ -501,7 +539,7 @@ def _goal_target_tokens(goal: str) -> list[str]:
 
 
 def _goal_prefers_summary(goal: str) -> bool:
-    return False
+    return goal_prefers_summary(goal)
 
 
 def _relative_target_path(target_semantics: dict[str, Any], context: Any) -> str:
