@@ -97,7 +97,7 @@ class ModelCenterStore:
                 if not isinstance(instance_patch, dict):
                     continue
                 current_instance = dict(merged["instances"].get(instance_id, {}))
-                current_instance = _deep_merge(current_instance, instance_patch)
+                current_instance = _deep_merge(current_instance, _normalize_instance_patch(current_instance, instance_patch))
                 merged["instances"][instance_id] = current_instance
 
         incoming_routes = patch.get("routes")
@@ -221,10 +221,22 @@ class ModelCenterService:
                 self.router.set_route(role, instance_id=instance_id, model_name=model)
 
         return {
-            "config": normalized,
+            "config": self._public_config(normalized),
             "runtime": self._runtime_state(normalized),
             "runtime_checks": {"config_path": str(self.store.path)},
         }
+
+    def _public_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        public = json.loads(json.dumps(config))
+        for instance_cfg in (public.get("instances") or {}).values():
+            if not isinstance(instance_cfg, dict):
+                continue
+            credentials = dict(instance_cfg.get("credentials") or {})
+            api_key = str(credentials.get("api_key") or "")
+            instance_cfg["api_key_set"] = bool(api_key)
+            instance_cfg["api_key_preview"] = _mask_api_key(api_key)
+            instance_cfg["credentials"] = {}
+        return public
 
     def _runtime_state(self, config: dict[str, Any]) -> dict[str, Any]:
         instances: dict[str, Any] = {}
@@ -262,16 +274,20 @@ class ModelCenterService:
 
     def _driver_capabilities(self, driver_type: str) -> dict[str, Any]:
         capabilities = self.registry.driver_capabilities(driver_type)
-        return capabilities.as_dict() if hasattr(capabilities, "as_dict") else {
+        if capabilities is None:
+            return {
+                "supports_stream": False,
+                "supports_tools": False,
+                "supports_vision": False,
+                "supports_json_mode": False,
+            }
+        if hasattr(capabilities, "as_dict"):
+            return capabilities.as_dict()
+        return {
             "supports_stream": bool(getattr(capabilities, "supports_stream", False)),
             "supports_tools": bool(getattr(capabilities, "supports_tools", False)),
             "supports_vision": bool(getattr(capabilities, "supports_vision", False)),
             "supports_json_mode": bool(getattr(capabilities, "supports_json_mode", False)),
-        } if capabilities is not None else {
-            "supports_stream": False,
-            "supports_tools": False,
-            "supports_vision": False,
-            "supports_json_mode": False,
         }
 
     def _authenticate_instance(self, instance_id: str, instance_cfg: dict[str, Any]) -> None:
@@ -347,3 +363,31 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             merged[key] = value
     return merged
+
+
+def _mask_api_key(value: str) -> str:
+    token = value.strip()
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}***{token[-4:]}"
+
+
+def _normalize_instance_patch(current_instance: dict[str, Any], instance_patch: dict[str, Any]) -> dict[str, Any]:
+    normalized_patch = json.loads(json.dumps(instance_patch))
+    credentials = normalized_patch.get("credentials")
+    if not isinstance(credentials, dict):
+        return normalized_patch
+    if str(credentials.get("api_key") or "").strip():
+        return normalized_patch
+    current_api_key = str(((current_instance.get("credentials") or {}).get("api_key") or "")).strip()
+    if not current_api_key:
+        return normalized_patch
+    credentials = dict(credentials)
+    credentials.pop("api_key", None)
+    if credentials:
+        normalized_patch["credentials"] = credentials
+    else:
+        normalized_patch.pop("credentials", None)
+    return normalized_patch

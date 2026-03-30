@@ -271,6 +271,30 @@ def test_demo_assistant_app_exposes_model_center_payload(tmp_path: Path):
     assert any(model["model_name"] == "qwen3.5-plus" for model in payload["runtime"]["instances"]["dashscope"]["models"])
 
 
+def test_demo_assistant_app_redacts_api_keys_from_model_center_payload(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    app.update_model_center(
+        {
+            "instances": {
+                "openai": {
+                    "credentials": {"api_key": "sk-secret-1234"},
+                    "connection": {"base_url": "https://api.openai.com/v1"},
+                }
+            }
+        }
+    )
+
+    payload = app.model_center_payload()
+    openai_config = payload["config"]["instances"]["openai"]
+
+    assert openai_config["credentials"] == {}
+    assert openai_config["api_key_set"] is True
+    assert openai_config["api_key_preview"] == "sk-s***1234"
+
+
 def test_demo_assistant_app_updates_model_center_routes(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -351,6 +375,39 @@ def test_demo_assistant_app_updates_config_and_persists_it(tmp_path: Path):
     assert result["config"]["routes"]["conversation"]["model"] == "qwen-plus"
     assert persisted["schema_version"] == 3
     assert persisted["instances"]["dashscope"]["credentials"]["api_key"] == "sk-test"
+
+
+def test_demo_assistant_app_keeps_existing_api_key_when_update_omits_new_key(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    app.update_model_center(
+        {
+            "instances": {
+                "dashscope": {
+                    "credentials": {"api_key": "sk-test"},
+                    "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+                }
+            }
+        }
+    )
+
+    app.update_model_center(
+        {
+            "instances": {
+                "dashscope": {
+                    "credentials": {"api_key": ""},
+                    "connection": {"base_url": "https://example.com/proxy/v1"},
+                }
+            }
+        }
+    )
+
+    persisted = json.loads((workspace / ".arf_demo_config.json").read_text(encoding="utf-8"))
+
+    assert persisted["instances"]["dashscope"]["credentials"]["api_key"] == "sk-test"
+    assert persisted["instances"]["dashscope"]["connection"]["base_url"] == "https://example.com/proxy/v1"
 
 
 def test_demo_assistant_app_streams_chat_events(tmp_path: Path):

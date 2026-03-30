@@ -108,18 +108,6 @@ function App() {
     setStatus("idle");
   }, []);
 
-  async function handleReplay(runId: string) {
-    setStatus("running");
-    try {
-      const payload = await replayRun(runId);
-      applyResponse(payload);
-      setUiError(null);
-    } catch (error) {
-      setUiError(extractAssistantError(error, "重试失败，请检查后端日志。"));
-      setStatus("error");
-    }
-  }
-
   useEffect(() => {
     void loadSession();
     void loadModelCenter();
@@ -200,14 +188,12 @@ function App() {
       return { path: "", instances: [], routes: {} };
     }
     const instances = Object.entries(modelCenter.config.instances || {}).map(([instanceId, instanceCfg]) => {
-      const credentials = instanceCfg.credentials || {};
-      const apiKey = String(credentials["api_key"] || "");
       return {
         instance: instanceId,
         type: instanceCfg.type,
         enabled: Boolean(instanceCfg.enabled),
-        api_key_set: Boolean(apiKey),
-        api_key_preview: maskApiKey(apiKey),
+        api_key_set: Boolean(instanceCfg.api_key_set),
+        api_key_preview: String(instanceCfg.api_key_preview || ""),
         base_url: String((instanceCfg.connection || {})["base_url"] || ""),
       };
     });

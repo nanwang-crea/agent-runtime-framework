@@ -149,6 +149,8 @@ export type ConfigResponse = {
 export type ModelCenterInstanceConfig = {
   type: string;
   enabled: boolean;
+  api_key_set?: boolean;
+  api_key_preview?: string;
   connection: Record<string, unknown>;
   credentials: Record<string, unknown>;
   catalog: {
