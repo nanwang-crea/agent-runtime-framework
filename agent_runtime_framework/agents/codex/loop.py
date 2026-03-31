@@ -25,10 +25,15 @@ from agent_runtime_framework.agents.codex.models import (
     VerificationResult,
 )
 from agent_runtime_framework.agents.codex.delivery import build_completion_guard_action, build_delivery_summary
-from agent_runtime_framework.agents.codex.memory_extractor import extract_memory_items
-from agent_runtime_framework.agents.codex.memory_policy import decide_memory_write
 from agent_runtime_framework.agents.codex.evidence_manager import record_action_evidence
 from agent_runtime_framework.agents.codex.memory import update_task_memory
+from agent_runtime_framework.agents.codex.persistence import (
+    clear_persisted_pending_clarification,
+    pending_clarification_payload,
+    remember_completed_task,
+    restore_persisted_pending_clarification,
+    store_persisted_pending_clarification,
+)
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
@@ -43,7 +48,6 @@ from agent_runtime_framework.agents.codex.task_plans import (
     has_pending_plan_task,
     sync_task_plan,
 )
-from agent_runtime_framework.memory import MemoryRecord
 
 
 _PENDING_CLARIFICATION_KEY = "codex:pending_clarification"
@@ -132,7 +136,10 @@ class CodexAgentLoop:
 
     def _workspace_root(self) -> Path | None:
         root_value = self.context.application_context.config.get("default_directory")
-        return Path(str(root_value)) if root_value else None
+        return Path(str(root_value)).expanduser().resolve() if root_value else None
+
+    def _build_task_plan(self, task: CodexTask):
+        return build_task_plan(task, self.context)
 
     def _new_task(self, goal: str, *, session: AssistantSession) -> CodexTask:
         intent = resolve_task_intent(goal, self.context, session=session)
@@ -382,54 +389,16 @@ class CodexAgentLoop:
         return build_delivery_summary(task, last_action, modified_paths, last_observation)
 
     def _pending_clarification_payload(self) -> dict[str, Any] | None:
-        index_memory = getattr(self.context.application_context, "index_memory", None)
-        get = getattr(index_memory, "get", None)
-        if not callable(get):
-            return None
-        payload = get(_PENDING_CLARIFICATION_KEY)
-        return dict(payload) if isinstance(payload, dict) else None
+        return pending_clarification_payload(self, _PENDING_CLARIFICATION_KEY)
 
     def _restore_persisted_pending_clarification(self) -> CodexTask | None:
-        payload = self._pending_clarification_payload()
-        if payload is None:
-            return None
-        goal = str(payload.get("goal") or "").strip()
-        if not goal:
-            return None
-        task = CodexTask(
-            goal=goal,
-            actions=[],
-            task_profile=str(payload.get("task_profile") or "chat").strip() or "chat",
-            runtime_persona=str(payload.get("runtime_persona") or "").strip(),
-        )
-        memory_payload = dict(payload.get("memory") or {})
-        for field_name, value in memory_payload.items():
-            if field_name in _PERSISTED_STATE_FIELDS and hasattr(task.state, field_name) and isinstance(value, list):
-                setattr(task.state, field_name, [item for item in value if isinstance(item, (str, dict))])
-        task.plan = build_task_plan(task, self.context)
-        return task
+        return restore_persisted_pending_clarification(self, _PENDING_CLARIFICATION_KEY, _PERSISTED_STATE_FIELDS)
 
     def _store_persisted_pending_clarification(self, task: CodexTask, message: str) -> None:
-        index_memory = getattr(self.context.application_context, "index_memory", None)
-        put = getattr(index_memory, "put", None)
-        if not callable(put):
-            return
-        put(
-            _PENDING_CLARIFICATION_KEY,
-            {
-                "goal": task.goal,
-                "task_profile": task.task_profile,
-                "runtime_persona": task.runtime_persona,
-                "message": message,
-                "memory": {field_name: list(getattr(task.state, field_name)) for field_name in _PERSISTED_STATE_FIELDS},
-            },
-        )
+        store_persisted_pending_clarification(self, _PENDING_CLARIFICATION_KEY, task, message, _PERSISTED_STATE_FIELDS)
 
     def _clear_persisted_pending_clarification(self) -> None:
-        index_memory = getattr(self.context.application_context, "index_memory", None)
-        put = getattr(index_memory, "put", None)
-        if callable(put):
-            put(_PENDING_CLARIFICATION_KEY, None)
+        clear_persisted_pending_clarification(self, _PENDING_CLARIFICATION_KEY)
 
     def _next_action_index(self, task: CodexTask, *, start_index: int) -> int | None:
         for index in range(max(0, start_index), len(task.actions)):
@@ -600,58 +569,7 @@ class CodexAgentLoop:
         return VerificationResult(success=True, summary="Task completed.", evidence=[final_output] if final_output else [])
 
     def _remember_completed_task(self, task: CodexTask, final_output: str) -> None:
-        index_memory = getattr(self.context.application_context, "index_memory", None)
-        remember = getattr(index_memory, "remember", None)
-        if not callable(remember):
-            return
-        target_path = self._completed_task_target_path(task)
-        relative_path = self._relative_workspace_path(target_path) if target_path else ""
-        for item in extract_memory_items(task, final_output=final_output):
-            path = relative_path if item.path in {"", "."} else self._relative_workspace_path(item.path)
-            item.path = path or relative_path
-            decision = decide_memory_write(item)
-            if not decision.allow_write:
-                continue
-            remember(
-                MemoryRecord(
-                    key=item.memory_id,
-                    text=f"{task.goal} {item.text}".strip(),
-                    kind="entity_binding" if decision.target_layer == "entity" else ("task_conclusion" if item.record_kind == "summary" else "workspace_fact"),
-                    metadata={
-                        **item.as_metadata(),
-                        "path": item.path,
-                        "task_profile": task.task_profile,
-                        "goal": task.goal,
-                        "layer": decision.target_layer,
-                        "confidence": decision.confidence,
-                        "retrievable_for_resolution": decision.retrievable_for_resolution,
-                    },
-                )
-            )
-        for index, claim in enumerate(task.state.typed_claims[:5]):
-            detail = " ".join(
-                str(claim.get(field) or "").strip()
-                for field in ("subject", "detail", "kind")
-                if str(claim.get(field) or "").strip()
-            )
-            if not detail:
-                continue
-            remember(
-                MemoryRecord(
-                    key=f"task:{task.task_id}:typed:{index}",
-                    text=f"{task.goal} {detail}".strip(),
-                    kind="workspace_fact",
-                    metadata={
-                        "path": relative_path,
-                        "task_profile": task.task_profile,
-                        "claim_kind": str(claim.get("kind") or ""),
-                        "layer": "daily",
-                        "record_kind": "observation",
-                        "confidence": 0.5,
-                        "retrievable_for_resolution": bool(claim.get("kind") == "role" and relative_path and relative_path != "."),
-                    },
-                )
-            )
+        remember_completed_task(self, task, final_output)
 
     def _completed_task_target_path(self, task: CodexTask) -> str:
         plan = task.plan

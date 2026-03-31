@@ -23,10 +23,36 @@ def _create_demo_assistant_app_with_test_planner(workspace: Path):
             last_action = completed[-1]
             if last_action.kind == "respond":
                 return None
+            tool_name = str(last_action.metadata.get("tool_name") or "")
+            if tool_name == "resolve_workspace_target":
+                result_meta = dict((last_action.metadata.get("result") or {}))
+                tool_output = dict(result_meta.get("tool_output") or {})
+                resolution_status = str(tool_output.get("resolution_status") or "resolved").strip()
+                resolved_path = str(tool_output.get("resolved_path") or tool_output.get("path") or "").strip()
+                if resolution_status in {"ambiguous", "unresolved"}:
+                    return CodexAction(
+                        kind="respond",
+                        instruction=str(tool_output.get("text") or last_action.observation or "Please clarify the target."),
+                        metadata={"direct_output": True, "clarification_required": True},
+                    )
+                if resolved_path and "read_workspace_text" in tool_names:
+                    return CodexAction(
+                        kind="call_tool",
+                        instruction=task.goal,
+                        subgoal="gather_evidence",
+                        metadata={"tool_name": "read_workspace_text", "arguments": {"path": resolved_path}},
+                    )
             if last_action.observation:
+                instruction = last_action.observation
+                if tool_name == "read_workspace_text":
+                    result_meta = dict((last_action.metadata.get("result") or {}))
+                    tool_output = dict(result_meta.get("tool_output") or {})
+                    read_path = str(tool_output.get("path") or last_action.metadata.get("arguments", {}).get("path") or "").strip()
+                    if read_path and "User clarification:" in str(task.goal):
+                        instruction = f"{read_path}\n{last_action.observation}" if read_path not in last_action.observation else last_action.observation
                 return CodexAction(
                     kind="respond",
-                    instruction=last_action.observation,
+                    instruction=instruction,
                     metadata={"direct_output": True},
                 )
             return None

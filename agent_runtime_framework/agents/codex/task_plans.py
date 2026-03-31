@@ -8,25 +8,22 @@ from typing import Any
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexPlan, CodexPlanTask, CodexTask, TargetSemantics
 from agent_runtime_framework.agents.codex.answer_synthesizer import build_synthesized_response_action, synthesize_answer
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, extract_json_block, extract_task_resource_semantics, render_codex_prompt_doc
+from agent_runtime_framework.agents.codex.prompting import extract_json_block
 from agent_runtime_framework.agents.codex.run_context import available_tool_names
 from agent_runtime_framework.agents.codex.semantics import goal_is_raw_read, goal_prefers_summary, infer_task_intent, repository_target_hint
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
-from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.models import resolve_model_runtime
 
 
 def build_task_plan(task: CodexTask, context: Any) -> CodexPlan | None:
     persona = resolve_runtime_persona(context, task=task)
     tool_names = set(available_tool_names(context, persona=persona))
-    workspace_root = str(context.application_context.config.get("default_directory") or "")
+    workspace_root = str(Path(str(context.application_context.config.get("default_directory") or "")).expanduser().resolve() if context.application_context.config.get("default_directory") else "")
     intent = task.intent
-    llm_plan = _build_task_plan_with_llm(task, context, tool_names=tool_names, intent=intent)
-    if llm_plan is not None:
-        return llm_plan
     builder = _fallback_plan_builder(intent)
-    if builder is not None:
-        return builder(task, tool_names=tool_names, workspace_root=workspace_root, intent=intent)
-    return None
+    if builder is None:
+        return None
+    return builder(task, tool_names=tool_names, workspace_root=workspace_root, intent=intent)
 
 
 def _fallback_plan_builder(intent: Any):
@@ -91,18 +88,18 @@ def _build_repository_plan_fallback(task: CodexTask, *, tool_names: set[str], wo
     )
     tasks.append(gather_step)
     tasks.append(CodexPlanTask(title="Synthesize repository overview", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target or "."}))
-    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict(), "plan_source": "deterministic"})
 
 
 def _build_file_reader_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
     if "resolve_workspace_target" not in tool_names:
         return None
     target = intent.target_ref or intent.target_hint or _extract_repository_target(task.goal)
-    preferred_read_tool = "read_workspace_excerpt" if _goal_prefers_summary(task.goal) and "read_workspace_excerpt" in tool_names else "read_workspace_text"
+    preferred_read_tool = "summarize_workspace_text" if goal_prefers_summary(task.goal) and "summarize_workspace_text" in tool_names else "read_workspace_text"
     locate_step = CodexPlanTask(title="Locate file target", kind="locate_target", metadata={"target_hint": target, "query": task.goal, "use_default_directory": not target})
     gather_step = CodexPlanTask(title="Gather file contents", kind="gather_context", depends_on=[locate_step.task_id], metadata={"path": target, "use_default_directory": not target, "use_resolved_target": True, "preferred_read_tool": preferred_read_tool})
     tasks = [locate_step, gather_step, CodexPlanTask(title="Synthesize file summary", kind="synthesize_answer", depends_on=[gather_step.task_id], metadata={"path": target})]
-    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict(), "plan_source": "deterministic"})
 
 
 def _build_change_plan_fallback(task: CodexTask, *, tool_names: set[str], workspace_root: str, intent: Any) -> CodexPlan | None:
@@ -118,112 +115,8 @@ def _build_change_plan_fallback(task: CodexTask, *, tool_names: set[str], worksp
         verify_step.depends_on = [edit_step.task_id]
         tasks.append(verify_step)
     tasks.append(CodexPlanTask(title="Synthesize change summary", kind="synthesize_answer", depends_on=[tasks[-1].task_id]))
-    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict()})
+    return CodexPlan(tasks=tasks, metadata={"workspace_root": workspace_root, "workflow": workflow_name_for_task_profile(task.task_profile), "task_intent": intent.as_dict(), "plan_source": "deterministic"})
 
-
-def _build_task_plan_with_llm(task: CodexTask, context: Any, *, tool_names: set[str], intent: Any) -> CodexPlan | None:
-    enabled = context.services.get("model_first_task_plan")
-    if enabled is False:
-        return None
-    if enabled is not True and str(getattr(task, "task_profile", "") or "") not in {"repository_explainer", "file_reader"}:
-        return None
-    runtime = resolve_model_runtime(context.application_context, "planner")
-    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
-    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
-    if llm_client is None or not model_name or not tool_names:
-        return None
-    workspace_root = str(context.application_context.config.get("default_directory") or "")
-    tool_block = "\n".join(f"- {name}" for name in sorted(tool_names))
-    try:
-        response = chat_once(
-            llm_client,
-            ChatRequest(
-                model=model_name,
-                messages=[
-                    ChatMessage(
-                        role="system",
-                        content=build_codex_system_prompt(render_codex_prompt_doc("task_plan_builder_system")),
-                    ),
-                    ChatMessage(
-                        role="user",
-                        content=render_codex_prompt_doc(
-                            "task_plan_builder_user",
-                            goal=task.goal,
-                            task_profile=task.task_profile,
-                            task_intent_block=(
-                                "Task intent:\n"
-                                f"- task_kind: {intent.task_kind}\n"
-                                f"- user_intent: {intent.user_intent}\n"
-                                f"- target_hint: {intent.target_hint or '(unknown)'}\n"
-                                f"- target_type: {intent.target_type}\n"
-                                f"- expected_output: {intent.expected_output}\n"
-                                f"- needs_grounding: {str(intent.needs_grounding).lower()}"
-                            ),
-                            available_tools=tool_block,
-                            workspace_root=workspace_root,
-                        ),
-                    ),
-                ],
-                temperature=0.0,
-                max_tokens=420,
-            ),
-        )
-    except Exception:
-        return None
-    parsed = _parse_json_payload(str(response.content or ""))
-    items = parsed.get("tasks") or []
-    if not isinstance(items, list) or not items:
-        return None
-    title_to_id: dict[str, str] = {}
-    tasks: list[CodexPlanTask] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("kind") or "").strip()
-        title = str(item.get("title") or kind or "Plan step").strip()
-        if kind not in {
-            "locate_target",
-            "gather_context",
-            "inspect_target",
-            "rank_representative_files",
-            "extract_outline",
-            "read_entrypoint",
-            "modify_target",
-            "run_verification",
-            "clarify_target",
-            "synthesize_answer",
-        }:
-            continue
-        depends_on: list[str] = []
-        for dep in item.get("depends_on") or []:
-            dep_id = title_to_id.get(str(dep).strip())
-            if dep_id:
-                depends_on.append(dep_id)
-        metadata = {
-            "tool_name": str(item.get("tool_name") or "").strip(),
-            "path": str(item.get("path") or "").strip(),
-            "arguments": dict(item.get("arguments") or {}),
-            "message": str(item.get("message") or "").strip(),
-            "risk_class": str(item.get("risk_class") or "").strip(),
-        }
-        if metadata["tool_name"] and metadata["tool_name"] not in tool_names:
-            continue
-        plan_task = CodexPlanTask(title=title, kind=kind, depends_on=depends_on, metadata={k: v for k, v in metadata.items() if v})
-        title_to_id[title] = plan_task.task_id
-        tasks.append(plan_task)
-    if not tasks:
-        return None
-    if tasks[-1].kind != "synthesize_answer":
-        tasks.append(CodexPlanTask(title="Synthesize answer", kind="synthesize_answer", depends_on=[tasks[-1].task_id]))
-    return CodexPlan(
-        tasks=tasks,
-        metadata={
-            "workspace_root": workspace_root,
-            "workflow": workflow_name_for_task_profile(task.task_profile),
-            "task_intent": intent.as_dict(),
-            "plan_source": "llm",
-        },
-    )
 
 
 def _build_change_edit_task(goal: str, tool_names: set[str]) -> CodexPlanTask | None:
@@ -573,16 +466,6 @@ def _is_list_only_request(goal: str) -> bool:
 def _extract_change_target(goal: str) -> str:
     return ""
     return ""
-
-
-def _goal_prefers_summary(goal: str) -> bool:
-    return goal_prefers_summary(goal)
-
-
-def _goal_is_raw_read(goal: str) -> bool:
-    return goal_is_raw_read(goal)
-
-
 def _resolved_plan_path(plan_task: CodexPlanTask) -> str:
     return str(plan_task.metadata.get("resolved_path") or plan_task.metadata.get("path") or "")
 
@@ -738,7 +621,6 @@ def _build_file_reader_summary(task: CodexTask) -> str:
 def _action_kind_for_tool(tool_name: str) -> str:
     return {
         "edit_workspace_text": "edit_text",
-        "replace_workspace_text": "edit_text",
         "append_workspace_text": "edit_text",
         "apply_text_patch": "apply_patch",
         "create_workspace_path": "create_path",

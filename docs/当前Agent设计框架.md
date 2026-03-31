@@ -1,351 +1,177 @@
 # 当前 Agent 设计框架
 
-> 状态说明：`assistant / capability` 主线与 `desktop_content_application` 兼容链已经从当前代码库中移除。本页以下内容仅保留为历史背景，当前实际生效的主链是 `demo/app.py -> CodexAgentLoop -> agents/codex/*`。
+> 状态说明：当前代码库的顶层主运行时已经切换为 `workflow-first`。实际生效的主链是 `demo/app.py -> WorkflowRuntime -> workflow/*`，`CodexAgentLoop` 继续保留，但定位为兼容子任务执行后端，而不是顶层唯一运行时。
 
-## 1. 目标
+## 1. 当前目标
 
-当前 Agent 的目标是提供一个接近 Codex 风格的单代理桌面 AI 助手基础框架。它不是单纯的桌面文件助手，也不是仅能执行一次性 application 的运行器，而是一个具备以下能力的单代理系统：
+当前 Agent 的目标不再只是“把一句用户输入映射成一个 `CodexTask` 并在单任务循环里完成”，而是：
 
-- 维护多轮会话
-- 在多个 capability 之间做选择
-- 统一接入本地桌面能力、skills、MCP 能力
-- 在执行前后保留可解释的决策边界
+- 把用户目标拆成显式子任务
+- 用图结构表达依赖关系
+- 在节点级别执行、暂停、恢复、聚合
+- 用统一 final response 输出总结与引用
 
-当前阶段仍然是单代理，不包含子代理调度、多代理协作和后台自治任务系统。
+当前阶段已经支持的重点能力：
 
-## 2. 当前 capability 主链路
+- 复合 workspace 请求的目标分析与拆解
+- 顺序 workflow 调度
+- 原生目录概览 / 文件读取节点
+- 聚合节点与最终回答节点
+- 节点级审批 / 恢复
+- workflow 持久化恢复
+- demo app 对 compound goal 的 workflow-first 路由
 
-当前 Agent 的主链路可以概括为：
+## 2. 顶层主链路
 
-`用户输入 -> AgentLoop -> plan -> capability 执行 -> review -> continue/stop -> 回复写回会话`
+当前主链路可以概括为：
 
-其中核心对象如下：
-
-- `AssistantSession`
-  负责保存当前线程中的 user / assistant turn、最近聚焦的 capability、计划历史等会话状态。
-
-- `AssistantContext`
-  负责聚合 agent 运行时依赖，包括：
-  - `application_context`
-  - `capabilities`
-  - `skills`
-  - `services`
-  - `session`
-
-- `AgentLoop`
-  负责最小可行的代理循环。当前主流程为：
-  1. `planner` 生成 `ExecutionPlan`
-  2. 执行 `PlannedAction`
-  3. `reviewer` 判断 `continue / stop`
-  4. 如遇高风险 capability，则进入 `approval / resume`
-
-- `ExecutionPlan`
-- `PlannedAction`
-- `ApprovalManager`
-- `ApprovalRequest`
-- `ResumeToken`
-
-## 3. Capability 体系
-
-当前 Agent 不直接把桌面动作、skill 或 MCP 当作特例，而是统一收敛到 capability 体系。
-但从当前阶段开始，`CapabilityRegistry` 的定位不再只是“直接执行中心”，而是逐步转向：
-
-- `assistant` 侧的能力发现 / 目录中心
-- profile/runtime 装配层的语义注册表
-- 通往 `agents/codex` 的桥接入口，而不是唯一执行平面
-
-关键对象：
-
-- `CapabilitySpec`
-- `CapabilityRegistry`
-
-`CapabilitySpec` 目前包含：
-
-- `name`
-- `runner`
-- `source`
-- `description`
-- `safety_level`
-- `input_contract`
-- `cost_hint`
-- `latency_hint`
-- `risk_class`
-- `dependency_readiness`
-- `output_type`
-- `execution_mode`
-
-这样 capability selector 在选择能力时，已经不再只看 capability 名称，而是可以同时参考：
-
-- capability 的用途说明
-- capability 的安全等级
-- capability 的输入契约
-- capability 的成本 / 延迟 / 风险
-- capability 的依赖就绪度与输出类型
+`用户输入 -> 路由判断 -> Goal Analysis -> Goal Decomposition -> Graph Build -> Workflow Runtime -> Node Execution -> Aggregation -> Final Response`
 
 其中：
 
-- `execution_mode=direct` 表示该 capability 仍可在 `AgentLoop` 中直接执行
-- `execution_mode=codex_only` 表示它只是能力目录中的发现条目，真实执行应下沉到 `agents/codex` 的 action/tool 层
+- 普通对话请求仍可走 conversation path
+- 复合 workspace 请求优先走 workflow path
+- 单个复杂子任务可下沉到 `CodexSubtaskExecutor -> CodexAgentLoop`
 
-当前已开始允许把 tool 注册为 `tool:<name>` 形式的 discovery capability，用于给 selector / planner 提供统一能力视图，但不会继续把它们直接当作 capability runner 执行。
+## 3. 当前核心分层
 
-## 4. Skill 接入方式
+### 3.1 Entry Layer
 
-`SkillRegistry` 当前已经支持 skill 元数据：
+入口仍由 `agent_runtime_framework.demo` 提供：
 
-- `trigger_phrases`
-- `required_capabilities`
-- `planner_hint`
+- `demo/server.py`
+- `demo/app.py`
 
-当前 skill 仍然是 capability 的一种来源，注册后会映射成 `skill:<name>` 形式的 capability。
+其中 `DemoAssistantApp` 负责：
 
-这意味着当前 skill 系统已经具备两个角色：
+- chat / stream / replay / approve
+- conversation 与 workflow 路由
+- demo payload 组织
+- model center / workspace 上下文管理
 
-1. 作为 fallback 触发能力
-2. 作为后续 planner / selector 的语义提示源
+### 3.2 Workflow Layer
 
-## 5. MCP 接入方式
+`agent_runtime_framework.workflow` 是当前顶层主运行时。
 
-当前 MCP 已分两层：
+当前已落地模块包括：
 
-- `StaticMCPProvider`
-  用于测试和本地静态注册
+- `models.py`
+- `goal_analysis.py`
+- `decomposition.py`
+- `graph_builder.py`
+- `scheduler.py`
+- `runtime.py`
+- `node_executors.py`
+- `codex_subtask.py`
+- `aggregator.py`
+- `approval.py`
+- `persistence.py`
 
-- `MCPClientAdapter`
-  用于把具备 `list_tools()` / `call_tool()` 接口的 MCP client 映射为框架内的 provider
+这一层负责：
 
-MCP provider 暴露的是 `MCPToolSpec`，其中包含：
-
-- `name`
-- `description`
-- `input_schema`
-- `safety_level`
-- `cost_hint`
-- `latency_hint`
-- `risk_class`
-- `dependency_readiness`
-- `output_type`
-- `runner`
-
-这使得 MCP 工具已经具备“可发现 schema”能力，而不是只能以静态回调形式存在。
-
-## 6. 模型接入层设计
-
-当前框架已经开始使用 LLM，但还没有独立的“模型接入层”。后续为了支持：
-
-- 用户选择使用哪个模型
-- 同时接入多个 provider
-- 用户为不同 provider 做 auth 登录
-- conversation / planner / selector / summarizer 使用不同模型
-
-需要把模型能力从 `ApplicationContext.llm_client` 这种单点字段，提升为一个单独子系统。
-
-建议新增一个 `models/` 或 `providers/llm/` 模块，核心对象包括：
-
-- `ModelProvider`
-- `ModelRegistry`
-- `ModelProfile`
-- `AuthSession`
-- `CredentialStore`
-- `ModelRouter`
-
-职责划分建议如下：
-
-- `ModelProvider`
-  负责对接具体厂商，如 OpenAI、Anthropic、Gemini、OpenRouter 或本地模型网关。
-
-- `ModelRegistry`
-  负责注册所有可用 provider 与模型清单，并暴露统一查询接口。
-
-- `ModelProfile`
-  负责描述单个模型的语义属性，例如：
-  - `provider`
-  - `model_name`
-  - `display_name`
-  - `context_window`
-  - `supports_tools`
-  - `supports_vision`
-  - `cost_level`
-  - `latency_level`
-  - `reasoning_level`
-  - `auth_requirement`
-
-- `AuthSession`
-  负责描述用户与某个 provider 的登录状态，而不是把 API key 直接散落在 application config 里。
-
-- `CredentialStore`
-  负责安全存储 provider 凭据。桌面端阶段建议优先对接系统 keychain，而不是明文配置。
-
-- `ModelRouter`
-  负责把不同子任务分配给不同模型，例如：
-  - 对话走 conversation model
-  - capability selector 走 cheap-fast model
-  - planner / reviewer 走 stronger reasoning model
-  - summarize 走 long-context model
-
-这层的关键点不是“多接几个模型”，而是让模型成为框架中的一级资源，而不是一个散落在各处的 SDK client。
-
-## 7. 当前桌面能力如何挂进来
-
-当前桌面内容能力仍由 `desktop_content_application` 承担，但它现在只是 capability 体系中的一个实现，而不再是整个系统的顶层入口。
-
-桌面能力内部结构：
-
-- `ResolverPipeline`
-- `DesktopActionHandlerRegistry`
-- `run_stage_parser`
-
-当前 Agent 会把它作为 `desktop_content` capability 注册进 `CapabilityRegistry`，然后由 `AgentLoop` 选择是否调用。
-
-## 8. 当前设计的边界
-
-当前 Agent 框架已经具备：
-
-- 单代理主循环
-- 最小 `plan -> act -> review -> continue/stop` 循环
-- 多 capability 统一编排
-- skills 插槽
-- MCP 插槽
-- 桌面内容 capability
-- conversation capability
-- LLM-first capability selector
-- approval / resume 骨架
-- assistant -> codex 的桥接能力
-
-但仍然没有：
-
-- 子代理委派
-- 统一 artifact 系统
-- 更强的 planner / reviewer 结构化 LLM 版本
-- 会话级 MCP 生命周期治理
-- 独立的模型注册 / 认证 / 路由层
-
-因此它现在属于“单代理平台骨架已成型，已具备最小代理循环与审批恢复能力，但模型基础设施、真实执行隔离与 action/tool 主链成熟度仍偏薄”的阶段。
-
-## 9. 新增的双层方向
-
-从 2026-03-23 开始，框架不再把“Codex 风格 agent”与“通用 assistant framework”混在同一条主链路里，而是改成双层结构：
-
-- `Kernel`
-  通用底座：graph、policy、models、tools、artifacts、memory、approval、checkpoint
-- `Profile / Runtime`
-  当前 `assistant` 运行时仍然存在，继续承担 capability-centric 的桌面助手装配，以及 capability / skill / MCP / tool discovery 的宿主层角色
-- `Agent`
-  新增 `agents/codex`，负责 action-centric 的 Codex 风格强执行闭环
-
-这意味着后续职责边界会更明确：
-
-- `assistant`：会话、上下文、发现、兼容、桥接
-- `CapabilityRegistry`：语义能力目录与 profile 装配表
-- `agents/codex`：任务推进、工具执行、审批恢复、artifact、sandbox 接入点
-
-## 10. 当前 Codex Agent 主链路
-
-当前 `agents/codex` 主链路已经从单纯的 next-action loop，演进为：
-
-`user input -> router -> planner / task pattern -> tool execution -> output evaluator -> continue / finish`
-
-当前已具备：
-
-- `router`
-  区分普通对话与任务执行，优先走模型，失败时回退确定性规则。
-
-- `planner`
-  负责下一步动作选择，支持 role 级模型路由和结构化动作约束。
-
-- `task pattern`
-  对高频任务补专门模式，例如目录/代码库讲解。
-
-- `output_evaluator`
-  已升级为 `LLM-first + deterministic fallback`。
-  负责判断：
-  - 当前结果是否已经足够完成目标
-  - 是否需要继续调用工具
-  - 是否应该先综合证据再回复
-
-- `approval / resume`
-  继续承担高风险动作的人工确认边界。
-
-## 11. 当前最大缺口
-
-当前最明显的缺口已经不再是 router / planner / evaluator 本身，而是 **真实 sandbox**。
-
-现在已有：
-
-- tool permission level
-- workspace root path guard
+- run / graph / node / result 状态表达
+- ready node 调度
+- 节点执行与状态推进
 - approval / resume
+- persistence / recovery
+- 最终结果聚合
 
-但仍然缺少：
+### 3.3 Codex Compatibility Layer
 
-- shell execution sandbox
-- network isolation
-- sandbox mode（`read_only / workspace_write / full_access`）
-- sandbox 状态进入 trace / UI
+`agent_runtime_framework.agents.codex` 当前的定位是：
 
-所以当前系统已经有“执行策略”，但还没有真正的“执行隔离”。
+- 兼容已有单任务能力
+- 在 workflow 节点需要时执行局部复杂子任务
+- 保留 planner / evaluator / tool execution / answer synthesis 等成熟能力
 
-这意味着当前仓库里已经存在两条并行路线：
+换句话说：
 
-1. `assistant`：
-   面向桌面助手、capability 选择、conversation + desktop content 组合
-2. `agents/codex`：
-   面向任务推进、工具调用、审批恢复、artifact 记录、验证闭环
+- 以前：`CodexAgentLoop` = 主运行时
+- 现在：`CodexAgentLoop` = compatibility backend
 
-## 10. 当前 Codex Runtime 的最小能力
+### 3.4 Infra Layer
 
-新增 `agents/codex` 目前已经具备：
+以下基础设施仍然被复用，而不是重写：
 
-- `CodexTask`
-- `CodexAction`
-- `CodexActionResult`
-- `VerificationResult`
-- `CodexAgentLoop`
+- `tools`：工具注册与执行
+- `resources`：工作区解析与语义识别
+- `memory`：session / index / markdown memory
+- `models`：provider / auth / route
+- `policy` / `sandbox`：权限与执行约束
 
-当前最小内置动作 / 工具闭环已经开始形成：
+## 4. 当前运行模型
 
-- `call_tool`
-- `run_verification`
-- `apply_patch`
-- `move_path`
-- `delete_path`
-- `create_path`
-- `edit_text`
-- 默认 tool 集：
-  - `list_workspace_directory`
-  - `read_workspace_text`
-  - `summarize_workspace_text`
-  - `run_shell_command`
-  - `apply_text_patch`
-  - `move_workspace_path`
-  - `delete_workspace_path`
-  - `create_workspace_path`
-  - `edit_workspace_text`
+### 4.1 Run 级对象
 
-并且已经具备：
+当前 workflow 运行时使用以下核心对象：
 
-- LLM-first next-action planner
-- tool schema + task state + recent observation 参与下一步动作选择
-- 默认启发式 planner
-- artifact 持久化
-- 高风险 action 的 approval / resume
-- demo 桌面端入口已经切换为 `CodexAgentLoop`
-- demo / frontend shell 已具备同会话切换 agent 与 workspace 的 context 骨架
+- `WorkflowRun`
+- `WorkflowGraph`
+- `WorkflowNode`
+- `WorkflowEdge`
+- `NodeState`
+- `NodeResult`
+- `GoalSpec`
+- `SubTaskSpec`
 
-## 11. 当前阶段的架构判断
+### 4.2 状态机
 
-当前方向比之前更正确，原因不是“抽象更多”，而是“抽象位置更低”：
+当前已稳定使用的 run 状态包括：
 
-- 以前更偏 `capability-centric`
-- 现在已经开始形成 `action/tool-centric`
-- 写操作的风险语义已经开始从 application/capability 层下沉到 action 层
-- planner 的决策输入已经开始包含 tool schema、task state 和 recent observation
+- `pending`
+- `running`
+- `waiting_approval`
+- `completed`
+- `failed`
 
-这更接近 Codex 类型 agent 的真实工作方式。
+当前已稳定使用的 node 状态包括：
 
-但当前仍然只是第一阶段，主要限制仍然是：
+- `pending`
+- `running`
+- `waiting_approval`
+- `completed`
+- `failed`
 
-- 默认 planner 还是启发式规则，不是真正的 task planner
-- `desktop_content_application` 仍作为兼容层保留，还没有被彻底移除
-- frontend 还只是第一阶段 shell，还没有形成真正的 profile/plugin 式面板体系
-- command / patch 目前还是最小版本，不是完整工作区执行系统
+## 5. 当前生效的节点类型
+
+已经具备最小可用实现的节点类型包括：
+
+- `repository_explainer`
+- `file_reader`
+- `aggregate_results`
+- `final_response`
+- `codex_subtask`
+
+其中：
+
+- `repository_explainer` 当前由 `WorkspaceOverviewExecutor` 实现
+- `file_reader` 当前由 `FileReadExecutor` 实现
+- `aggregate_results` 当前由 `AggregationExecutor` 实现
+- `final_response` 当前由 `FinalResponseExecutor` 实现
+- `codex_subtask` 当前由 `CodexSubtaskExecutor` 适配旧 `CodexAgentLoop`
+
+## 6. 当前已验证的主路径
+
+本轮实现已经验证：
+
+- workflow domain tests
+- workflow runtime / scheduler tests
+- decomposition / graph builder tests
+- node executors / aggregator tests
+- approval / persistence tests
+- demo app compound-goal workflow end-to-end tests
+- public surface 导出 tests
+
+## 7. 当前仍然保留的边界
+
+当前还没有完全完成的点包括：
+
+- 真正的并行节点执行
+- 更丰富的 verification / change-flow 原生节点
+- workflow-first 覆盖更多 demo / app 路径
+- 更彻底的 codex-only 旧路径降级与清理
+- 全量回归里旧 `CodexAgentLoop` 修复链路的 3 个失败用例收口
+
+因此，当前框架可以描述为：
+
+**workflow 已成为顶层主运行时，但 Codex compatibility backend 仍在过渡期。**

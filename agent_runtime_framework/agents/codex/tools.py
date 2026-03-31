@@ -132,15 +132,6 @@ def build_default_codex_tools() -> list[ToolSpec]:
             prompt_guidelines=["Use extract_workspace_outline on representative files before writing a repository overview."],
         ),
         ToolSpec(
-            name="replace_workspace_text",
-            description="Replace a known text fragment in a workspace file.",
-            executor=_replace_workspace_text,
-            input_schema={"path": "string", "search_text": "string", "replace_text": "string"},
-            permission_level="safe_write",
-            prompt_asset_path=str(_TOOL_ASSETS_DIR / "replace_workspace_text.md"),
-            serialize_by_argument="path",
-        ),
-        ToolSpec(
             name="append_workspace_text",
             description="Append text to the end of a workspace file.",
             executor=_append_workspace_text,
@@ -595,70 +586,66 @@ def _resolve_target_fallback(query: str, target_hint: str, candidates: list[str]
     return "."
 
 
-def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+def _load_workspace_text_payload(context: Any, arguments: dict[str, Any]) -> tuple[ResourceRef, str]:
     ref = _resolve_resource_ref(
         context,
         str(arguments.get("path") or ""),
         use_last_focus=bool(arguments.get("use_last_focus")),
     )
     content = context.application_context.resource_repository.load_text(ref)
-    limited = _truncate_text(content, limit=_output_limit(context, "codex_max_read_chars", 4000))
-    summary = "\n".join(limited.splitlines()[:3]) if limited.strip() else ""
+    return ref, content
+
+
+def _content_summary_lines(content: str) -> list[str]:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return [content[:300].strip()] if content.strip() else []
+    summary_lines = [lines[0]]
+    detail_lines = [line for line in lines[1:] if len(line) > 12 and not line.startswith(("#", "- ", "* ", "```"))]
+    if detail_lines:
+        summary_lines.extend(detail_lines[:2])
+    else:
+        summary_lines.extend(lines[1:3])
+    return [line for line in summary_lines if line][:3]
+
+
+def _render_workspace_text_view(context: Any, arguments: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    ref, content = _load_workspace_text_payload(context, arguments)
+    if mode == "full":
+        text = _truncate_text(content, limit=_output_limit(context, "codex_max_read_chars", 4000))
+        summary = "\n".join(text.splitlines()[:3]) if text.strip() else f"Read {Path(ref.location).name}"
+        next_hint = "If more content is needed, continue reading the same path or switch to summarize/inspect."
+        truncated = text != content.strip()
+    elif mode == "excerpt":
+        try:
+            max_lines = max(1, int(arguments.get("max_lines") or 12))
+        except (TypeError, ValueError):
+            max_lines = 12
+        excerpt = "\n".join(content.splitlines()[:max_lines]).strip() or content[: _output_limit(context, "codex_max_summary_chars", 1000)].strip()
+        text = _truncate_text(excerpt, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="excerpt")
+        summary = "\n".join(line.strip() for line in text.splitlines()[:2] if line.strip()) or f"Excerpt of {Path(ref.location).name}"
+        next_hint = "If the excerpt is insufficient, read the full file or switch to summarize mode."
+        truncated = text != content.strip()
+    else:
+        summary_text = "\n".join(_content_summary_lines(content)).strip() or content[:300].strip()
+        text = _truncate_text(summary_text, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="summary")
+        summary = text
+        next_hint = "If the summary is insufficient, read the original file for full details."
+        truncated = text != content.strip()
     _remember_focus(context, ref, summary)
-    return _build_agent_output(
-        path=ref.location,
-        text=limited,
-        summary=summary or f"Read {Path(ref.location).name}",
-        truncated=limited != content.strip(),
-        next_hint="If more content is needed, continue reading the same path or switch to summarize/inspect.",
-    )
+    return _build_agent_output(path=ref.location, text=text, summary=summary, truncated=truncated, next_hint=next_hint)
+
+
+def _read_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    return _render_workspace_text_view(context, arguments, mode="full")
 
 
 def _read_workspace_excerpt(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    ref = _resolve_resource_ref(
-        context,
-        str(arguments.get("path") or ""),
-        use_last_focus=bool(arguments.get("use_last_focus")),
-    )
-    content = context.application_context.resource_repository.load_text(ref)
-    try:
-        max_lines = max(1, int(arguments.get("max_lines") or 12))
-    except (TypeError, ValueError):
-        max_lines = 12
-    excerpt = "\n".join(content.splitlines()[:max_lines]).strip()
-    if not excerpt:
-        excerpt = content[: _output_limit(context, "codex_max_summary_chars", 1000)].strip()
-    excerpt = _truncate_text(excerpt, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="excerpt")
-    summary = "\n".join(line.strip() for line in excerpt.splitlines()[:2] if line.strip()) or f"Excerpt of {Path(ref.location).name}"
-    _remember_focus(context, ref, summary)
-    return _build_agent_output(
-        path=ref.location,
-        text=excerpt,
-        summary=summary,
-        truncated=excerpt != content.strip(),
-        next_hint="If the excerpt is insufficient, read the full file or extract a structured outline.",
-    )
+    return _render_workspace_text_view(context, arguments, mode="excerpt")
 
 
 def _summarize_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    ref = _resolve_resource_ref(
-        context,
-        str(arguments.get("path") or ""),
-        use_last_focus=bool(arguments.get("use_last_focus")),
-    )
-    content = context.application_context.resource_repository.load_text(ref)
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-    summary = "\n".join(lines[:3]) if lines else content[:300]
-    summary = _truncate_text(summary, limit=_output_limit(context, "codex_max_summary_chars", 1000), label="summary")
-    _remember_focus(context, ref, summary)
-    return _build_agent_output(
-        path=ref.location,
-        text=summary,
-        summary=summary,
-        truncated=summary != content[: len(summary)],
-        next_hint="If the summary is insufficient, read the original file or inspect the related path.",
-    )
-
+    return _render_workspace_text_view(context, arguments, mode="summary")
 
 def _inspect_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     ref = _resolve_resource_ref(
@@ -919,12 +906,6 @@ def _apply_text_patch(task: Any, context: Any, arguments: dict[str, Any]) -> dic
         "before_text": original,
         "after_text": updated,
     }
-
-
-def _replace_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _apply_text_patch(task, context, arguments)
-
-
 def _append_workspace_text(task: Any, context: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     path = _resolve_workspace_path(context, str(arguments.get("path") or ""))
     if not path.exists():

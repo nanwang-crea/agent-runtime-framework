@@ -3,8 +3,8 @@
 此文件由 Agent 自动维护，用于记录可检索的长期记忆。
 
 ## workspace_focus | focus:.
-- text: ". Resolved target: ."
-- metadata: {"path": ".", "summary": "Resolved target: ."}
+- text: ". Found 17 entries.\nDirectories: .arf, .claude, .git, .pytest_cache, agent_runtime_framework, docs, frontend-shell, tests, tmp_debug_ws, tmp_trace_ws\nFiles: .DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml"
+- metadata: {"path": ".", "summary": "Found 17 entries.\nDirectories: .arf, .claude, .git, .pytest_cache, agent_runtime_framework, docs, frontend-shell, tests, tmp_debug_ws, tmp_trace_ws\nFiles: .DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml"}
 
 ## task_conclusion | task:aa4962af-8abb-4ee0-a3ff-8cc2bc213a48:conclusion
 - text: "帮我列一下当前文件夹下面都有哪些内容呢？ 基于已收集的信息，我的总结是：\n- 目录结构：agent-runtime-framework 下面共有 15 个条目。\n- .arf/ 的作用是模块目录。\n- .git/ 的作用是模块目录。\n- .pytest_cache/ 的作用是模块目录。\n- agent_runtime_framework/ 的作用是模块目录。\n- agent_runtime_framework.egg-info/ 的作用是模块目录。\n引用：\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
@@ -43,8 +43,8 @@
 - metadata: {"claim_kind": "role", "path": ".", "task_profile": "repository_explainer"}
 
 ## workspace_focus | focus:README.md
-- text: "README.md Resolved target: README.md"
-- metadata: {"path": "README.md", "summary": "Resolved target: README.md"}
+- text: "README.md # Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："
+- metadata: {"path": "README.md", "summary": "# Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："}
 
 ## task_conclusion | task:874c11ae-fc4d-4017-8e63-c6c8233e6240:conclusion
 - text: "agent_runtime_framework这个目录下面主要都有什么呢？给我简单讲解一下 根据已收集的目录结构和 README.md 信息，给用户一个综合性的讲解，说明 agent_runtime_framework 目录的主要内容和各部分作用"
@@ -453,3 +453,155 @@
 ## workspace_fact | task:db23c8ec-895a-4be8-9ba2-9d559832e040:fact:0
 - text: "列一下当前目录都有什么东西呢 Found 18 entries."
 - metadata: {"confidence": 0.25, "created_at": "2026-03-31T02:47:30.925790+00:00", "entity_type": "workspace", "goal": "列一下当前目录都有什么东西呢", "layer": "daily", "path": ".", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "chat", "task_profile": "chat"}
+
+## task_conclusion | task:80ce4819-e08d-4446-aadd-5efed8de278c:conclusion
+- text: "列一下当前工作区都有什么内容？ 目录结构：\n- Directories: .arf, .claude, .git, .pytest_cache, agent_runtime_framework, agent_runtime_framework.egg-info, docs, frontend-shell, tests, tmp_debug_ws, tmp_trace_ws\n- Files: .DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml\n引用：\n- .\n- README.md\n- pyproject.toml"
+- metadata: {"confidence": 0.3, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "summary", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "source_tool": "answer_synthesizer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:fact:0
+- text: "列一下当前工作区都有什么内容？ agent-runtime-framework: 18 entries."
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:fact:1
+- text: "列一下当前工作区都有什么内容？ Representative file selected."
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:fact:2
+- text: "列一下当前工作区都有什么内容？ Found 18 entries."
+- metadata: {"confidence": 0.25, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:fact:3
+- text: "列一下当前工作区都有什么内容？ # Agent Runtime Framework\n\n`agent-runtime-framework` currently ships a **single active product/runtime path**:"
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:fact:4
+- text: "列一下当前工作区都有什么内容？ Agent Runtime Framework"
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T06:55:03.317701+00:00", "entity_type": "workspace", "goal": "列一下当前工作区都有什么内容？", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:typed:0
+- text: "列一下当前工作区都有什么内容？ workspace agent-runtime-framework: 18 entries. structure"
+- metadata: {"claim_kind": "structure", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:typed:1
+- text: "列一下当前工作区都有什么内容？ read_result # Agent Runtime Framework content"
+- metadata: {"claim_kind": "content", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:typed:2
+- text: "列一下当前工作区都有什么内容？ read_result `agent-runtime-framework` currently ships a **single active product/runtime path**: content"
+- metadata: {"claim_kind": "content", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:typed:3
+- text: "列一下当前工作区都有什么内容？ README.md Agent Runtime Framework role"
+- metadata: {"claim_kind": "role", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": true, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:80ce4819-e08d-4446-aadd-5efed8de278c:typed:4
+- text: "列一下当前工作区都有什么内容？ pyproject.toml [build-system] role"
+- metadata: {"claim_kind": "role", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": true, "task_profile": "repository_explainer"}
+
+## task_conclusion | task:a0c3cd43-c0b8-4068-ac05-02266e7e4baf:conclusion
+- text: "请列出当前工作目录的文件有哪些？ 目录结构：\n- Directories: .arf, .claude, .git, .pytest_cache, agent_runtime_framework, agent_runtime_framework.egg-info, docs, frontend-shell, tests, tmp_debug_ws, tmp_trace_ws\n- Files: .DS_Store, .api_demo_config.json, .arf_demo_config.json, .gitignore, MEMORY.md, README.md, pyproject.toml\n引用：\n- ."
+- metadata: {"confidence": 0.3, "created_at": "2026-03-31T07:53:46.862837+00:00", "entity_type": "workspace", "goal": "请列出当前工作目录的文件有哪些？", "layer": "daily", "path": ".", "record_kind": "summary", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "source_tool": "answer_synthesizer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:a0c3cd43-c0b8-4068-ac05-02266e7e4baf:fact:0
+- text: "请列出当前工作目录的文件有哪些？ Found 18 entries."
+- metadata: {"confidence": 0.25, "created_at": "2026-03-31T07:53:46.862837+00:00", "entity_type": "workspace", "goal": "请列出当前工作目录的文件有哪些？", "layer": "daily", "path": ".", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## task_conclusion | task:57f962cb-fa9a-4679-856b-6fefdf6db8b5:conclusion
+- text: "请打开当前的README，帮我概括一下里面是在做什么？ 文件内容信息不足。"
+- metadata: {"confidence": 0.3, "created_at": "2026-03-31T07:55:38.554848+00:00", "entity_type": "directory", "goal": "请打开当前的README，帮我概括一下里面是在做什么？", "layer": "daily", "path": ".", "record_kind": "summary", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "file_reader", "source_tool": "answer_synthesizer", "task_profile": "file_reader"}
+
+## workspace_fact | task:57f962cb-fa9a-4679-856b-6fefdf6db8b5:fact:0
+- text: "请打开当前的README，帮我概括一下里面是在做什么？ Resolved target: ."
+- metadata: {"confidence": 0.35, "created_at": "2026-03-31T07:55:38.554848+00:00", "entity_type": "directory", "goal": "请打开当前的README，帮我概括一下里面是在做什么？", "layer": "daily", "path": ".", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## workspace_fact | task:57f962cb-fa9a-4679-856b-6fefdf6db8b5:fact:1
+- text: "请打开当前的README，帮我概括一下里面是在做什么？ agent-runtime-framework: 18 entries."
+- metadata: {"confidence": 0.35, "created_at": "2026-03-31T07:55:38.554848+00:00", "entity_type": "directory", "goal": "请打开当前的README，帮我概括一下里面是在做什么？", "layer": "daily", "path": ".", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | entity:agent-runtime-framework
+- text: "请打开当前的README，帮我概括一下里面是在做什么？ agent-runtime-framework maps to /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
+- metadata: {"confidence": 0.98, "created_at": "2026-03-31T07:55:38.554848+00:00", "entity_name": "agent-runtime-framework", "entity_type": "directory", "goal": "请打开当前的README，帮我概括一下里面是在做什么？", "layer": "entity", "path": ".", "record_kind": "entity_binding", "retrievable_for_resolution": true, "scope": "entity", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## workspace_fact | task:57f962cb-fa9a-4679-856b-6fefdf6db8b5:typed:0
+- text: "请打开当前的README，帮我概括一下里面是在做什么？ workspace agent-runtime-framework: 18 entries. structure"
+- metadata: {"claim_kind": "structure", "confidence": 0.5, "layer": "daily", "path": ".", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "file_reader"}
+
+## entity_binding | task:6c772a87-988b-405c-854b-549bd66d4be5:conclusion
+- text: "总结 README.md 文件内容信息不足。\n引用：\n- README.md"
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T07:56:29.656914+00:00", "entity_type": "file", "goal": "总结 README.md", "layer": "entity", "path": "README.md", "record_kind": "summary", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "source_tool": "answer_synthesizer", "task_profile": "file_reader"}
+
+## entity_binding | task:6c772a87-988b-405c-854b-549bd66d4be5:fact:0
+- text: "总结 README.md Resolved target: README.md"
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T07:56:29.656914+00:00", "entity_type": "file", "goal": "总结 README.md", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | task:6c772a87-988b-405c-854b-549bd66d4be5:fact:1
+- text: "总结 README.md Agent Runtime Framework"
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T07:56:29.656914+00:00", "entity_type": "file", "goal": "总结 README.md", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | entity:README.md
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 README.md maps to /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/README.md"
+- metadata: {"confidence": 0.98, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_name": "README.md", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "entity_binding", "retrievable_for_resolution": true, "scope": "entity", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | entity:README
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 README maps to /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/README.md"
+- metadata: {"confidence": 0.98, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_name": "README", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "entity_binding", "retrievable_for_resolution": true, "scope": "entity", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | entity:根目录 README
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 根目录 README maps to /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/README.md"
+- metadata: {"confidence": 0.98, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_name": "根目录 README", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "entity_binding", "retrievable_for_resolution": true, "scope": "entity", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | entity:readme
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 readme maps to /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/README.md"
+- metadata: {"confidence": 0.98, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_name": "readme", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "entity_binding", "retrievable_for_resolution": true, "scope": "entity", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## workspace_fact | task:6c772a87-988b-405c-854b-549bd66d4be5:typed:0
+- text: "总结 README.md workspace Agent Runtime Framework structure"
+- metadata: {"claim_kind": "structure", "confidence": 0.5, "layer": "daily", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "file_reader"}
+
+## task_conclusion | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:conclusion
+- text: "看一下我当前项目下面都有什么东西呢 根据当前收集到的证据：\n- 目录结构：agent-runtime-framework: 17 entries.\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework 的作用：Representative file selected.\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/README.md 的作用：Agent Runtime Framework\n- /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework/pyproject.toml 的作用：[build-system]\n引用：\n- .\n- README.md\n- pyproject.toml"
+- metadata: {"confidence": 0.3, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "summary", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "source_tool": "answer_synthesizer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:fact:0
+- text: "看一下我当前项目下面都有什么东西呢 agent-runtime-framework: 17 entries."
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:fact:1
+- text: "看一下我当前项目下面都有什么东西呢 Representative file selected."
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:fact:2
+- text: "看一下我当前项目下面都有什么东西呢 Found 17 entries."
+- metadata: {"confidence": 0.25, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:fact:3
+- text: "看一下我当前项目下面都有什么东西呢 Agent Runtime Framework"
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:fact:4
+- text: "看一下我当前项目下面都有什么东西呢 [build-system]"
+- metadata: {"confidence": 0.4, "created_at": "2026-03-31T14:01:49.914818+00:00", "entity_type": "workspace", "goal": "看一下我当前项目下面都有什么东西呢", "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "scope": "path", "source_task_profile": "repository_explainer", "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:typed:0
+- text: "看一下我当前项目下面都有什么东西呢 workspace agent-runtime-framework: 17 entries. structure"
+- metadata: {"claim_kind": "structure", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": false, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:typed:1
+- text: "看一下我当前项目下面都有什么东西呢 README.md Agent Runtime Framework role"
+- metadata: {"claim_kind": "role", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": true, "task_profile": "repository_explainer"}
+
+## workspace_fact | task:773f8c66-8b40-4fc9-bf56-fbafae18487a:typed:2
+- text: "看一下我当前项目下面都有什么东西呢 pyproject.toml [build-system] role"
+- metadata: {"claim_kind": "role", "confidence": 0.5, "layer": "daily", "path": "pyproject.toml", "record_kind": "observation", "retrievable_for_resolution": true, "task_profile": "repository_explainer"}
+
+## entity_binding | task:367063a5-dea9-4292-bceb-65d65aa4af35:conclusion
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 我先基于已读取内容做一个简要说明：\n- # Agent Runtime Framework\n- `agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n- 这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如：\n引用：\n- README.md"
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "summary", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "source_tool": "answer_synthesizer", "task_profile": "file_reader"}
+
+## entity_binding | task:367063a5-dea9-4292-bceb-65d65aa4af35:fact:0
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 Resolved target: README.md"
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## entity_binding | task:367063a5-dea9-4292-bceb-65d65aa4af35:fact:1
+- text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 # Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："
+- metadata: {"confidence": 0.9, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}

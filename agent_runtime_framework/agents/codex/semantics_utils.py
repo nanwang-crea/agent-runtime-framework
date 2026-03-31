@@ -39,7 +39,7 @@ def workspace_root_from_context(context: object | None) -> Path | None:
         return None
     application_context = getattr(context, "application_context", context)
     root_value = getattr(application_context, "config", {}).get("default_directory")
-    return Path(str(root_value)) if root_value else None
+    return Path(str(root_value)).expanduser().resolve() if root_value else None
 
 
 def load_prompt(name: str) -> str:

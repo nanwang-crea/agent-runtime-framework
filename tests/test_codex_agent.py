@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,7 +19,7 @@ from agent_runtime_framework.agents.codex import (
     build_default_codex_tools,
     evaluate_codex_output,
 )
-from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.agents.codex.planner import _invalid_action_reason, _plan_from_goal
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt
 from agent_runtime_framework.agents.codex.profiles import classify_task_profile
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context
@@ -274,7 +275,7 @@ def test_task_state_tracks_resolved_target_and_pending_evidence_from_recorded_ac
     assert "representative_files" in task.state.pending_actions
 
 
-def test_task_plan_uses_llm_first_by_default_when_planner_model_is_available(tmp_path: Path):
+def test_task_plan_is_deterministic_even_when_planner_model_is_available(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = _context(workspace)
@@ -290,8 +291,8 @@ def test_task_plan_uses_llm_first_by_default_when_planner_model_is_available(tmp
     plan = build_task_plan(task, context)
 
     assert plan is not None
-    assert plan.metadata.get("plan_source") == "llm"
-    assert llm.completions.calls
+    assert plan.metadata.get("plan_source") != "llm"
+    assert llm.completions.calls == []
 
 
 def test_workspace_listing_requests_use_workspace_level_listing_mode(tmp_path: Path):
@@ -417,6 +418,7 @@ def test_available_tool_names_hide_write_tools_for_explore_persona(tmp_path: Pat
 
     assert "read_workspace_text" in names
     assert "list_workspace_directory" in names
+    assert "replace_workspace_text" not in names
     assert "edit_workspace_text" not in names
     assert "delete_workspace_path" not in names
 
@@ -1002,6 +1004,17 @@ def test_file_reader_readme_request_never_falls_back_to_workspace_root_under_mem
     assert result.output["resource_kind"] == "file"
 
 
+def test_infer_task_intent_handles_unresolved_workspace_root_for_readme_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    intent = infer_task_intent("总结 README.md", Path(str(workspace)))
+
+    assert intent.task_kind == "file_reader"
+    assert intent.target_ref == "README.md"
+
+
 def test_memory_pollution_regression_directory_listing_then_readme_reads_file(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1300,6 +1313,26 @@ def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
     decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), [])
 
     assert decision.status != "finish"
+
+
+def test_codex_output_evaluator_only_finishes_after_completed_respond():
+    task = _task(
+        goal="总结 README.md",
+        actions=[
+            CodexAction(
+                kind="call_tool",
+                instruction="summarize",
+                status="completed",
+                observation="summary",
+                metadata={"tool_name": "summarize_workspace_text", "arguments": {"path": "README.md"}},
+            )
+        ],
+    )
+
+    decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), ["summarize_workspace_text"])
+
+    assert decision.status == "continue"
+    assert decision.next_action is None
 
 
 def test_codex_output_evaluator_blocks_finish_when_verification_is_pending():
@@ -1676,7 +1709,7 @@ def test_codex_llm_system_prompts_share_runtime_header(tmp_path: Path):
 
     assert result.status == "completed"
     prompts = [call["messages"][0]["content"] for call in llm.completions.calls]
-    assert len(prompts) >= 2
+    assert len(prompts) >= 1
     for prompt in prompts:
         assert "You are a professional coding agent" in prompt
         assert "Core Principles" in prompt
@@ -2474,7 +2507,7 @@ def test_file_reader_profile_creates_task_level_plan(tmp_path: Path):
         "synthesize_answer",
     ]
     assert result.task.actions[0].metadata["tool_name"] == "resolve_workspace_target"
-    assert result.task.actions[1].metadata["tool_name"] in {"read_workspace_excerpt", "read_workspace_text"}
+    assert result.task.actions[1].metadata["tool_name"] == "summarize_workspace_text"
 
 
 def test_evaluator_stays_decision_focused_when_repository_evidence_is_missing(tmp_path: Path):
@@ -2503,7 +2536,7 @@ def test_evaluator_stays_decision_focused_when_repository_evidence_is_missing(tm
     assert decision.next_action is None
 
 
-def test_file_reader_summary_requests_prefer_excerpt_primitive(tmp_path: Path):
+def test_file_reader_summary_requests_prefer_summary_primitive(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("# Demo\nalpha\nbeta\ngamma\n", encoding="utf-8")
@@ -2515,7 +2548,7 @@ def test_file_reader_summary_requests_prefer_excerpt_primitive(tmp_path: Path):
 
     assert result.status == "completed"
     assert result.task.task_profile == "file_reader"
-    assert result.task.actions[1].metadata["tool_name"] == "read_workspace_excerpt"
+    assert result.task.actions[1].metadata["tool_name"] == "summarize_workspace_text"
 
 
 def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path: Path):
@@ -3249,6 +3282,188 @@ def test_codex_loop_rejects_shell_tool_without_command_before_execution(tmp_path
 
     assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
     assert "run_shell_command action is missing command" in exc_info.value.detail
+
+
+def test_codex_loop_rejects_read_tool_without_path_context_before_execution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"kind":"call_tool","tool_name":"read_workspace_text","arguments":{}}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("please inspect the note for me")
+
+    assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
+    assert "read_workspace_text action is missing path context" in exc_info.value.detail
+
+
+def test_codex_loop_repairs_missing_path_read_action_from_intent_target(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nhello world\n", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": "read_workspace_text", "arguments": {}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("帮我看一下README.md里面在讲什么内容？")
+
+    assert result.status == "completed"
+    assert "hello world" in result.final_output
+    assert result.task.actions[0].metadata.get("repaired_missing_path") == "intent_target"
+    assert result.task.actions[0].metadata["arguments"]["path"] == "README.md"
+
+
+def test_build_task_plan_infers_required_path_without_llm_plan(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["model_first_task_plan"] = True
+    context.application_context.llm_client = _SequenceLLM([
+        '{"tasks":[{"title":"Read file","kind":"gather_context","tool_name":"read_workspace_text","arguments":{}}]}'
+    ])
+    context.application_context.llm_model = "test-model"
+    intent = infer_task_intent("帮我看一下README.md里面在讲什么内容？", workspace)
+    task = CodexTask(
+        goal="帮我看一下README.md里面在讲什么内容？",
+        actions=[],
+        task_profile=intent.task_kind,
+        intent=intent,
+        state=build_initial_task_state(intent),
+    )
+
+    plan = build_task_plan(task, context)
+
+    assert plan is not None
+    assert [item.kind for item in plan.tasks[:3]] == ["locate_target", "gather_context", "synthesize_answer"]
+    assert str(plan.metadata.get("plan_source") or "") != "llm"
+    assert plan.tasks[1].metadata["path"] == "README.md"
+
+
+def test_codex_loop_rejects_patch_tool_without_search_text_before_execution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    llm = _SequenceLLM(
+        [
+            '{"kind":"call_tool","tool_name":"apply_text_patch","arguments":{"path":"draft.txt"}}',
+        ]
+    )
+    context.application_context.llm_client = llm
+    context.application_context.llm_model = "test-model"
+
+    with pytest.raises(AppError) as exc_info:
+        CodexAgentLoop(context).run("patch draft.txt")
+
+    assert exc_info.value.code == "PLANNER_NORMALIZATION_FAILED"
+    assert "apply_text_patch action is missing search_text" in exc_info.value.detail
+
+
+def test_planner_rejects_move_tool_without_destination_before_execution():
+    reason = _invalid_action_reason(
+        {"kind": "call_tool", "tool_name": "move_workspace_path", "arguments": {"path": "draft.txt"}},
+        tool_names={"move_workspace_path"},
+    )
+
+    assert reason == "move_workspace_path action is missing destination_path"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_message"),
+    [
+        ("append_workspace_text", {"path": "draft.txt"}, "append_workspace_text action is missing content"),
+        ("create_workspace_path", {}, "create_workspace_path action is missing path"),
+        ("edit_workspace_text", {"content": "new text"}, "edit_workspace_text action is missing path"),
+        ("grep_workspace", {}, "grep_workspace action is missing pattern"),
+    ],
+)
+def test_planner_rejects_invalid_mutating_tool_arguments_before_execution(
+    tool_name: str,
+    arguments: dict[str, object],
+    expected_message: str,
+):
+    reason = _invalid_action_reason(
+        {"kind": "call_tool", "tool_name": tool_name, "arguments": arguments},
+        tool_names={tool_name},
+    )
+
+    assert reason == expected_message
+
+
+def test_codex_loop_repairs_missing_path_edit_action_from_intent_target(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "draft.txt").write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="edit_text",
+            instruction=user_input,
+            metadata={"tool_name": "edit_workspace_text", "arguments": {"content": "new text"}},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run("编辑 draft.txt 内容 new text")
+
+    assert result.status == "completed"
+    assert (workspace / "draft.txt").read_text(encoding="utf-8") == "new text"
+    assert result.task.actions[0].metadata.get("repaired_missing_path") == "intent_target"
+    assert result.task.actions[0].metadata["arguments"]["path"] == "draft.txt"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "goal"),
+    [
+        ("append_workspace_text", {"content": "\nnew line"}, "追加到 draft.txt"),
+        ("delete_workspace_path", {}, "删除 draft.txt"),
+    ],
+)
+def test_codex_loop_repairs_missing_path_for_mutating_tools_from_intent_target(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    goal: str,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "draft.txt"
+    target.write_text("old text", encoding="utf-8")
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.services["action_planner"] = lambda user_input, session, ctx: [
+        CodexAction(
+            kind="call_tool",
+            instruction=user_input,
+            metadata={"tool_name": tool_name, "arguments": dict(arguments)},
+        )
+    ]
+
+    result = CodexAgentLoop(context).run(goal)
+
+    assert result.status == "completed"
+    assert result.task.actions[0].metadata.get("repaired_missing_path") == "intent_target"
+    assert result.task.actions[0].metadata["arguments"]["path"] == "draft.txt"
 
 
 def test_run_shell_command_blocks_workspace_mutation_outside_workspace(tmp_path: Path):

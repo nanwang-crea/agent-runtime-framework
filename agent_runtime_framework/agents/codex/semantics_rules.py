@@ -306,8 +306,9 @@ def infer_target_type(target_hint: str, text: str, workspace_root: Path | None) 
 def existing_readme_candidate(workspace_root: Path | None) -> str:
     if workspace_root is None:
         return ""
+    root = workspace_root.expanduser().resolve()
     for candidate in ("README.md", "README", "readme.md", "readme"):
-        target = (workspace_root / candidate).resolve()
+        target = (root / candidate).resolve()
         if target.exists() and target.is_file():
-            return str(target.relative_to(workspace_root))
+            return str(target.relative_to(root))
     return ""

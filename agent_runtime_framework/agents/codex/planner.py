@@ -27,12 +27,12 @@ from agent_runtime_framework.agents.codex.task_plans import (
     _resolved_plan_path,
     _sync_plan_status,
 )
+from agent_runtime_framework.agents.codex.tool_constraints import tool_argument_issue
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
-
 
 def plan_codex_actions(user_input: str) -> list[CodexAction]:
     action = _plan_from_goal(user_input, tool_names=set())
@@ -97,6 +97,18 @@ def _plan_pending_verification_action(task: Any) -> CodexAction | None:
     )
 
 
+def _build_path_context_arguments(plan_task: Any) -> dict[str, Any]:
+    arguments: dict[str, Any] = {}
+    path = _resolved_plan_path(plan_task)
+    if path:
+        arguments["path"] = path
+    if bool(plan_task.metadata.get("use_default_directory")):
+        arguments["use_default_directory"] = True
+    if bool(plan_task.metadata.get("use_last_focus")):
+        arguments["use_last_focus"] = True
+    return arguments
+
+
 def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
     plan = getattr(task, "plan", None)
     if plan is None:
@@ -131,7 +143,7 @@ def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
                 tool_name = "inspect_workspace_path"
             else:
                 tool_name = "list_workspace_directory"
-        arguments = {"path": _resolved_plan_path(next_task)}
+        arguments = _build_path_context_arguments(next_task)
         if tool_name == "list_workspace_directory":
             arguments["use_default_directory"] = bool(next_task.metadata.get("use_default_directory"))
         return CodexAction(
@@ -152,10 +164,7 @@ def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "inspect_workspace_path",
-                "arguments": {
-                    "path": _resolved_plan_path(next_task),
-                    "use_last_focus": bool(next_task.metadata.get("use_last_focus", True)),
-                },
+                "arguments": {**_build_path_context_arguments(next_task), "use_last_focus": bool(next_task.metadata.get("use_last_focus", True))},
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },
@@ -167,10 +176,7 @@ def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "rank_workspace_entries",
-                "arguments": {
-                    "path": _resolved_plan_path(next_task),
-                    "query": task.goal,
-                },
+                "arguments": {**_build_path_context_arguments(next_task), "query": task.goal},
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },
@@ -182,7 +188,7 @@ def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "extract_workspace_outline",
-                "arguments": {"path": _resolved_plan_path(next_task)},
+                "arguments": _build_path_context_arguments(next_task),
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },
@@ -194,7 +200,7 @@ def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
             subgoal="gather_evidence",
             metadata={
                 "tool_name": "read_workspace_text",
-                "arguments": {"path": _resolved_plan_path(next_task)},
+                "arguments": _build_path_context_arguments(next_task),
                 "plan_task_id": next_task.task_id,
                 "plan_source": "task_plan",
             },
@@ -349,7 +355,7 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
         persona=persona,
     )
     semantics = extract_task_resource_semantics(task)
-    preferred_file_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) else "read_workspace_text"
+    preferred_file_tool = "summarize_workspace_text" if goal_prefers_summary(str(getattr(task, "goal", "") or "")) else "read_workspace_text"
     user_prompt = render_codex_prompt_doc(
         "planner_user",
         goal=task.goal,
@@ -449,16 +455,6 @@ def _plan_next_action_with_llm(task: Any, context: Any, *, session: Any | None =
     if last_invalid_json is not None:
         raise last_invalid_json
     return None
-
-
-def _goal_prefers_summary(goal: str) -> bool:
-    return goal_prefers_summary(goal)
-
-
-def _goal_is_raw_read(goal: str) -> bool:
-    return goal_is_raw_read(goal)
-
-
 def _direct_file_reader_response(goal: str, observation: str) -> str:
     return observation.strip()
 
@@ -469,7 +465,7 @@ def _plan_follow_up_from_completed_action(task: Any, context: Any, last_action: 
     profile = str(getattr(task, "task_profile", "") or "")
     if profile == "file_reader" and tool_name == "resolve_workspace_target":
         target_path = _resolved_target_argument(task, last_action, context)
-        read_tool = "summarize_workspace_text" if _goal_prefers_summary(str(getattr(task, "goal", "") or "")) and "summarize_workspace_text" in tool_names else "read_workspace_text"
+        read_tool = "summarize_workspace_text" if goal_prefers_summary(str(getattr(task, "goal", "") or "")) and "summarize_workspace_text" in tool_names else "read_workspace_text"
         if target_path and read_tool in tool_names:
             return CodexAction(
                 kind="call_tool",
@@ -809,11 +805,15 @@ def _invalid_action_reason(parsed: dict[str, Any], *, tool_names: set[str] | Non
         return "respond action is missing instruction"
     if kind == "run_verification" and not instruction and not str(arguments.get("command") or "").strip():
         return "run_verification action is missing command"
-    if kind == "call_tool" and tool_name == "run_shell_command" and not str(arguments.get("command") or "").strip():
-        return "run_shell_command action is missing command"
+    if kind == "call_tool":
+        tool_issue = tool_argument_issue(tool_name, arguments, action_label=True)
+        if tool_issue is not None:
+            return tool_issue
     if bool(parsed.get("clarification_required")) and kind != "respond":
         return "clarification_required is only valid for respond actions"
     return None
+
+
 
 
 def _repair_planner_output_with_llm(

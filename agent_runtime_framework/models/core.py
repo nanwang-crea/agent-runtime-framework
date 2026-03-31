@@ -211,7 +211,8 @@ class ModelRouter:
 
 
 def resolve_model_runtime(context: Any, role: str) -> ModelRuntime | None:
-    model_router = context.services.get("model_router")
+    services = getattr(context, "services", {}) or {}
+    model_router = services.get("model_router")
     if isinstance(model_router, ModelRouter):
         runtime = model_router.resolve(role)
         if runtime is not None:

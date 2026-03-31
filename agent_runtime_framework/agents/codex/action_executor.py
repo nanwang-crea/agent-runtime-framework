@@ -7,6 +7,8 @@ from agent_runtime_framework.assistant.conversation import stream_conversation_r
 from agent_runtime_framework.agents.codex.models import CodexAction, CodexActionResult
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
+from agent_runtime_framework.agents.codex.tool_constraints import repair_tool_path_arguments, tool_argument_issue
 from agent_runtime_framework.resources import ResourceRef, describe_resource_semantics
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
 
@@ -77,8 +79,17 @@ def execute_locate_target_action(loop: Any, action: CodexAction) -> CodexActionR
 def execute_tool_action(loop: Any, action: CodexAction) -> CodexActionResult:
     tool_name = str(action.metadata.get("tool_name") or "").strip()
     arguments = dict(action.metadata.get("arguments") or {})
+    arguments = _repair_missing_path_arguments(loop, action, tool_name, arguments)
+    action.metadata["arguments"] = dict(arguments)
     if not tool_name:
         return CodexActionResult(status="failed", final_output="missing tool_name")
+    argument_issue = tool_argument_issue(tool_name, arguments)
+    if argument_issue is not None:
+        return CodexActionResult(
+            status="failed",
+            final_output=argument_issue,
+            metadata={"error": {"code": "TOOL_ARGUMENT_INVALID", "message": argument_issue, "retriable": False}},
+        )
     tool = loop.context.application_context.tools.get(tool_name)
     if tool is None:
         repaired = loop.context.application_context.tools.find_case_insensitive(tool_name)
@@ -139,6 +150,22 @@ def execute_tool_action(loop: Any, action: CodexAction) -> CodexActionResult:
             )
         return CodexActionResult(status="completed", final_output=final_output, artifacts=artifacts, metadata={"tool_output": output})
     return CodexActionResult(status="completed", final_output=str(output or ""))
+
+
+def _repair_missing_path_arguments(loop: Any, action: CodexAction, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    workspace_root = loop._workspace_root() if hasattr(loop, "_workspace_root") else None
+    intent = infer_task_intent(str(action.instruction or ""), workspace_root, context=loop.context, session=loop.context.session)
+    snapshot = loop.context.application_context.session_memory.snapshot()
+    repaired, source = repair_tool_path_arguments(
+        tool_name,
+        arguments,
+        intent_target=str(getattr(intent, "target_ref", "") or getattr(intent, "target_hint", "") or "").strip(),
+        scope_kind=str(getattr(intent, "scope_kind", "") or ""),
+        has_last_focus=bool(snapshot.focused_resources),
+    )
+    if source is not None:
+        action.metadata["repaired_missing_path"] = source
+    return repaired
 
 
 def recover_directory_tool_action(loop: Any, action: CodexAction, tool_name: str, arguments: dict[str, Any]) -> CodexActionResult | None:

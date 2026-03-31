@@ -5,7 +5,7 @@ change_and_verify workflow (edit and verify):
 2. Use `read_workspace_text` or `read_workspace_excerpt` to read the target file and understand the existing implementation.
 3. If modifying a function or class, use `search_workspace_symbols` or `grep_workspace` to find all call sites and assess impact scope.
 4. Choose the minimum-change primitive:
-   - Precise replacement → `apply_text_patch` or `replace_workspace_text`
+   - Precise replacement → `apply_text_patch`
    - Local append → `append_workspace_text`
    - Full rewrite → `edit_workspace_text` (last resort)
 5. After editing, use `read_workspace_text` to read back and confirm the change is correct.

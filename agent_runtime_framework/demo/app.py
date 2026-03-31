@@ -27,6 +27,8 @@ from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
+from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
+from agent_runtime_framework.workflow.node_executors import AggregationExecutor, FileReadExecutor, FinalResponseExecutor, WorkspaceOverviewExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,10 @@ class DemoAssistantApp:
                 self._last_route_decision = route_decision
                 if route_decision["route"] == "conversation":
                     return self._conversation_payload(message)
+            if self._should_use_workflow(message):
+                payload = self._run_workflow(message)
+                self._record_run(payload, prompt=message)
+                return payload
             self._ensure_codex_planner_available()
             result = self.loop.run(message)
             self._task_history.insert(0, result.task)
@@ -70,6 +76,48 @@ class DemoAssistantApp:
             return payload
         except Exception as exc:
             return self._error_payload(exc)
+
+    def _should_use_workflow(self, message: str) -> bool:
+        goal = analyze_goal(message, context=self.context)
+        return goal.primary_intent == "compound"
+
+    def _run_workflow(self, message: str) -> dict[str, Any]:
+        goal = analyze_goal(message, context=self.context)
+        graph = build_workflow_graph(goal, context=self.context)
+        runtime = WorkflowRuntime(
+            executors={
+                "repository_explainer": WorkspaceOverviewExecutor(),
+                "file_reader": FileReadExecutor(),
+                "aggregate_results": AggregationExecutor(),
+                "final_response": FinalResponseExecutor(),
+            },
+            context={"workspace_root": str(self.workspace)},
+        )
+        from agent_runtime_framework.workflow import WorkflowRun
+
+        run = runtime.run(WorkflowRun(goal=message, graph=graph))
+        execution_trace = [
+            {"name": node.node_id, "status": run.node_states[node.node_id].status, "detail": node.node_type}
+            for node in graph.nodes
+            if node.node_id in run.node_states
+        ]
+        return {
+            "status": run.status,
+            "run_id": run.run_id,
+            "plan_id": run.run_id,
+            "final_answer": str(run.final_output or ""),
+            "capability_name": "workflow",
+            "runtime": "workflow",
+            "execution_trace": self._with_router_trace(execution_trace),
+            "approval_request": None,
+            "resume_token_id": None,
+            "session": self.session_payload(),
+            "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
+            "memory": self.memory_payload(),
+            "context": self.context_payload(),
+            "workspace": str(self.workspace),
+        }
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
