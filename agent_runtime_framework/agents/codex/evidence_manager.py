@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent_runtime_framework.agents.codex.models import CodexTask, EvidenceItem
-from agent_runtime_framework.agents.codex.state import append_evidence_item, sync_task_state_from_memory
+from agent_runtime_framework.agents.codex.state import append_evidence_item
 
 
 def record_action_evidence(task: CodexTask, action: object, result: object) -> None:
@@ -24,7 +24,6 @@ def record_action_evidence(task: CodexTask, action: object, result: object) -> N
             ),
         )
     _sync_state_from_evidence(task, path=path)
-    sync_task_state_from_memory(task)
 
 
 def evidence_gap(task: CodexTask) -> list[str]:
@@ -40,7 +39,7 @@ def evidence_gap(task: CodexTask) -> list[str]:
     if intent.task_kind == "file_reader":
         if not any(source in evidence_sources for source in {"read_workspace_text", "read_workspace_excerpt", "summarize_workspace_text"}):
             missing.append("file_content")
-    if intent.task_kind in {"change_and_verify", "test_and_verify"} and getattr(task.memory, "pending_verifications", []):
+    if intent.task_kind in {"change_and_verify", "test_and_verify"} and task.state.pending_verifications:
         missing.append("verification")
     return missing
 

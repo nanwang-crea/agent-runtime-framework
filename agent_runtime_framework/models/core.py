@@ -150,6 +150,7 @@ class ModelRouter:
     def __init__(self, registry: ModelRegistry) -> None:
         self.registry = registry
         self._routes: dict[str, tuple[str, str]] = {}
+        self._resolve_retry_limit = 2
 
     def set_route(self, role: str, *, instance_id: str, model_name: str) -> None:
         self._routes[role] = (instance_id, model_name)
@@ -171,20 +172,42 @@ class ModelRouter:
         }
 
     def resolve(self, role: str) -> ModelRuntime | None:
-        route = self._routes.get(role) or self._routes.get("default")
-        if route is None:
-            return None
-        instance_id, model_name = route
-        profile = next(
-            (item for item in self.registry.list_models(instance_id) if item.model_name == model_name),
-            None,
-        )
-        if profile is None:
-            return None
-        client = self.registry.get_client(instance_id)
-        if client is None:
-            return None
-        return ModelRuntime(profile=profile, client=client)
+        for instance_id, model_name in self._candidate_routes(role):
+            profile = next((item for item in self.registry.list_models(instance_id) if item.model_name == model_name), None)
+            if profile is None:
+                continue
+            client = self._resolve_client_with_retry(instance_id)
+            if client is None:
+                continue
+            return ModelRuntime(profile=profile, client=client)
+        return None
+
+    def _candidate_routes(self, role: str) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for route in (self._routes.get(role), self._routes.get("default")):
+            if route is None or route in seen:
+                continue
+            candidates.append(route)
+            seen.add(route)
+        for route in self._routes.values():
+            if route in seen:
+                continue
+            candidates.append(route)
+            seen.add(route)
+        return candidates
+
+    def _resolve_client_with_retry(self, instance_id: str) -> Any | None:
+        for attempt in range(self._resolve_retry_limit):
+            try:
+                client = self.registry.get_client(instance_id)
+            except Exception:
+                if attempt + 1 >= self._resolve_retry_limit:
+                    return None
+                continue
+            if client is not None:
+                return client
+        return None
 
 
 def resolve_model_runtime(context: Any, role: str) -> ModelRuntime | None:

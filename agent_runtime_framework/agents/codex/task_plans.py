@@ -310,180 +310,6 @@ def _build_change_verify_task(goal: str, tool_names: set[str]) -> CodexPlanTask 
         kind="run_verification",
         metadata={"command": command},
     )
-def plan_next_task_action(task: CodexTask) -> CodexAction | None:
-    plan = task.plan
-    if plan is None:
-        return None
-    _sync_plan_status(task)
-    next_task = _next_plan_task(plan)
-    if next_task is None:
-        return None
-    if next_task.kind == "locate_target":
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "resolve_workspace_target",
-                "arguments": {
-                    "query": str(next_task.metadata.get("query") or task.goal),
-                    "target_hint": str(next_task.metadata.get("target_hint") or ""),
-                },
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "gather_context":
-        resource_kind = str(next_task.metadata.get("resource_kind") or "")
-        preferred_read_tool = str(next_task.metadata.get("preferred_read_tool") or "read_workspace_text")
-        tool_name = str(next_task.metadata.get("tool_name") or "")
-        if not tool_name:
-            if resource_kind == "file":
-                tool_name = preferred_read_tool
-            elif getattr(task, "task_profile", "") == "file_reader":
-                tool_name = "inspect_workspace_path"
-            else:
-                tool_name = "list_workspace_directory"
-        arguments = {"path": _resolved_plan_path(next_task)}
-        if tool_name == "list_workspace_directory":
-            arguments["use_default_directory"] = bool(next_task.metadata.get("use_default_directory"))
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "inspect_target":
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "inspect_workspace_path",
-                "arguments": {
-                    "path": _resolved_plan_path(next_task),
-                    "use_last_focus": bool(next_task.metadata.get("use_last_focus", True)),
-                },
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "rank_representative_files":
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "rank_workspace_entries",
-                "arguments": {
-                    "path": _resolved_plan_path(next_task),
-                    "query": task.goal,
-                },
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "extract_outline":
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "extract_workspace_outline",
-                "arguments": {"path": _resolved_plan_path(next_task)},
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "read_entrypoint":
-        return CodexAction(
-            kind="call_tool",
-            instruction=task.goal,
-            subgoal="gather_evidence",
-            metadata={
-                "tool_name": "read_workspace_text",
-                "arguments": {"path": _resolved_plan_path(next_task)},
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "modify_target":
-        return CodexAction(
-            kind=_action_kind_for_tool(str(next_task.metadata.get("tool_name") or "")),
-            instruction=task.goal,
-            subgoal="modify_workspace",
-            risk_class=str(next_task.metadata.get("risk_class") or "high"),
-            metadata={
-                "tool_name": str(next_task.metadata.get("tool_name") or ""),
-                "arguments": _resolved_modify_arguments(next_task),
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "repair_after_failed_verification":
-        return CodexAction(
-            kind=_action_kind_for_tool(str(next_task.metadata.get("tool_name") or "")),
-            instruction=task.goal,
-            subgoal="modify_workspace",
-            risk_class=str(next_task.metadata.get("risk_class") or "high"),
-            metadata={
-                "tool_name": str(next_task.metadata.get("tool_name") or ""),
-                "arguments": dict(next_task.metadata.get("arguments") or {}),
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "recover_failed_action":
-        return CodexAction(
-            kind=_action_kind_for_tool(str(next_task.metadata.get("tool_name") or "")),
-            instruction=task.goal,
-            subgoal=str(next_task.metadata.get("subgoal") or "gather_evidence"),
-            risk_class=str(next_task.metadata.get("risk_class") or "low"),
-            metadata={
-                "tool_name": str(next_task.metadata.get("tool_name") or ""),
-                "arguments": dict(next_task.metadata.get("arguments") or {}),
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "clarify_target":
-        return CodexAction(
-            kind="respond",
-            instruction=str(next_task.metadata.get("message") or "Please provide a more specific goal."),
-            subgoal="synthesize_answer",
-            metadata={
-                "direct_output": True,
-                "clarification_required": True,
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "run_verification":
-        return CodexAction(
-            kind="run_verification",
-            instruction=str(next_task.metadata.get("command") or ""),
-            subgoal="verify_changes",
-            metadata={
-                "command": str(next_task.metadata.get("command") or ""),
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    if next_task.kind == "synthesize_answer":
-        return build_synthesized_response_action(
-            task,
-            source="task_plan",
-            extra_metadata={
-                "plan_task_id": next_task.task_id,
-                "plan_source": "task_plan",
-            },
-        )
-    return None
 
 
 def attach_action_to_plan(task: CodexTask, action: CodexAction, action_index: int) -> None:
@@ -499,6 +325,25 @@ def attach_action_to_plan(task: CodexTask, action: CodexAction, action_index: in
 
 def sync_task_plan(task: CodexTask) -> None:
     _sync_plan_status(task)
+    plan = task.plan
+    if plan is None:
+        task.state.plan_state = {}
+        return
+    task.state.plan_state = {
+        "status": plan.status,
+        "tasks": [f"{item.title}:{item.kind}:{item.status}" for item in plan.tasks],
+    }
+    task.state.pending_actions = [item.kind for item in plan.tasks if item.status != "completed"]
+    if plan.target_semantics is None:
+        return
+    task.state.resource_semantics = {
+        "path": plan.target_semantics.path,
+        "resource_kind": plan.target_semantics.resource_kind,
+        "is_container": plan.target_semantics.is_container,
+        "allowed_actions": list(plan.target_semantics.allowed_actions),
+    }
+    if plan.target_semantics.path:
+        task.state.resolved_target = plan.target_semantics.path
 
 
 def advance_task_plan(task: CodexTask, action: CodexAction, result: Any, context: Any) -> None:
@@ -807,8 +652,8 @@ def _build_synthesized_answer(task: CodexTask) -> str:
 
 
 def _build_repository_overview(task: CodexTask) -> str:
-    structure_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "structure"]
-    role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
+    structure_claims = [claim for claim in task.state.typed_claims if claim.get("kind") == "structure"]
+    role_claims = [claim for claim in task.state.typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
         lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
@@ -832,7 +677,7 @@ def _build_repository_overview(task: CodexTask) -> str:
 
 
 def _build_change_summary(task: CodexTask) -> str:
-    modified = task.memory.modified_paths[:3]
+    modified = task.state.modified_paths[:3]
     verification = task.verification
     lines: list[str] = []
     latest_modify_output = next(
@@ -983,7 +828,7 @@ def _suggest_failed_verification_recovery_with_llm(task: CodexTask, action: Code
     verification_output = str(getattr(result, "final_output", "") or "").strip()
     if not verification_output:
         return []
-    modified_target = next((path for path in reversed(task.memory.modified_paths) if path.strip()), "")
+    modified_target = next((path for path in reversed(task.state.modified_paths) if path.strip()), "")
     try:
         response = chat_once(
             llm_client,
@@ -1145,7 +990,7 @@ def _collect_reference_labels(task: CodexTask) -> list[str]:
         root = str(plan.metadata.get("workspace_root") or "")
     if not root:
         root = ""
-    for path in [*task.memory.read_paths, *task.memory.modified_paths]:
+    for path in [*task.state.read_paths, *task.state.modified_paths]:
         normalized = _normalize_reference_path(path, root)
         if normalized and normalized not in labels:
             labels.append(normalized)

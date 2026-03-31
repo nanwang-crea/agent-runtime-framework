@@ -161,6 +161,44 @@ def test_model_router_returns_runtime_for_selected_role():
     assert runtime.client is not None
 
 
+def test_model_router_falls_back_to_default_route_when_primary_route_is_invalid():
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(_FakeInstance())
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("conversation", instance_id="fake", model_name="missing-model")
+    router.set_route("default", instance_id="fake", model_name="fast-model")
+
+    runtime = router.resolve("conversation")
+
+    assert runtime is not None
+    assert runtime.profile.model_name == "fast-model"
+
+
+def test_model_router_retries_transient_client_failure_once():
+    class _FlakyInstance(_FakeInstance):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self.calls = 0
+
+        def get_client(self, store: InMemoryCredentialStore):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient")
+            return super().get_client(store)
+
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(_FlakyInstance())
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("conversation", instance_id="fake", model_name="fast-model")
+
+    runtime = router.resolve("conversation")
+
+    assert runtime is not None
+    assert runtime.profile.model_name == "fast-model"
+
+
 def test_resolve_model_runtime_prefers_router_selection(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -20,6 +20,13 @@ from agent_runtime_framework.agents.codex.prompting import (
 )
 from agent_runtime_framework.agents.codex.run_context import available_tool_names, build_run_context_block
 from agent_runtime_framework.agents.codex.semantics import build_task_intent_block, goal_is_raw_read, goal_prefers_summary, infer_task_intent
+from agent_runtime_framework.agents.codex.task_plans import (
+    _action_kind_for_tool,
+    _next_plan_task,
+    _resolved_modify_arguments,
+    _resolved_plan_path,
+    _sync_plan_status,
+)
 from agent_runtime_framework.agents.codex.workflows import workflow_name_for_task_profile
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -33,6 +40,12 @@ def plan_codex_actions(user_input: str) -> list[CodexAction]:
 
 
 def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction | None:
+    planned_from_task_plan = _plan_action_from_task_plan(task)
+    if planned_from_task_plan is not None:
+        return planned_from_task_plan
+    verification_action = _plan_pending_verification_action(task)
+    if verification_action is not None:
+        return verification_action
     completed = [action for action in task.actions if action.status == "completed"]
     if not completed:
         deterministic = _plan_first_action_by_profile(task, context)
@@ -67,6 +80,175 @@ def plan_next_codex_action(task: Any, session: Any, context: Any) -> CodexAction
         retriable=True,
         suggestion="Configure and authenticate a planner model in the frontend settings first.",
     )
+
+
+def _plan_pending_verification_action(task: Any) -> CodexAction | None:
+    pending = list(getattr(task.state, "pending_verifications", []) or [])
+    if not pending:
+        return None
+    command = str(pending[0]).strip()
+    if not command or command.lower().startswith("verify "):
+        return None
+    return CodexAction(
+        kind="run_verification",
+        instruction=command,
+        subgoal="verify_changes",
+        metadata={"command": command, "from_planner": True, "planner_reason": "pending_verification"},
+    )
+
+
+def _plan_action_from_task_plan(task: Any) -> CodexAction | None:
+    plan = getattr(task, "plan", None)
+    if plan is None:
+        return None
+    _sync_plan_status(task)
+    next_task = _next_plan_task(plan)
+    if next_task is None:
+        return None
+    if next_task.kind == "locate_target":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "resolve_workspace_target",
+                "arguments": {
+                    "query": str(next_task.metadata.get("query") or task.goal),
+                    "target_hint": str(next_task.metadata.get("target_hint") or ""),
+                },
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "gather_context":
+        resource_kind = str(next_task.metadata.get("resource_kind") or "")
+        preferred_read_tool = str(next_task.metadata.get("preferred_read_tool") or "read_workspace_text")
+        tool_name = str(next_task.metadata.get("tool_name") or "")
+        if not tool_name:
+            if resource_kind == "file":
+                tool_name = preferred_read_tool
+            elif getattr(task, "task_profile", "") == "file_reader":
+                tool_name = "inspect_workspace_path"
+            else:
+                tool_name = "list_workspace_directory"
+        arguments = {"path": _resolved_plan_path(next_task)}
+        if tool_name == "list_workspace_directory":
+            arguments["use_default_directory"] = bool(next_task.metadata.get("use_default_directory"))
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "inspect_target":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "inspect_workspace_path",
+                "arguments": {
+                    "path": _resolved_plan_path(next_task),
+                    "use_last_focus": bool(next_task.metadata.get("use_last_focus", True)),
+                },
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "rank_representative_files":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "rank_workspace_entries",
+                "arguments": {
+                    "path": _resolved_plan_path(next_task),
+                    "query": task.goal,
+                },
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "extract_outline":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "extract_workspace_outline",
+                "arguments": {"path": _resolved_plan_path(next_task)},
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "read_entrypoint":
+        return CodexAction(
+            kind="call_tool",
+            instruction=task.goal,
+            subgoal="gather_evidence",
+            metadata={
+                "tool_name": "read_workspace_text",
+                "arguments": {"path": _resolved_plan_path(next_task)},
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind in {"modify_target", "repair_after_failed_verification", "recover_failed_action"}:
+        return CodexAction(
+            kind=_action_kind_for_tool(str(next_task.metadata.get("tool_name") or "")),
+            instruction=task.goal,
+            subgoal=str(next_task.metadata.get("subgoal") or "modify_workspace"),
+            risk_class=str(next_task.metadata.get("risk_class") or "high"),
+            metadata={
+                "tool_name": str(next_task.metadata.get("tool_name") or ""),
+                "arguments": (
+                    _resolved_modify_arguments(next_task)
+                    if next_task.kind == "modify_target"
+                    else dict(next_task.metadata.get("arguments") or {})
+                ),
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "clarify_target":
+        return CodexAction(
+            kind="respond",
+            instruction=str(next_task.metadata.get("message") or "Please provide a more specific goal."),
+            subgoal="synthesize_answer",
+            metadata={
+                "direct_output": True,
+                "clarification_required": True,
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "run_verification":
+        return CodexAction(
+            kind="run_verification",
+            instruction=str(next_task.metadata.get("command") or ""),
+            subgoal="verify_changes",
+            metadata={
+                "command": str(next_task.metadata.get("command") or ""),
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    if next_task.kind == "synthesize_answer":
+        return build_synthesized_response_action(
+            task,
+            source="task_plan",
+            extra_metadata={
+                "plan_task_id": next_task.task_id,
+                "plan_source": "task_plan",
+            },
+        )
+    return None
 
 
 def _plan_first_action_by_profile(task: Any, context: Any) -> CodexAction | None:

@@ -2,7 +2,6 @@
 
 from agent_runtime_framework.agents.codex.evaluator import evaluate_codex_output
 from agent_runtime_framework.agents.codex.loop import CodexAgentLoop, CodexAgentLoopResult, CodexContext
-from agent_runtime_framework.agents.codex.memory import CodexTaskMemory
 from agent_runtime_framework.agents.codex.models import (
     CodexAction,
     CodexActionResult,
@@ -32,7 +31,6 @@ __all__ = [
     "ConfidenceState",
     "CodexContext",
     "CodexTask",
-    "CodexTaskMemory",
     "EvidenceItem",
     "TaskIntent",
     "TaskState",

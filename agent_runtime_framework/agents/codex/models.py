@@ -4,8 +4,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.agents.codex.memory import CodexTaskMemory
-
 
 @dataclass(slots=True)
 class VerificationResult:
@@ -61,6 +59,11 @@ class TaskState:
     evidence_items: list[EvidenceItem] = field(default_factory=list)
     known_facts: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
+    read_paths: list[str] = field(default_factory=list)
+    modified_paths: list[str] = field(default_factory=list)
+    pending_verifications: list[str] = field(default_factory=list)
+    claims: list[str] = field(default_factory=list)
+    typed_claims: list[dict[str, str]] = field(default_factory=list)
     pending_actions: list[str] = field(default_factory=list)
     plan_state: dict[str, Any] = field(default_factory=dict)
     confidence_state: ConfidenceState = field(default_factory=ConfidenceState)
@@ -138,5 +141,25 @@ class CodexTask:
     summary: str = ""
     artifact_ids: list[str] = field(default_factory=list)
     verification: VerificationResult | None = None
-    memory: CodexTaskMemory = field(default_factory=CodexTaskMemory)
+    memory: TaskState | None = None
     plan: CodexPlan | None = None
+
+    def __post_init__(self) -> None:
+        if self.memory is not None and self.memory is not self.state:
+            _merge_state_fields(self.state, self.memory)
+        self.memory = self.state
+
+
+def _merge_state_fields(state: TaskState, legacy_state: Any) -> None:
+    for field_name in (
+        "known_facts",
+        "open_questions",
+        "read_paths",
+        "modified_paths",
+        "pending_verifications",
+        "claims",
+        "typed_claims",
+    ):
+        value = getattr(legacy_state, field_name, None)
+        if isinstance(value, list) and value:
+            setattr(state, field_name, list(value))

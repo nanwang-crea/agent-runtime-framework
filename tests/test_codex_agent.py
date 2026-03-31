@@ -13,7 +13,7 @@ from agent_runtime_framework.agents.codex import (
     CodexPlanTask,
     CodexContext,
     CodexTask,
-    CodexTaskMemory,
+    TaskState,
     VerificationResult,
     build_default_codex_tools,
     evaluate_codex_output,
@@ -30,7 +30,6 @@ from agent_runtime_framework.agents.codex.task_plans import (
     advance_task_plan,
     attach_action_to_plan,
     build_task_plan,
-    plan_next_task_action,
 )
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.applications import ApplicationContext
@@ -79,6 +78,12 @@ def _context(workspace: Path) -> CodexContext:
 
 def _attach_test_next_action_planner(context: CodexContext) -> CodexContext:
     def _planner(task, _session, _context, tool_names):
+        try:
+            planned = plan_next_codex_action(task, _session, _context)
+        except AppError:
+            planned = None
+        if planned is not None:
+            return planned
         completed = [action for action in task.actions if action.status == "completed"]
         if completed:
             last_action = completed[-1]
@@ -118,7 +123,7 @@ def _task(
     task_profile: str | None = None,
     plan: CodexPlan | None = None,
     verification: VerificationResult | None = None,
-    memory: CodexTaskMemory | None = None,
+    memory: TaskState | None = None,
     runtime_persona: str = "",
 ) -> CodexTask:
     intent = infer_task_intent(goal, workspace)
@@ -129,13 +134,11 @@ def _task(
         actions=list(actions or []),
         task_profile=intent.task_kind,
         intent=intent,
-        state=build_initial_task_state(intent),
+        state=memory or build_initial_task_state(intent),
         plan=plan,
         verification=verification,
         runtime_persona=runtime_persona,
     )
-    if memory is not None:
-        task.memory = memory
     return task
 
 
@@ -174,7 +177,7 @@ def test_codex_models_track_defaults_and_verification(tmp_path: Path):
     assert action.status == "pending"
     assert task.status == "pending"
     assert task.verification is verification
-    assert task.memory.known_facts == []
+    assert task.state.known_facts == []
     assert result.artifacts[0]["artifact_type"] == "command_log"
 
 
@@ -383,8 +386,8 @@ def test_run_context_builder_collects_workspace_memory_and_plan_state(tmp_path: 
         runtime_persona="explore",
         plan=CodexPlan(tasks=[CodexPlanTask(title="Read note", kind="gather_context", status="in_progress")]),
     )
-    task.memory.known_facts.append("note exists")
-    task.memory.open_questions.append("what changed?")
+    task.state.known_facts.append("note exists")
+    task.state.open_questions.append("what changed?")
 
     snapshot = build_run_context(context, task=task, session=context.session, user_input=task.goal)
 
@@ -399,7 +402,7 @@ def test_run_context_builder_collects_workspace_memory_and_plan_state(tmp_path: 
     assert any("read note" in item or "call_tool" in item for item in snapshot.recent_completed_actions)
     assert snapshot.current_plan_state["tasks"] == ["Read note [in_progress] kind=gather_context"]
     assert snapshot.memory_snapshot["known_facts"] == ["note exists"]
-    assert snapshot.memory_snapshot["open_questions"] == ["what changed?"]
+    assert snapshot.memory_snapshot["open_questions"] == ["answer user goal", "what changed?"]
 
 
 def test_available_tool_names_hide_write_tools_for_explore_persona(tmp_path: Path):
@@ -1291,7 +1294,7 @@ def test_codex_output_evaluator_blocks_finish_when_open_questions_exist():
                 observation="done",
             )
         ],
-        memory=CodexTaskMemory(open_questions=["still missing evidence"]),
+        memory=TaskState(open_questions=["still missing evidence"]),
     )
 
     decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), [])
@@ -1311,14 +1314,13 @@ def test_codex_output_evaluator_blocks_finish_when_verification_is_pending():
                 observation="done",
             )
         ],
-        memory=CodexTaskMemory(pending_verifications=["pytest -q"]),
+        memory=TaskState(pending_verifications=["pytest -q"]),
     )
 
     decision = evaluate_codex_output(task, None, SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model="test")), ["run_shell_command"])
 
     assert decision.status == "continue"
-    assert decision.next_action is not None
-    assert decision.next_action.kind == "run_verification"
+    assert decision.next_action is None
 
 
 def test_codex_task_memory_tracks_read_and_modified_paths(tmp_path: Path):
@@ -1359,8 +1361,8 @@ def test_codex_task_memory_tracks_read_and_modified_paths(tmp_path: Path):
     result = CodexAgentLoop(context).run("edit note")
 
     assert result.status == "completed"
-    assert result.task.memory.read_paths == ["note.md"]
-    assert result.task.memory.modified_paths == ["note.md"]
+    assert result.task.state.read_paths == ["note.md"]
+    assert result.task.state.modified_paths == ["note.md"]
 
 
 def test_codex_task_memory_tracks_pending_verifications_until_run(tmp_path: Path):
@@ -1401,8 +1403,8 @@ def test_codex_task_memory_tracks_pending_verifications_until_run(tmp_path: Path
     result = CodexAgentLoop(context).run("edit and verify note")
 
     assert result.status == "completed"
-    assert result.task.memory.pending_verifications == []
-    assert "pytest -q" in result.task.memory.known_facts[-1]
+    assert result.task.state.pending_verifications == []
+    assert "pytest -q" in result.task.state.known_facts[-1]
 
 
 def test_codex_loop_runs_verification_command_and_records_success(tmp_path: Path):
@@ -1673,10 +1675,9 @@ def test_codex_llm_system_prompts_share_runtime_header(tmp_path: Path):
     result = CodexAgentLoop(context).run("总结 note.md 主要内容")
 
     assert result.status == "completed"
-    classifier_prompt = llm.completions.calls[0]["messages"][0]["content"]
-    planner_prompt = llm.completions.calls[1]["messages"][0]["content"]
-    evaluator_prompt = llm.completions.calls[2]["messages"][0]["content"]
-    for prompt in (classifier_prompt, planner_prompt, evaluator_prompt):
+    prompts = [call["messages"][0]["content"] for call in llm.completions.calls]
+    assert len(prompts) >= 2
+    for prompt in prompts:
         assert "You are a professional coding agent" in prompt
         assert "Core Principles" in prompt
         assert "Tool Priority" in prompt
@@ -1965,8 +1966,8 @@ def test_codex_task_memory_extracts_claims_from_inspect_output(tmp_path: Path):
     result = CodexAgentLoop(context).run("介绍 pkg")
 
     assert result.status == "completed"
-    assert any("service.py" in claim for claim in result.task.memory.claims)
-    assert any("utils.py" in claim for claim in result.task.memory.claims)
+    assert any("service.py" in claim for claim in result.task.state.claims)
+    assert any("utils.py" in claim for claim in result.task.state.claims)
 
 
 def test_codex_complex_task_uses_claims_for_role_summary(tmp_path: Path):
@@ -2021,8 +2022,8 @@ def test_codex_task_memory_stores_typed_claims(tmp_path: Path):
     result = CodexAgentLoop(context).run("介绍 pkg")
 
     assert result.status == "completed"
-    assert any(claim["kind"] == "role" for claim in result.task.memory.typed_claims)
-    assert any(claim["subject"] == "service.py" for claim in result.task.memory.typed_claims)
+    assert any(claim["kind"] == "role" for claim in result.task.state.typed_claims)
+    assert any(claim["subject"] == "service.py" for claim in result.task.state.typed_claims)
 
 
 def test_codex_complex_task_combines_structure_and_role_claims(tmp_path: Path):
@@ -2558,7 +2559,7 @@ def test_resource_semantics_make_repository_explainer_read_file_targets(tmp_path
     )
 
     advance_task_plan(task, locate_action, locate_result, context)
-    next_action = plan_next_task_action(task)
+    next_action = plan_next_codex_action(task, None, context)
 
     assert task.plan.target_semantics is not None
     assert task.plan.target_semantics.resource_kind == "file"
@@ -3122,7 +3123,7 @@ def test_evaluator_stays_decision_only_for_change_task_without_respond(tmp_path:
         ],
         task_profile="change_and_verify",
     )
-    task.memory.modified_paths.append("draft.txt")
+    task.state.modified_paths.append("draft.txt")
     context = _context(workspace)
 
     decision = evaluate_codex_output(task, context.session, context, ["run_tests", "get_git_diff"])

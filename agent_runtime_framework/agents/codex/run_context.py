@@ -89,7 +89,7 @@ def build_run_context(
         recent_completed_actions=_recent_completed_actions(task),
         current_user_message=str(user_input or getattr(task, "goal", "") or "").strip(),
         pending_clarification=_pending_clarification(application_context),
-        pending_verification=list(getattr(getattr(task, "memory", None), "pending_verifications", []) or []),
+        pending_verification=list(getattr(getattr(task, "state", None), "pending_verifications", []) or []),
         current_plan_state=_plan_state(task),
         memory_snapshot=_build_memory_snapshot(application_context, task=task, user_input=user_input),
         available_tools=summarize_available_tools(context, persona=active_persona),
@@ -181,7 +181,7 @@ def available_tool_names(context: Any, *, persona: RuntimePersona | None = None)
 
 def _build_memory_snapshot(application_context: Any, *, task: Any | None, user_input: str) -> dict[str, Any]:
     snapshot = application_context.session_memory.snapshot()
-    memory = getattr(task, "memory", None)
+    memory = getattr(task, "state", None)
     recalled: list[str] = []
     search = getattr(getattr(application_context, "index_memory", None), "search", None)
     query = str(user_input or getattr(task, "goal", "") or "").strip()

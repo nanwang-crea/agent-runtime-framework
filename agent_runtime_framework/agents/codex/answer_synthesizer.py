@@ -66,7 +66,7 @@ def _file_answer(task: CodexTask) -> str:
 
 
 def _change_answer(task: CodexTask) -> str:
-    modified = list(dict.fromkeys(task.memory.modified_paths))
+    modified = list(dict.fromkeys(task.state.modified_paths))
     verification_line = "Verification: not run."
     if task.verification is not None:
         verification_line = f"Verification: {'passed' if task.verification.success else 'failed'}."

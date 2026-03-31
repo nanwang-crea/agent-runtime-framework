@@ -19,19 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 def evaluate_codex_output(task: CodexTask, session: Any, context: Any, tool_names: list[str]) -> CodexEvaluationDecision:
-    if task.memory.pending_verifications:
-        command = task.memory.pending_verifications[0]
-        return CodexEvaluationDecision(
-            status="continue",
-            next_action=CodexAction(
-                kind="run_verification",
-                instruction=command,
-                subgoal="verify_changes",
-                metadata={"command": command, "from_evaluator": True, "evaluator_reason": "pending_verification"},
-            ),
-            summary="verification required before finish",
-        )
-    if task.memory.open_questions and _last_completed_action(task) and _last_completed_action(task).kind == "respond":
+    if task.state.pending_verifications:
+        return CodexEvaluationDecision(status="continue", summary="verification required before finish")
+    if task.state.open_questions and _last_completed_action(task) and _last_completed_action(task).kind == "respond":
         return CodexEvaluationDecision(status="continue", summary="cannot finish while open questions remain")
     llm_decision = _evaluate_with_model(task, session, context, tool_names)
     if llm_decision.status != "abstain":
@@ -111,7 +101,7 @@ def _evaluate_deterministically(task: CodexTask, _session: Any, _context: Any, t
         return CodexEvaluationDecision()
     last_action = completed[-1]
     missing = evidence_gap(task)
-    if last_action.kind == "respond" and not task.memory.open_questions and not task.memory.pending_verifications:
+    if last_action.kind == "respond" and not task.state.open_questions and not task.state.pending_verifications:
         return CodexEvaluationDecision(status="finish")
     if missing:
         return CodexEvaluationDecision(status="continue", summary="missing_evidence")
@@ -161,8 +151,8 @@ def _normalize_evaluator_decision(parsed: dict[str, Any], *, tool_names: set[str
         return CodexEvaluationDecision(status="finish")
     if decision == "continue":
         return CodexEvaluationDecision(status="continue", summary=str(parsed.get("summary") or "").strip())
-    if decision != "abstain":
-        return CodexEvaluationDecision()
+    if decision == "abstain":
+        return CodexEvaluationDecision(status="abstain")
     return CodexEvaluationDecision()
 
 
@@ -182,21 +172,21 @@ def _build_evaluator_progress_summary(task: CodexTask) -> str:
         for item in plan_tasks[:6]:
             title = str(getattr(item, "title", "") or getattr(item, "kind", "task") or "task")
             lines.append(f"  - [{getattr(item, 'status', 'pending')}] {title}")
-    if task.memory.read_paths:
-        lines.append("- read_paths: " + ", ".join(task.memory.read_paths[-6:]))
-    if task.memory.modified_paths:
-        lines.append("- modified_paths: " + ", ".join(task.memory.modified_paths[-6:]))
-    if task.memory.known_facts:
+    if task.state.read_paths:
+        lines.append("- read_paths: " + ", ".join(task.state.read_paths[-6:]))
+    if task.state.modified_paths:
+        lines.append("- modified_paths: " + ", ".join(task.state.modified_paths[-6:]))
+    if task.state.known_facts:
         lines.append("- recent_known_facts:")
-        lines.extend(f"  - {fact}" for fact in task.memory.known_facts[-6:])
-    if task.memory.open_questions:
+        lines.extend(f"  - {fact}" for fact in task.state.known_facts[-6:])
+    if task.state.open_questions:
         lines.append("- open_questions:")
-        lines.extend(f"  - {question}" for question in task.memory.open_questions[-4:])
+        lines.extend(f"  - {question}" for question in task.state.open_questions[-4:])
     else:
         lines.append("- open_questions: none")
-    if task.memory.pending_verifications:
+    if task.state.pending_verifications:
         lines.append("- pending_verifications:")
-        lines.extend(f"  - {item}" for item in task.memory.pending_verifications[-4:])
+        lines.extend(f"  - {item}" for item in task.state.pending_verifications[-4:])
     else:
         lines.append("- pending_verifications: none")
     return "\n".join(lines)
@@ -229,8 +219,8 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
             return repository_summary
     role_summary = _build_claim_based_answer(
         task.goal,
-        task.memory.claims or _extract_claims_from_observation(observation),
-        task.memory.typed_claims,
+        task.state.claims or _extract_claims_from_observation(observation),
+        task.state.typed_claims,
     )
     if role_summary:
         return role_summary
@@ -253,8 +243,8 @@ def _synthesize_knowledge_answer(task: CodexTask, completed: list[CodexAction]) 
 
 
 def _build_repository_claim_summary(task: CodexTask) -> str:
-    structure_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "structure"]
-    role_claims = [claim for claim in task.memory.typed_claims if claim.get("kind") == "role"]
+    structure_claims = [claim for claim in task.state.typed_claims if claim.get("kind") == "structure"]
+    role_claims = [claim for claim in task.state.typed_claims if claim.get("kind") == "role"]
     lines: list[str] = []
     if structure_claims:
         lines.append(f"目录结构：{structure_claims[0].get('detail', '')}")
@@ -360,7 +350,7 @@ def _extract_target_semantics(task: CodexTask, action: CodexAction) -> dict[str,
 
 
 def _has_repository_structure_evidence(task: CodexTask) -> bool:
-    if any(claim.get("kind") == "structure" for claim in task.memory.typed_claims):
+    if any(claim.get("kind") == "structure" for claim in task.state.typed_claims):
         return True
     # list_workspace_directory results also count as valid structure evidence
     return any(
