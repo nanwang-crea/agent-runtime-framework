@@ -1,41 +1,78 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` is a reusable Agent framework package that combines:
+`agent-runtime-framework` currently ships a **single active product/runtime path**:
 
-- an integrated graph execution module
-- reusable Agent runtime abstractions
-- tool registration and execution
-- policy and memory layers
-- resource modeling for local desktop content
-- application orchestration for end-to-end assistant workflows
-- runtime tracing hooks
+- `demo/server.py`
+- `demo/app.py`
+- `agents/codex/*`
 
-The framework now has two entry levels:
+In other words, the repository now centers on a **Codex-style action-centric agent runtime** for workspace tasks such as:
 
-- low-level graph/runtime primitives for generic agent execution
-- a first-stage desktop content application layer for local files, directories, and document chunks
-- an assistant runtime layer for single-agent capability selection with skills and MCP slots
+- listing directories
+- reading and summarizing files
+- explaining repositories and modules
+- editing workspace files
+- running verification commands
+- persisting layered memory for target resolution and follow-up work
 
-Key first-stage modules:
+The older generic `assistant runtime` and `desktop application` chains have been removed from the active codebase.
 
-- `agent_runtime_framework.assistant`
-- `agent_runtime_framework.graph`
+## Current Architecture
+
+The live runtime is composed of:
+
+- `agent_runtime_framework.agents.codex`
+  - task semantics
+  - planning
+  - tool execution
+  - evaluation
+  - answer synthesis
+  - layered memory and resolver hint policy
+
+- `agent_runtime_framework.demo`
+  - local HTTP server
+  - demo app shell
+  - model center wiring
+
 - `agent_runtime_framework.tools`
-- `agent_runtime_framework.runtime`
+  - Codex tool registry and execution
+
 - `agent_runtime_framework.resources`
+  - workspace resource resolution and semantics
+
 - `agent_runtime_framework.memory`
-- `agent_runtime_framework.policy`
-- `agent_runtime_framework.applications`
+  - session memory
+  - index memory
+  - markdown-backed memory persistence
 
-`agent_runtime_framework.runtime.parse_structured_output` provides a reusable LLM-first structured parsing helper that applications can share instead of embedding prompt + JSON parsing logic locally.
-`agent_runtime_framework.applications.run_stage_parser` builds on top of it so application stages can consistently use: service override -> LLM structured parsing -> deterministic fallback.
-Desktop-specific deterministic behavior is modularized through `ResolverPipeline` and `DesktopActionHandlerRegistry`.
-The assistant runtime provides `AssistantSession`, `CapabilityRegistry`, `AgentLoop`, `SkillRegistry`, MCP provider slots, and approval/resume primitives so desktop capabilities can be composed into a Codex-style single-agent loop.
-`AgentLoop` now supports a minimal `plan -> act -> review -> continue/stop` cycle, LLM-first structured capability selection, and resumable approval checkpoints for higher-risk capabilities.
-`CapabilitySpec` now carries description, safety level, input contract, cost hint, latency hint, risk class, dependency readiness, and output type metadata, and MCP providers can expose discoverable tool schemas through `MCPToolSpec`.
-The framework now also includes a first-stage model access layer with provider registration, auth sessions, model routing, and an OpenAI-compatible provider adapter.
+- `agent_runtime_framework.models`
+  - provider registration
+  - auth sessions
+  - model routing
 
-## Demo backend (Python)
+## Current Entry Point
+
+The demo frontend/backend path is:
+
+`frontend -> demo/server.py -> create_demo_assistant_app() -> DemoAssistantApp -> CodexAgentLoop`
+
+There is no separate application-runner product path anymore.
+
+## Memory V2
+
+The current Codex runtime uses an OpenClaw-style layered memory design:
+
+- low-confidence observations stay in daily memory
+- resolver-eligible memory is explicitly marked
+- entity bindings such as `README -> README.md` are stored separately
+- target resolution no longer trusts low-information directory summaries
+
+See:
+
+- [docs/plans/2026-03-31-memory-v2-openclaw-style.md](docs/plans/2026-03-31-memory-v2-openclaw-style.md)
+- [docs/2026-03-30-Agent整体重构设计方案-已完成.md](docs/2026-03-30-Agent整体重构设计方案-已完成.md)
+
+## Demo Backend (Python)
 
 The demo HTTP API and bundled web UI live in `agent_runtime_framework.demo.server`. The server is implemented with the standard library (`ThreadingHTTPServer`); there is no separate ASGI process (for example, no uvicorn).
 
@@ -71,7 +108,7 @@ Then open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 You still need a valid API key (or other credentials) for that provider in the model center before remote calls succeed.
 
-The demo combines general **conversation** routing with the **Codex-style agent loop** (plan / act / review) and desktop file capabilities where enabled: list/read/summarize files under the workspace, inspect turn and plan history, and use the model center for auth and per-stage model routing.
+The demo combines general conversation routing with the Codex agent loop, workspace tools, layered memory, and model-center-based per-role model routing.
 
 **HTTP surface (current):**
 
@@ -107,4 +144,12 @@ Then start the Python demo separately so `/api` can be proxied.
 
 The scaffold includes an Electron main process and preload bridge so it can grow into a desktop shell without Tauri.
 
-Reference architecture notes live in [docs/desktop-content-architecture.md](docs/desktop-content-architecture.md).
+## Documentation Status
+
+The following documents describe the **current** active architecture:
+
+- [docs/2026-03-30-Agent整体重构设计方案-已完成.md](docs/2026-03-30-Agent整体重构设计方案-已完成.md)
+- [docs/当前Agent设计框架.md](docs/当前Agent设计框架.md)
+- [docs/当前进展与改进建议.md](docs/当前进展与改进建议.md)
+
+Some older docs under `docs/` and `docs/plans/` still describe the removed generic assistant/application chains. Those files are now historical references unless they explicitly say otherwise.

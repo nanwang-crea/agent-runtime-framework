@@ -8,7 +8,6 @@ import ssl
 from typing import Any, Iterable
 from urllib.error import URLError
 
-from agent_runtime_framework.assistant.capabilities import CapabilitySpec
 from agent_runtime_framework.agents.codex.prompting import extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.agents.codex.semantics import resolve_task_intent
@@ -73,29 +72,6 @@ _WORKSPACE_NOUN_MARKERS = (
 
 _RESOURCE_PATTERN = re.compile(r"(^|[\s\"'])[\w./-]+\.[A-Za-z0-9]{1,8}($|[\s\"'])")
 _PATH_PATTERN = re.compile(r"(^|[\s\"'])(?:\.{1,2}/|/)[^\s]+")
-
-
-def create_conversation_capability(name: str = "conversation") -> CapabilitySpec:
-    return CapabilitySpec(
-        name=name,
-        runner=_run_conversation,
-        source="assistant",
-        description="General conversation and question answering capability.",
-        safety_level="chat",
-        cost_hint="medium",
-        latency_hint="medium",
-        risk_class="low",
-        dependency_readiness="ready",
-        output_type="chat_message",
-    )
-
-
-def route_default_capability(user_input: str, _session: Any, registry: Any, _context: Any) -> str | None:
-    if "conversation" in registry.names():
-        return "conversation"
-    if "desktop_content" in registry.names():
-        return "desktop_content"
-    return None
 
 def route_user_message(user_input: str, context: Any | None = None) -> str:
     return get_route_decision(user_input, context)["route"]

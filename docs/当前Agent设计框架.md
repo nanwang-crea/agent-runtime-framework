@@ -1,6 +1,6 @@
 # 当前 Agent 设计框架
 
-> 说明：本页主要描述当前仍在工作的 `assistant / capability` 主线，同时补充 2026-03-23 起新增的 `agents/codex` action-centric 方向。
+> 状态说明：`assistant / capability` 主线与 `desktop_content_application` 兼容链已经从当前代码库中移除。本页以下内容仅保留为历史背景，当前实际生效的主链是 `demo/app.py -> CodexAgentLoop -> agents/codex/*`。
 
 ## 1. 目标
 

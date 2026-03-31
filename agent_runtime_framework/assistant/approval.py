@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import Any, TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from agent_runtime_framework.assistant.capabilities import CapabilitySpec
     from agent_runtime_framework.assistant.session import AssistantSession, ExecutionPlan, PlannedAction
 
 
@@ -65,7 +64,7 @@ class ApprovalManager:
         plan: ExecutionPlan,
         step_index: int,
         step: PlannedAction,
-        capability: CapabilitySpec,
+        capability: Any,
     ) -> tuple[ApprovalRequest, ResumeToken] | None:
         if capability.risk_class not in {"high", "destructive"}:
             return None

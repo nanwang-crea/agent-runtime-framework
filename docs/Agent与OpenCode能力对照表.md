@@ -313,3 +313,6 @@
 - compaction / summary / status
 
 这些机制一旦补上，你自己的框架会非常明显地更像一个成熟产品级 Agent。
+# 历史说明
+
+本文写作时仓库仍同时保留 assistant/application 兼容链。当前代码库已收敛为 Codex Agent 主链，因此文中涉及旧链路的条目仅作历史对照参考。

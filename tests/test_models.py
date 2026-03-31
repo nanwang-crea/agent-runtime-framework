@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import create_conversation_capability, should_route_to_conversation
+from agent_runtime_framework.assistant.conversation import should_route_to_conversation
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,
@@ -195,25 +195,6 @@ def test_resolve_model_runtime_falls_back_to_default_route(tmp_path: Path):
 
     assert runtime is not None
     assert runtime.profile.model_name == "fast-model"
-
-
-def test_conversation_capability_uses_model_router_when_available(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    context = _app_context(workspace)
-    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_instance(_FakeInstance())
-    registry.authenticate("fake", {"api_key": "secret"})
-    router = ModelRouter(registry)
-    router.set_route("conversation", instance_id="fake", model_name="fast-model")
-    context.services["model_registry"] = registry
-    context.services["model_router"] = router
-    capability = create_conversation_capability()
-
-    result = capability.runner("你好", SimpleNamespace(application_context=context), SimpleNamespace(turns=[]))
-
-    assert result["final_answer"] == '{"capability_name":"conversation"}'
-    assert "source=model" in str(result["execution_trace"][-1]["detail"])
 
 
 def test_should_route_to_conversation_prefers_router_model_when_available(tmp_path: Path):
@@ -418,24 +399,6 @@ def test_chat_stream_uses_standardized_chunk_contract():
     )
 
     assert [chunk.content for chunk in chunks] == ["a", "b"]
-
-
-def test_conversation_capability_falls_back_when_model_request_fails(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    context = _app_context(workspace)
-
-    class _RaisingCompletions:
-        def create(self, **kwargs):
-            raise RuntimeError("network down")
-
-    context.llm_client = SimpleNamespace(chat=SimpleNamespace(completions=_RaisingCompletions()))
-    capability = create_conversation_capability()
-
-    result = capability.runner("你是谁？", SimpleNamespace(application_context=context), SimpleNamespace(turns=[]))
-
-    assert "我可以继续和你对话" in result["final_answer"]
-    assert "source=fallback" in str(result["execution_trace"][-1]["detail"])
 
 
 def test_codex_cli_driver_instance_authenticates_with_local_auth_file(tmp_path: Path):
