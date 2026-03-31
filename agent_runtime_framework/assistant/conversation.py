@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -8,7 +9,7 @@ from typing import Any, Iterable
 from urllib.error import URLError
 
 from agent_runtime_framework.assistant.capabilities import CapabilitySpec
-from agent_runtime_framework.agents.codex.prompting import render_codex_prompt_doc
+from agent_runtime_framework.agents.codex.prompting import extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import build_run_context_block
 from agent_runtime_framework.agents.codex.semantics import resolve_task_intent
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
@@ -101,12 +102,48 @@ def route_user_message(user_input: str, context: Any | None = None) -> str:
 
 
 def get_route_decision(user_input: str, context: Any | None = None) -> dict[str, str]:
+    model_route = _route_with_model(user_input, context)
+    if model_route in {"conversation", "codex"}:
+        return {"route": model_route, "source": "model"}
     intent = resolve_task_intent(user_input, context, session=getattr(context, "session", None))
     return {"route": "conversation" if intent.task_kind == "chat" else "codex", "source": "intent"}
 
 
 def should_route_to_conversation(user_input: str, context: Any | None = None) -> bool:
     return route_user_message(user_input, context) == "conversation"
+
+
+def _route_with_model(user_input: str, context: Any | None) -> str | None:
+    if context is None:
+        return None
+    application_context = getattr(context, "application_context", context)
+    runtime = resolve_model_runtime(application_context, "router")
+    if runtime is None or str(getattr(runtime.profile, "instance", "") or "") == "default":
+        return None
+    try:
+        response = chat_once(
+            runtime.client,
+            ChatRequest(
+                model=runtime.profile.model_name,
+                messages=[
+                    ChatMessage(role="system", content=render_codex_prompt_doc("router_system")),
+                    ChatMessage(role="user", content=render_codex_prompt_doc("router_user", user_input=user_input)),
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("router request failed: %s: %s", type(exc).__name__, exc)
+        return None
+    raw_content = (response.content or "").strip()
+    try:
+        parsed = json.loads(extract_json_block(raw_content))
+    except Exception:
+        logger.warning("router invalid json: raw=%s", raw_content[:300])
+        return None
+    route = str(parsed.get("route") or "").strip().lower()
+    return route if route in {"conversation", "codex"} else None
 
 
 def _run_conversation(user_input: str, context: Any, session: Any) -> str:
@@ -138,6 +175,7 @@ def stream_conversation_reply(
     meta["source"] = "fallback"
     meta["reason"] = "llm_unavailable"
     runtime = resolve_model_runtime(context.application_context, "conversation")
+    has_explicit_conversation_runtime = bool(runtime is not None and str(getattr(runtime.profile, "instance", "") or "") != "default")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
     max_tokens = _conversation_max_tokens()
@@ -193,6 +231,9 @@ def stream_conversation_reply(
             )
             content = response.content or ""
             if content.strip():
+                if _looks_like_control_payload(content) and not has_explicit_conversation_runtime:
+                    yield _fallback_conversation_reply(user_input)
+                    return
                 meta["source"] = "model"
                 meta["reason"] = "non_stream_fallback"
                 yield content.strip()
@@ -272,3 +313,8 @@ def _is_transient_network_error(exc: Exception) -> bool:
     if isinstance(exc, ssl.SSLError):
         return "EOF" in str(exc).upper()
     return False
+
+
+def _looks_like_control_payload(content: str) -> bool:
+    stripped = str(content or "").strip()
+    return stripped.startswith("{") and "\"capability_name\"" in stripped

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,7 +75,7 @@ def _interpret(user_input: str, context: ApplicationContext) -> DesktopIntent:
         ),
         llm_user_prompt=user_input.strip(),
         normalizer=lambda parsed: _normalize_llm_intent(parsed, user_input),
-        fallback=lambda: DesktopIntent(user_input=user_input.strip(), action="list"),
+        fallback=lambda: _heuristic_intent(user_input),
         max_tokens=260,
     )
 
@@ -97,6 +98,33 @@ def _normalize_llm_intent(parsed: dict[str, Any], user_input: str) -> DesktopInt
         content=str(content) if isinstance(content, str) else None,
         target_kind=target_kind,
         use_last_focus=bool(parsed.get("use_last_focus")),
+    )
+
+
+def _heuristic_intent(user_input: str) -> DesktopIntent:
+    text = user_input.strip()
+    action = "list"
+    if any(token in text for token in ("创建", "新建")):
+        action = "create"
+    elif any(token in text for token in ("编辑", "修改")):
+        action = "edit"
+    elif any(token in text for token in ("移动", "重命名")):
+        action = "move"
+    elif "删除" in text:
+        action = "delete"
+    elif any(token in text for token in ("总结", "概括")):
+        action = "summarize"
+    elif any(token in text for token in ("读取", "读一下", "打开", "看")) and "列" not in text:
+        action = "read"
+    target_name = _extract_desktop_target_name(text)
+    return DesktopIntent(
+        user_input=text,
+        action=action,
+        target_name=target_name,
+        destination_name=_extract_destination_name(text),
+        content=_extract_content(text),
+        target_kind="directory" if any(token in text for token in ("文件夹", "目录")) else "file",
+        use_last_focus=any(token in text for token in ("刚才那个", "再看刚才那个", "下面的")) and not bool(target_name),
     )
 
 
@@ -129,20 +157,21 @@ def _resolve(intent: DesktopIntent, context: ApplicationContext) -> list[Resourc
     )
     if hints.use_last_focus and snapshot.focused_resources:
         return list(snapshot.focused_resources)
+    if hints.target_name:
+        matches = context.resource_repository.find_by_name(default_directory, hints.target_name)
+        if matches:
+            return [matches[0]]
     resolved = context.resource_resolver.resolve(
         ResolveRequest(
             user_input=intent.user_input,
             default_directory=default_directory,
+            target_hint=hints.target_name or intent.target_name or "",
             last_focused=snapshot.focused_resources,
         ),
         context.resource_repository,
     )
     if resolved:
         return resolved
-    if hints.target_name:
-        matches = context.resource_repository.find_by_name(default_directory, hints.target_name)
-        if matches:
-            return [matches[0]]
     if hints.use_default_directory:
         return [default_directory]
     return []
@@ -234,6 +263,29 @@ def _build_mutation_plan(intent: DesktopIntent, resources: list[ResourceRef], co
         "preview": preview,
         "summary": summary,
     }
+
+
+def _extract_desktop_target_name(text: str) -> str | None:
+    for pattern in (
+        r"(?:创建文件夹|创建目录|新建文件夹|新建目录)\s+([A-Za-z0-9_./-]+)",
+        r"(?:列一下|列出|读取|读一下|总结|概括|编辑|修改|创建|删除|移动)\s+([A-Za-z0-9_./-]+)",
+        r"([A-Za-z0-9_./-]+)\s+下面",
+        r"([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _extract_destination_name(text: str) -> str | None:
+    match = re.search(r"(?:到|为|成)\s*([A-Za-z0-9_./-]+)", text)
+    return match.group(1).strip() if match else None
+
+
+def _extract_content(text: str) -> str | None:
+    match = re.search(r"内容\s+(.+)$", text)
+    return match.group(1).strip() if match else None
 
 
 def _resolve_target_path(default_directory: Path, raw: str | None) -> Path | None:

@@ -112,6 +112,11 @@ def resolve_last_focus(request: ResolveRequest, _repository: ResourceRepository)
 
 def resolve_default_directory(request: ResolveRequest, _repository: ResourceRepository) -> list[ResourceRef]:
     text = request.user_input.strip()
+    if request.target_hint.strip():
+        return []
+    candidates = _extract_path_candidates(request.user_input, request.target_hint)
+    if any("." in candidate or "/" in candidate for candidate in candidates):
+        return []
     if "当前目录" in text or "这个目录" in text or "当前工作区" in text or "workspace root" in text or "根目录" in text:
         return [request.default_directory]
     return []

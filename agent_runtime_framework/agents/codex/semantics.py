@@ -391,6 +391,8 @@ def _looks_like_repository_request(normalized: str, target_hint: str, target_typ
 def _looks_like_file_request(normalized: str, target_hint: str, target_type: str) -> bool:
     if target_type == "file":
         return True
+    if "readme" in normalized and _contains_any(normalized, _FILE_READ_MARKERS):
+        return True
     if _contains_any(normalized, _FILE_READ_MARKERS) and bool(target_hint):
         return True
     return False
@@ -439,6 +441,10 @@ def _refers_to_current_workspace(text: str) -> bool:
 def _extract_target_hint(text: str, workspace_root: Path | None) -> str:
     if any(marker in text for marker in _CURRENT_WORKSPACE_MARKERS):
         return "."
+    lowered = text.lower()
+    if "readme" in lowered:
+        explicit = _existing_readme_candidate(workspace_root)
+        return explicit or "README.md"
     candidates = [candidate for candidate in re.findall(r"[A-Za-z0-9_./-]+", text) if candidate not in {".", ".."}]
     existing = _first_existing_candidate(candidates, workspace_root)
     if existing:
@@ -482,6 +488,8 @@ def _first_existing_candidate(candidates: list[str], workspace_root: Path | None
 def _infer_target_type(target_hint: str, text: str, workspace_root: Path | None) -> str:
     if target_hint == ".":
         return "directory"
+    if str(target_hint).lower() in {"readme", "readme.md"}:
+        return "file"
     if target_hint:
         suffix = Path(target_hint).suffix.lower()
         if suffix in _FILE_EXTENSIONS:
@@ -498,6 +506,16 @@ def _infer_target_type(target_hint: str, text: str, workspace_root: Path | None)
     if "." in Path(target_hint).name and Path(target_hint).suffix:
         return "file"
     return "unknown"
+
+
+def _existing_readme_candidate(workspace_root: Path | None) -> str:
+    if workspace_root is None:
+        return ""
+    for candidate in ("README.md", "README", "readme.md", "readme"):
+        target = (workspace_root / candidate).resolve()
+        if target.exists() and target.is_file():
+            return str(target.relative_to(workspace_root))
+    return ""
 
 
 def _extract_json_block(text: str) -> str:

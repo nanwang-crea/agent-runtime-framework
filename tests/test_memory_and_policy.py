@@ -121,6 +121,56 @@ def test_markdown_index_memory_persists_values_across_reloads(tmp_path: Path):
     assert reloaded.get("codex:pending_clarification") == payload
 
 
+def test_index_memory_can_store_layered_memory_metadata():
+    memory = InMemoryIndexMemory()
+    record = MemoryRecord(
+        key="memory:daily:listing",
+        text="Found 18 entries.",
+        kind="workspace_fact",
+        metadata={
+            "layer": "daily",
+            "record_kind": "observation",
+            "confidence": 0.2,
+            "retrievable_for_resolution": False,
+            "path": ".",
+        },
+    )
+
+    memory.remember(record)
+    matches = memory.search("entries", limit=1, kind="workspace_fact")
+
+    assert matches
+    assert matches[0].metadata["layer"] == "daily"
+    assert matches[0].metadata["retrievable_for_resolution"] is False
+
+
+def test_markdown_index_memory_persists_entity_binding_metadata(tmp_path: Path):
+    memory_file = tmp_path / "agent-memory.md"
+    memory = MarkdownIndexMemory(memory_file)
+    memory.remember(
+        MemoryRecord(
+            key="entity:README",
+            text="README maps to README.md",
+            kind="entity_binding",
+            metadata={
+                "layer": "entity",
+                "alias": "README",
+                "path": "README.md",
+                "entity_type": "file",
+                "confidence": 0.98,
+                "retrievable_for_resolution": True,
+            },
+        )
+    )
+
+    reloaded = MarkdownIndexMemory(memory_file)
+    matches = reloaded.search("README", limit=1, kind="entity_binding")
+
+    assert matches
+    assert matches[0].metadata["path"] == "README.md"
+    assert matches[0].metadata["retrievable_for_resolution"] is True
+
+
 def test_application_context_uses_markdown_index_memory_for_workspace_defaults(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

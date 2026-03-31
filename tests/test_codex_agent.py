@@ -850,6 +850,213 @@ def test_memory_aware_target_resolution_uses_task_conclusion_records(tmp_path: P
     assert result.output["best_match"] == "src/auth.py"
 
 
+def test_memory_hints_ignore_non_resolver_directory_summary_records(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="task:listing",
+            text="当前目录 根据当前收集到的证据：Found 18 entries.",
+            kind="task_conclusion",
+            metadata={
+                "path": ".",
+                "layer": "daily",
+                "record_kind": "summary",
+                "confidence": 0.15,
+                "retrievable_for_resolution": False,
+            },
+        )
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "读取 README", "target_hint": "README.md"},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "README.md"
+
+
+def test_entity_binding_memory_has_priority_over_generic_workspace_memory(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (workspace / "README.md").write_text("# Root Demo\n", encoding="utf-8")
+    (docs / "README.md").write_text("# Docs Demo\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="task:listing",
+            text="当前目录 根据当前收集到的证据：Found 18 entries.",
+            kind="workspace_fact",
+            metadata={
+                "path": ".",
+                "layer": "daily",
+                "record_kind": "observation",
+                "confidence": 0.1,
+                "retrievable_for_resolution": False,
+            },
+        )
+    )
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="entity:README",
+            text="README maps to README.md",
+            kind="entity_binding",
+            metadata={
+                "path": "README.md",
+                "layer": "entity",
+                "record_kind": "entity_binding",
+                "entity_type": "file",
+                "alias": "README",
+                "confidence": 0.98,
+                "retrievable_for_resolution": True,
+            },
+        )
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "继续读 README", "target_hint": "README"},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "README.md"
+
+
+def test_file_reader_readme_request_never_falls_back_to_workspace_root_under_memory_pollution(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (workspace / "MEMORY.md").write_text("memory notes\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="task:dir-conclusion",
+            text="你帮我列一下当前目录都有什么内容呢？ 根据当前收集到的证据：Found 18 entries.",
+            kind="task_conclusion",
+            metadata={
+                "path": ".",
+                "layer": "daily",
+                "record_kind": "summary",
+                "confidence": 0.12,
+                "retrievable_for_resolution": False,
+            },
+        )
+    )
+    context.application_context.index_memory.remember(
+        MemoryRecord(
+            key="task:dir-fact",
+            text="你帮我列一下当前目录都有什么内容呢？ Found 18 entries.",
+            kind="workspace_fact",
+            metadata={
+                "path": ".",
+                "layer": "daily",
+                "record_kind": "observation",
+                "confidence": 0.12,
+                "retrievable_for_resolution": False,
+            },
+        )
+    )
+
+    tool = context.application_context.tools.require("resolve_workspace_target")
+    result = execute_tool_call(
+        tool,
+        ToolCall(
+            tool_name="resolve_workspace_target",
+            arguments={"query": "帮我读一下README文档呢", "target_hint": "README"},
+        ),
+        task=SimpleNamespace(kind="call_tool", metadata={}),
+        context=context,
+    )
+
+    assert result.success is True
+    assert result.output["best_match"] == "README.md"
+    assert result.output["resource_kind"] == "file"
+
+
+def test_memory_pollution_regression_directory_listing_then_readme_reads_file(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nhello\n", encoding="utf-8")
+    (workspace / "docs").mkdir()
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    first = CodexAgentLoop(context).run("你帮我列一下当前目录都有什么内容呢？")
+    second = CodexAgentLoop(context).run("帮我读一下README文档呢")
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert second.task.task_profile == "file_reader"
+    assert any(action.metadata.get("tool_name") == "read_workspace_text" for action in second.task.actions if action.kind == "call_tool")
+    assert "# Demo" in second.final_output
+
+
+def test_completed_task_memory_writes_entity_binding_but_not_resolver_eligible_root_summary(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\nhello\n", encoding="utf-8")
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("帮我读一下 README.md")
+
+    assert result.status == "completed"
+    conclusion_records = context.application_context.index_memory.search("README", limit=5, kind="task_conclusion")
+    entity_records = context.application_context.index_memory.search("README", limit=5, kind="entity_binding")
+
+    assert entity_records
+    assert any(record.metadata.get("path") == "README.md" for record in entity_records)
+    assert all(record.metadata.get("retrievable_for_resolution") is False for record in conclusion_records)
+
+
+def test_repository_summary_filters_low_information_machine_lines(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (workspace / "docs").mkdir()
+
+    context = _context(workspace)
+    for tool in build_default_codex_tools():
+        context.application_context.tools.register(tool)
+
+    result = CodexAgentLoop(context).run("帮我列一下当前目录有哪些文件并总结")
+
+    assert result.status == "completed"
+    assert "条目：Found" not in result.final_output
+    assert "Found 2 entries." not in result.final_output
+    assert "README.md" in result.final_output
+
+
 def test_follow_up_target_resolution_prefers_session_focus_for_pronouns(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

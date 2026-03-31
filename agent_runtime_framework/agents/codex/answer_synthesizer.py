@@ -29,12 +29,10 @@ def build_synthesized_response_action(task: CodexTask, *, source: str, extra_met
 
 
 def _workspace_listing_answer(task: CodexTask) -> str:
-    lines: list[str] = []
     for item in task.state.evidence_items:
         if item.source == "list_workspace_directory" and item.content:
-            return item.content
-    for fact in task.state.known_facts[:3]:
-        lines.append(f"- {fact}")
+            return _format_listing_content(item.content)
+    lines = [f"- {fact}" for fact in task.state.known_facts[:3] if not _is_low_information_line(fact)]
     return "目录结构：\n" + "\n".join(lines) if lines else "目录结构信息不足。"
 
 
@@ -45,7 +43,7 @@ def _repository_overview_answer(task: CodexTask, *, mode: str) -> str:
         lines.append(f"- 目录结构：{structure.summary or structure.content.splitlines()[0]}")
         if structure.source == "list_workspace_directory" and structure.content:
             entries = [line.strip() for line in structure.content.splitlines() if line.strip()][:4]
-            lines.extend(f"- 条目：{entry}" for entry in entries)
+            lines.extend(f"- 条目：{entry}" for entry in entries if not _is_low_information_line(entry))
     for item in task.state.evidence_items:
         if item.source in {"read_workspace_text", "extract_workspace_outline", "rank_workspace_entries"} and item.path:
             detail = item.summary or item.content.splitlines()[0]
@@ -108,3 +106,14 @@ def _display_path(path: str, workspace_root: str) -> str:
         relative = normalized[len(workspace_root):].lstrip("/").lstrip("\\")
         return relative or "."
     return normalized
+
+
+def _format_listing_content(content: str) -> str:
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    filtered = [line for line in lines if not _is_low_information_line(line)]
+    return "目录结构：\n" + "\n".join(f"- {line}" for line in filtered) if filtered else "目录结构信息不足。"
+
+
+def _is_low_information_line(line: str) -> bool:
+    normalized = str(line or "").strip().lower()
+    return normalized.startswith("found ") and "entries" in normalized

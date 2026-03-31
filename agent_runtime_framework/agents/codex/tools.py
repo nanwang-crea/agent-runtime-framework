@@ -9,6 +9,9 @@ from typing import Any
 from agent_runtime_framework.core.specs import ToolSpec
 from agent_runtime_framework.agents.codex.prompting import build_codex_system_prompt, build_follow_up_context, extract_json_block, render_codex_prompt_doc
 from agent_runtime_framework.agents.codex.run_context import update_loaded_instructions
+from agent_runtime_framework.agents.codex.resolver_hint_policy import build_resolver_hints
+from agent_runtime_framework.agents.codex.entity_memory import search_entity_bindings
+from agent_runtime_framework.agents.codex.semantics import infer_task_intent
 from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.resources import ResolveHint, ResolveRequest, ResourceRef, describe_resource_semantics
@@ -556,21 +559,27 @@ def _memory_hints_for_query(query: str, target_hint: str, context: Any) -> list[
     memory_query = " ".join(part for part in (target_hint, query) if part).strip()
     if not memory_query:
         return []
-    hints: list[ResolveHint] = []
-    seen: set[str] = set()
-    for kind in ("workspace_focus", "task_conclusion", "workspace_fact"):
-        for record in search(memory_query, limit=5, kind=kind):
-            path = str(record.metadata.get("path") or "").strip()
-            if not path or path in seen:
-                continue
-            seen.add(path)
-            hints.append(ResolveHint(path=path, source=kind, summary=str(record.metadata.get("summary") or "")))
-    return hints
+    records: list[MemoryRecord] = []
+    records.extend(search_entity_bindings(index_memory, memory_query, limit=5))
+    for kind in ("workspace_focus", "workspace_fact", "task_conclusion"):
+        records.extend(search(memory_query, limit=5, kind=kind))
+    return build_resolver_hints(records)
 
 
 def _resolve_target_fallback(query: str, target_hint: str, candidates: list[str]) -> str:
     lowered_query = query.lower()
     lowered_hint = target_hint.lower()
+    intent = infer_task_intent(query)
+    if str(getattr(intent, "task_kind", "") or "") == "file_reader":
+        for candidate in candidates:
+            base = Path(candidate).name.lower()
+            if lowered_hint and lowered_hint in {base, Path(candidate).stem.lower()}:
+                return candidate
+        for candidate in candidates:
+            base = Path(candidate).name.lower()
+            if any(token in base for token in (lowered_hint, "readme") if token):
+                return candidate
+        return ""
     if any(marker in lowered_query for marker in ("当前目录", "根目录", "workspace", "current directory", "root")):
         return "."
     for candidate in candidates:

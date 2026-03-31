@@ -19,6 +19,8 @@ from agent_runtime_framework.agents.codex.models import (
     VerificationResult,
 )
 from agent_runtime_framework.agents.codex.answer_synthesizer import build_synthesized_response_action
+from agent_runtime_framework.agents.codex.memory_extractor import extract_memory_items
+from agent_runtime_framework.agents.codex.memory_policy import decide_memory_write
 from agent_runtime_framework.agents.codex.evidence_manager import record_action_evidence
 from agent_runtime_framework.agents.codex.memory import update_task_memory
 from agent_runtime_framework.agents.codex.planner import plan_next_codex_action
@@ -986,27 +988,26 @@ class CodexAgentLoop:
             return
         target_path = self._completed_task_target_path(task)
         relative_path = self._relative_workspace_path(target_path) if target_path else ""
-        final_summary = final_output.strip()
-        if final_summary:
+        for item in extract_memory_items(task, final_output=final_output):
+            path = relative_path if item.path in {"", "."} else self._relative_workspace_path(item.path)
+            item.path = path or relative_path
+            decision = decide_memory_write(item)
+            if not decision.allow_write:
+                continue
             remember(
                 MemoryRecord(
-                    key=f"task:{task.task_id}:conclusion",
-                    text=f"{task.goal} {final_summary}".strip(),
-                    kind="task_conclusion",
+                    key=item.memory_id,
+                    text=f"{task.goal} {item.text}".strip(),
+                    kind="entity_binding" if decision.target_layer == "entity" else ("task_conclusion" if item.record_kind == "summary" else "workspace_fact"),
                     metadata={
-                        "path": relative_path,
+                        **item.as_metadata(),
+                        "path": item.path,
                         "task_profile": task.task_profile,
                         "goal": task.goal,
+                        "layer": decision.target_layer,
+                        "confidence": decision.confidence,
+                        "retrievable_for_resolution": decision.retrievable_for_resolution,
                     },
-                )
-            )
-        for index, fact in enumerate(task.memory.known_facts[:5]):
-            remember(
-                MemoryRecord(
-                    key=f"task:{task.task_id}:fact:{index}",
-                    text=f"{task.goal} {fact}".strip(),
-                    kind="workspace_fact",
-                    metadata={"path": relative_path, "task_profile": task.task_profile},
                 )
             )
         for index, claim in enumerate(task.memory.typed_claims[:5]):
@@ -1026,6 +1027,10 @@ class CodexAgentLoop:
                         "path": relative_path,
                         "task_profile": task.task_profile,
                         "claim_kind": str(claim.get("kind") or ""),
+                        "layer": "daily",
+                        "record_kind": "observation",
+                        "confidence": 0.5,
+                        "retrievable_for_resolution": bool(claim.get("kind") == "role" and relative_path and relative_path != "."),
                     },
                 )
             )
