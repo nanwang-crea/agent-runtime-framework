@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
+from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 
 
@@ -29,9 +30,19 @@ class WorkspaceOverviewExecutor:
                     child_label = f"{path.name}/{child.name}/" if child.is_dir() else f"{path.name}/{child.name}"
                     entries.append(child_label)
                     references.append(str(child))
+        summary = synthesize_text(
+            context,
+            role="composer",
+            system_prompt=(
+                "You summarize a workspace overview for an end user. "
+                "Respond with one concise natural-language paragraph in the user's language."
+            ),
+            payload={"goal": run.goal, "workspace_root": str(workspace_root), "entries": entries},
+            max_tokens=180,
+        ) or ", ".join(entries[:5])
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={"workspace_root": str(workspace_root), "entries": entries, "summary": ", ".join(entries[:5])},
+            output={"workspace_root": str(workspace_root), "entries": entries, "summary": summary},
             references=references,
         )
 
@@ -54,6 +65,16 @@ class FileReadExecutor:
         if truncated:
             visible_content = f"{visible_content.rstrip()}\n...[已截断]"
             summary = f"{summary.rstrip()} ...[已截断]"
+        summary = synthesize_text(
+            context,
+            role="composer",
+            system_prompt=(
+                "You summarize file contents for an end user. "
+                "Focus on what the file is about and keep the answer concise in the user's language."
+            ),
+            payload={"goal": run.goal, "path": target_path, "content": visible_content},
+            max_tokens=220,
+        ) or summary
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={"path": target_path, "content": visible_content, "summary": summary},
@@ -131,8 +152,20 @@ class FinalResponseExecutor:
                 if key != node.node_id and result.status == NODE_STATUS_COMPLETED
             ]
             aggregated = aggregate_node_results(direct_results)
-        summaries = aggregated.output.get("summaries", []) if aggregated else []
-        final_response = "\n".join(str(item) for item in summaries if item)
+        synthesized = dict(run.shared_state.get("response_synthesis") or {})
+        final_response = str(synthesized.get("final_response") or synthesized.get("summary") or "").strip()
+        if not final_response:
+            summaries = aggregated.output.get("summaries", []) if aggregated else []
+            final_response = synthesize_text(
+                context,
+                role="composer",
+                system_prompt=(
+                    "You write the final workflow answer for an end user. "
+                    "Use the provided summaries and keep the answer direct, natural, and non-repetitive."
+                ),
+                payload={"goal": run.goal, "summaries": summaries, "references": list(aggregated.references if aggregated else [])},
+                max_tokens=320,
+            ) or "\n".join(str(item) for item in summaries if item)
         result = NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={"final_response": final_response},

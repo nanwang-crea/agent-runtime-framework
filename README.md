@@ -1,6 +1,6 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。
+`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。当前迁移状态是 **partial migration complete**：`WorkflowRuntime` 已经是 workspace 请求的唯一顶层执行内核，`WorkspaceBackend` / `WorkspaceAgentLoop` 仅保留为图节点下的兼容执行器。
 
 当前生效的主链路是：
 
@@ -56,6 +56,21 @@
 - **conversation-style requests** 仍然走 conversation routing
 - `WorkspaceBackend` 仍然保留，但定位是 **compatibility execution backend**，而不是顶层唯一运行时
 
+## Migration Status
+
+当前 graph-first 迁移处于 **partial migration complete** 阶段。规则已经收口为：**workspace 请求的顶层执行内核只有 `WorkflowRuntime`；`WorkspaceBackend` 与 `WorkspaceAgentLoop` 仅作为 compatibility executor 存在，不能再被视为产品入口运行时。**
+
+| Area | Current | Target |
+| --- | --- | --- |
+| routing | graph-native | graph-native |
+| graph build | graph-native | graph-native |
+| approval / resume | graph-native | graph-native |
+| aggregation | graph-native | graph-native |
+| final response | graph-native | graph-native |
+| complex workspace subtask execution | loop-backed compatibility | explicit graph nodes first, loop fallback only |
+| clarification handling | partially loop-backed | graph-native first |
+| tool-call orchestration fallback | loop-backed compatibility | explicit graph nodes first |
+
 ## Workflow Runtime Status
 
 当前已经落地的 workflow 纵向切片包括：
@@ -72,12 +87,22 @@
 - demo app 对 compound goal 的 workflow-first 路由
 - top-level public exports: `WorkflowRuntime`, `WorkflowRun`, `WorkflowNode`, `WorkflowGraph`
 
-当前仍未完成的部分主要是：
+当前迁移已经完成的部分主要是：
 
-- 更完整的 workflow-first 文档收尾
-- 更广覆盖的 app entry migration
-- 老的 codex-only 恢复链路回归问题收口
-- 更彻底的 dead-code cleanup
+- `WorkflowRuntime` 作为 workspace 请求的唯一顶层执行内核
+- 非 chat workspace 请求统一先进入 workflow runtime
+- clarification follow-up 优先回到 workflow path，而不是 app 层直连 loop
+- graph-native approval / resume / aggregation / final response
+- `tool_call` / `clarification` 的首批显式 workflow executors
+- `target_resolution` / `file_inspection` / `response_synthesis` 的第二批 graph-native executors
+- `workspace_subtask` bridge 的 `fallback_reason` / `compatibility_mode` / `source_loop` 元数据
+
+当前仍保留为兼容 fallback 或后续增强的部分主要是：
+
+- 更丰富的 graph-native node taxonomy
+- 并行调度与更细粒度的子任务图
+- model-planned graph 的进一步扩展
+- subagent / MCP / skills 级别的图节点化
 
 ## Demo Backend (Python)
 

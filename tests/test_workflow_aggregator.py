@@ -1,6 +1,17 @@
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, FinalResponseExecutor
+from types import SimpleNamespace
+
+
+class _FakeChatClient:
+    def __init__(self, response: str):
+        self.response = response
+        self.requests = []
+
+    def create_chat_completion(self, request):
+        self.requests.append(request)
+        return SimpleNamespace(content=self.response)
 
 
 def test_aggregator_merges_subtask_results_with_references():
@@ -49,3 +60,23 @@ def test_final_response_contains_merged_summaries_and_references():
     assert "overview" in result.output["final_response"]
     assert "readme" in result.output["final_response"]
     assert result.references == ["src/", "README.md"]
+
+
+def test_final_response_prefers_model_formatted_answer_when_available():
+    run = WorkflowRun(goal="总结仓库情况")
+    run.shared_state["aggregated_result"] = NodeResult(
+        status=NODE_STATUS_COMPLETED,
+        output={"summaries": ["overview", "readme"]},
+        references=["src/", "README.md"],
+    )
+    node = WorkflowNode(node_id="final_response", node_type="final_response")
+    client = _FakeChatClient("仓库包含源码目录，README 说明了项目用途。")
+
+    result = FinalResponseExecutor().execute(
+        node,
+        run,
+        {"application_context": SimpleNamespace(llm_client=client, llm_model="demo-model", services={})},
+    )
+
+    assert result.output["final_response"] == "仓库包含源码目录，README 说明了项目用途。"
+    assert client.requests

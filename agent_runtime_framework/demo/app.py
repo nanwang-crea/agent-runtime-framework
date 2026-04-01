@@ -33,6 +33,11 @@ from agent_runtime_framework.demo.model_center import ModelCenterService, ModelC
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
+from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
+from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
+from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
+from agent_runtime_framework.workflow.file_inspection_executor import FileInspectionExecutor
+from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
 from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 
 logger = logging.getLogger(__name__)
@@ -63,18 +68,20 @@ class DemoAssistantApp:
                 return self._conversation_payload(message)
             has_pending_clarification = self.loop.has_pending_clarification(self.context.session)
             if has_pending_clarification:
-                self._last_route_decision = {"route": "codex", "source": "clarification"}
-            else:
-                route_decision = get_route_decision(message, self.context)
-                self._last_route_decision = route_decision
-                if route_decision["route"] == "conversation":
-                    return self._conversation_payload(message)
-            if not has_pending_clarification and self._should_use_workflow(message):
+                self._last_route_decision = {"route": "workflow", "source": "clarification"}
+                payload = self._run_workflow(message)
+                self._record_run(payload, prompt=message)
+                return payload
+            route_decision = get_route_decision(message, self.context)
+            self._last_route_decision = route_decision
+            if route_decision["route"] == "conversation":
+                return self._conversation_payload(message)
+            if self._should_use_workflow(message):
                 payload = self._run_workflow(message)
                 self._record_run(payload, prompt=message)
                 return payload
             self._ensure_codex_planner_available()
-            result = self.loop.run(message)
+            result = self._run_legacy_workspace_fallback(message)
             self._task_history.insert(0, result.task)
             self._task_history = self._task_history[:40]
             payload = self._result_payload(result)
@@ -84,6 +91,9 @@ class DemoAssistantApp:
             return payload
         except Exception as exc:
             return self._error_payload(exc)
+
+    def _run_legacy_workspace_fallback(self, message: str):
+        return getattr(self.loop, "run")(message)
 
     def _should_use_workflow(self, message: str) -> bool:
         goal = analyze_goal(message, context=self.context)
@@ -111,11 +121,14 @@ class DemoAssistantApp:
                 self._pending_tokens[resume_token.token_id] = {"kind": "workflow", "runtime": runtime, "run": run, "token": resume_token}
                 resume_token_id = resume_token.token_id
             approval_request = self._workflow_approval_request(run)
+        clarification_request = run.shared_state.get("clarification_request")
+        payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
+        final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         return {
-            "status": run.status,
+            "status": payload_status,
             "run_id": run.run_id,
             "plan_id": run.run_id,
-            "final_answer": str(run.final_output or (approval_request or {}).get("reason") or ""),
+            "final_answer": final_answer,
             "capability_name": "workflow",
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
@@ -354,11 +367,14 @@ class DemoAssistantApp:
                 self._pending_tokens[resume_token.token_id] = {"kind": "workflow", "runtime": self._build_workflow_runtime(), "run": run, "token": resume_token}
                 resume_token_id = resume_token.token_id
             approval_request = self._workflow_approval_request(run)
+        clarification_request = run.shared_state.get("clarification_request")
+        payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
+        final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         return {
-            "status": run.status,
+            "status": payload_status,
             "run_id": run.run_id,
             "plan_id": run.run_id,
-            "final_answer": str(run.final_output or (approval_request or {}).get("reason") or ""),
+            "final_answer": final_answer,
             "capability_name": "workflow",
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
@@ -381,9 +397,14 @@ class DemoAssistantApp:
                 "verification": VerificationExecutor(),
                 "approval_gate": ApprovalGateExecutor(),
                 "final_response": FinalResponseExecutor(),
+                "tool_call": ToolCallExecutor(),
+                "clarification": ClarificationExecutor(),
+                "target_resolution": TargetResolutionExecutor(),
+                "file_inspection": FileInspectionExecutor(),
+                "response_synthesis": ResponseSynthesisExecutor(),
                 "workspace_subtask": WorkspaceSubtaskExecutor(workspace_loop=self.loop),
             },
-            context={"workspace_root": str(self.workspace)},
+            context={"workspace_root": str(self.workspace), "application_context": self.context.application_context, "workspace_context": self.context},
         )
 
     def _workflow_approval_request(self, run: Any) -> dict[str, Any] | None:

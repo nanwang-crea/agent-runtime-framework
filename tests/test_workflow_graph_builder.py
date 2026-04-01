@@ -207,3 +207,73 @@ def test_graph_builder_falls_back_to_workspace_subtask_for_non_native_goal():
 
     assert [node.node_type for node in graph.nodes] == ["workspace_subtask", "final_response"]
     assert graph.nodes[0].metadata["goal"] == "编辑 README.md 并验证修改结果"
+
+
+
+def test_graph_builder_creates_native_graph_for_repository_overview_request():
+    goal = GoalSpec(
+        original_goal="列一下当前工作区都有什么文件",
+        primary_intent="repository_overview",
+        requires_repository_overview=True,
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert [node.node_type for node in graph.nodes] == ["repository_explainer", "final_response"]
+    assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
+
+
+
+def test_graph_builder_keeps_compound_read_and_summarize_request_native():
+    graph = build_workflow_graph(example_compound_goal())
+
+    assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
+    assert {node.node_type for node in graph.nodes} >= {"repository_explainer", "file_reader", "aggregate_results", "final_response"}
+
+
+
+def test_graph_builder_records_fallback_reason_for_non_native_goal():
+    goal = GoalSpec(
+        original_goal="编辑 README.md 并验证修改结果",
+        primary_intent="change_and_verify",
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert graph.metadata["execution_mode"] == "mixed"
+    assert "unsupported_primary_intent" in graph.metadata["fallback_reasons"]
+    assert graph.nodes[0].metadata["fallback_reason"] == "unsupported_primary_intent"
+
+
+
+def test_graph_builder_inserts_approval_gate_for_high_risk_workspace_subtask_goal():
+    goal = GoalSpec(
+        original_goal="直接删除 README.md",
+        primary_intent="dangerous_change",
+        metadata={"requires_approval": True},
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert any(node.node_type == "workspace_subtask" for node in graph.nodes)
+    assert any(node.node_type == "approval_gate" for node in graph.nodes)
+    assert graph.metadata["execution_mode"] == "mixed"
+
+
+
+def test_graph_builder_creates_target_explainer_graph_for_module_question():
+    goal = GoalSpec(
+        original_goal="请讲解 service 这个模块在做什么",
+        primary_intent="target_explainer",
+        metadata={"target_query": "请讲解 service 这个模块在做什么"},
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert [node.node_type for node in graph.nodes] == [
+        "target_resolution",
+        "file_inspection",
+        "response_synthesis",
+        "final_response",
+    ]
+    assert graph.metadata["execution_mode"] == "native"

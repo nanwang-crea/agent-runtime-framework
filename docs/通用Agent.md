@@ -246,7 +246,20 @@
 3. 然后让 `resolve_workspace_target` 和后续 planner 能消费这些记忆，开始真正影响任务行为。
 ## 五层目标架构补充
 
+当前迁移状态是 **partial migration complete**：`WorkflowRuntime` 已经是 workspace 请求的唯一顶层执行内核，`WorkspaceBackend` / `WorkspaceAgentLoop` 只应作为 compatibility executor 使用，而不是新的产品入口。
+
 当前建议把 Agent 栈拆成五层：入口触发层、AgentTool 编排层、Agent 定义层、运行时执行层、支撑能力层。
+
+| 能力区域 | 当前状态 | 目标状态 |
+| --- | --- | --- |
+| routing | graph-native | graph-native |
+| graph build | graph-native | graph-native |
+| approval / resume | graph-native | graph-native |
+| aggregation | graph-native | graph-native |
+| final response | graph-native | graph-native |
+| complex workspace subtask execution | loop-backed compatibility | 显式 graph node 优先，loop 仅兜底 |
+| clarification handling | partially loop-backed | graph-native first |
+| tool-call orchestration fallback | loop-backed compatibility | 显式 graph node 优先 |
 
 其中：
 - `WorkflowRuntime` 继续作为顶层执行内核

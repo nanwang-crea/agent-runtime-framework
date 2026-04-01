@@ -44,3 +44,28 @@ def test_workflow_runtime_resumes_only_waiting_approval_node():
     assert resumed.node_states["first"].status == NODE_STATUS_COMPLETED
     assert resumed.node_states["dangerous"].status == NODE_STATUS_COMPLETED
     assert resumed.node_states["finish"].status == NODE_STATUS_COMPLETED
+
+
+
+def test_workflow_runtime_resumes_graph_built_approval_gate_for_workspace_subtask():
+    from agent_runtime_framework.workflow.graph_builder import build_workflow_graph
+    from agent_runtime_framework.workflow.models import GoalSpec
+
+    goal = GoalSpec(
+        original_goal="直接删除 README.md",
+        primary_intent="dangerous_change",
+        metadata={"requires_approval": True},
+    )
+    graph = build_workflow_graph(goal)
+    run = WorkflowRun(goal=goal.original_goal, graph=graph)
+    runtime = WorkflowRuntime(executors={"noop": NoopExecutor(), "workspace_subtask": NoopExecutor(), "approval_gate": NoopExecutor(), "final_response": NoopExecutor()})
+
+    first = runtime.run(run)
+
+    assert first.status == "waiting_approval"
+    resume_token = first.shared_state["resume_token"]
+
+    resumed = runtime.resume(first, resume_token=resume_token, approved=True)
+
+    assert resumed.status == "completed"
+    assert resumed.node_states["approval_gate"].status == NODE_STATUS_COMPLETED

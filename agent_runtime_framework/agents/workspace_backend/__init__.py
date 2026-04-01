@@ -20,6 +20,8 @@ from agent_runtime_framework.agents.workspace_backend.tools import build_default
 
 WorkspaceBackend = WorkspaceAgentLoop
 WorkspaceBackendResult = WorkspaceAgentLoopResult
+# Compatibility aliases: workflow nodes and legacy imports may still reference these names,
+# but `WorkflowRuntime` remains the top-level execution kernel.
 WorkspaceContext = WorkspaceContext
 
 __all__ = [

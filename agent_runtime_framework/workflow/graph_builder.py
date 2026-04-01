@@ -9,9 +9,11 @@ from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 
 
-_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate"}
+_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis"}
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
+_SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer"}
+
 
 
 def build_workflow_graph(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
@@ -122,19 +124,42 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
 
 
 def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
-    if goal.primary_intent not in {"file_read", "repository_overview", "compound"}:
-        return build_workspace_subtask_graph(goal)
+    if goal.primary_intent == "target_explainer":
+        return _build_target_explainer_graph(goal)
+    if goal.primary_intent not in _SUPPORTED_NATIVE_INTENTS:
+        return build_workspace_subtask_graph(goal, fallback_reason="unsupported_primary_intent")
     subtasks = decompose_goal(goal, context=context)
     executable_subtasks = [subtask for subtask in subtasks if subtask.task_profile != "final_synthesis"]
     if not executable_subtasks:
-        return build_workspace_subtask_graph(goal)
+        return build_workspace_subtask_graph(goal, fallback_reason="no_executable_subtasks")
 
     nodes = [_node_for_subtask(subtask, goal) for subtask in executable_subtasks]
     edges = [WorkflowEdge(source=dependency, target=subtask.task_id) for subtask in executable_subtasks for dependency in subtask.depends_on]
-    return _compose_graph(nodes, edges, goal, source="fallback")
+    return _compose_graph(nodes, edges, goal, source="deterministic")
 
 
-def build_workspace_subtask_graph(goal: GoalSpec) -> WorkflowGraph:
+
+
+def _build_target_explainer_graph(goal: GoalSpec) -> WorkflowGraph:
+    query = str(goal.metadata.get("target_query") or goal.original_goal)
+    target_hint = str(goal.metadata.get("target_hint") or "")
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="target_resolution", node_type="target_resolution", metadata={"query": query, "target_hint": target_hint, "executor_kind": "native"}),
+            WorkflowNode(node_id="file_inspection", node_type="file_inspection", dependencies=["target_resolution"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="response_synthesis", node_type="response_synthesis", dependencies=["file_inspection"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["response_synthesis"], metadata={"executor_kind": "native"}),
+        ],
+        edges=[
+            WorkflowEdge(source="target_resolution", target="file_inspection"),
+            WorkflowEdge(source="file_inspection", target="response_synthesis"),
+            WorkflowEdge(source="response_synthesis", target="final_response"),
+        ],
+        metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
+    )
+    return _normalize_graph(graph, goal)
+
+def build_workspace_subtask_graph(goal: GoalSpec, *, fallback_reason: str = "unsupported_goal") -> WorkflowGraph:
     node = WorkflowNode(
         node_id="workspace_subtask",
         node_type="workspace_subtask",
@@ -143,6 +168,7 @@ def build_workspace_subtask_graph(goal: GoalSpec) -> WorkflowGraph:
             "goal": goal.original_goal,
             "task_profile": goal.primary_intent,
             "executor_kind": "workspace_subtask",
+            "fallback_reason": fallback_reason,
             **dict(goal.metadata or {}),
         },
     )
@@ -165,6 +191,7 @@ def _node_for_subtask(subtask: SubTaskSpec, goal: GoalSpec) -> WorkflowNode:
     metadata.setdefault("goal", goal.original_goal)
     metadata.setdefault("task_profile", subtask.task_profile)
     metadata.setdefault("executor_kind", "workspace_subtask")
+    metadata.setdefault("fallback_reason", "unsupported_task_profile")
     return WorkflowNode(
         node_id=subtask.task_id,
         node_type="workspace_subtask",
@@ -226,7 +253,12 @@ def _compose_graph(nodes: list[WorkflowNode], edges: list[WorkflowEdge], goal: G
     )
     nodes.append(final_node)
     edges.append(WorkflowEdge(source=anchor, target=final_node.node_id))
-    return _normalize_graph(WorkflowGraph(nodes=nodes, edges=edges, metadata={"goal": goal.original_goal, "source": source}), goal)
+    execution_mode = "mixed" if any(node.node_type == "workspace_subtask" for node in nodes) else "native"
+    fallback_reasons = sorted({str(node.metadata.get("fallback_reason") or "").strip() for node in nodes if str(node.metadata.get("fallback_reason") or "").strip()})
+    metadata = {"goal": goal.original_goal, "source": source, "execution_mode": execution_mode}
+    if fallback_reasons:
+        metadata["fallback_reasons"] = fallback_reasons
+    return _normalize_graph(WorkflowGraph(nodes=nodes, edges=edges, metadata=metadata), goal)
 
 
 def _normalize_graph(graph: WorkflowGraph, goal: GoalSpec) -> WorkflowGraph:

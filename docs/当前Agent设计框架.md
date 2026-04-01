@@ -1,6 +1,6 @@
 # 当前 Agent 设计框架
 
-> 状态说明：当前代码库的顶层主运行时已经切换为 `workflow-first`。实际生效的主链是 `demo/app.py -> WorkflowRuntime -> workflow/*`，`CodexAgentLoop` 继续保留，但定位为兼容子任务执行后端，而不是顶层唯一运行时。
+> 状态说明：当前代码库的顶层主运行时已经切换为 `workflow-first`。实际生效的主链是 `demo/app.py -> WorkflowRuntime -> workflow/*`。当前迁移状态是 **partial migration complete**：`WorkflowRuntime` 已经是 workspace 请求的唯一顶层执行内核，`CodexAgentLoop` / `WorkspaceAgentLoop` 继续保留，但定位为兼容子任务执行后端，而不是顶层唯一运行时。
 
 ## 1. 当前目标
 
@@ -32,6 +32,25 @@
 - 普通对话请求仍可走 conversation path
 - 复合 workspace 请求优先走 workflow path
 - 单个复杂子任务可下沉到 `CodexSubtaskExecutor -> CodexAgentLoop`
+
+## 2.1 当前迁移状态
+
+当前 graph-first 迁移的边界已经明确：
+
+- `WorkflowRuntime` 是 workspace 请求的唯一顶层执行内核
+- `DemoAssistantApp` 负责路由与 payload 组织，不再被视为旧 loop 的直接编排器
+- `WorkspaceAgentLoop` / `WorkspaceBackend` 只保留为 workflow 节点下的 compatibility executor
+
+| 能力区域 | 当前状态 | 目标状态 |
+| --- | --- | --- |
+| routing | graph-native | graph-native |
+| graph build | graph-native | graph-native |
+| approval / resume | graph-native | graph-native |
+| aggregation | graph-native | graph-native |
+| final response | graph-native | graph-native |
+| complex workspace subtask execution | loop-backed compatibility | 显式 graph node 优先，loop 仅兜底 |
+| clarification handling | partially loop-backed | graph-native first |
+| tool-call orchestration fallback | loop-backed compatibility | 显式 graph node 优先 |
 
 ## 3. 当前核心分层
 
@@ -140,7 +159,10 @@
 - `file_reader`
 - `aggregate_results`
 - `final_response`
-- `codex_subtask`
+- `workspace_subtask`
+- `target_resolution`
+- `file_inspection`
+- `response_synthesis`
 
 其中：
 
@@ -148,7 +170,7 @@
 - `file_reader` 当前由 `FileReadExecutor` 实现
 - `aggregate_results` 当前由 `AggregationExecutor` 实现
 - `final_response` 当前由 `FinalResponseExecutor` 实现
-- `codex_subtask` 当前由 `CodexSubtaskExecutor` 适配旧 `CodexAgentLoop`
+- `workspace_subtask` 当前由 `WorkspaceSubtaskExecutor` 适配旧 `WorkspaceAgentLoop` / `CodexAgentLoop` 兼容能力，并显式暴露 `fallback_reason` / `compatibility_mode` / `source_loop` 元数据
 
 ## 6. 当前已验证的主路径
 
@@ -164,14 +186,24 @@
 
 ## 7. 当前仍然保留的边界
 
+当前已经完成的 graph-first 迁移结果包括：
+
+- `WorkflowRuntime` 成为 workspace 请求的唯一顶层执行内核
+- 非 conversation 的 workspace 请求统一优先进入 workflow path
+- clarification follow-up 优先回到 workflow，而不是 app 层直连旧 loop
+- `tool_call` / `clarification` 已成为首批显式 workflow 节点执行器
+- `target_resolution` / `file_inspection` / `response_synthesis` 已成为第二批 graph-native 节点执行器
+- `workspace_subtask` 已收缩为 bridge executor，并显式暴露 fallback 元数据
+- approval / resume / aggregation / final response 已稳定挂在 graph 结构上
+
 当前还没有完全完成的点包括：
 
 - 真正的并行节点执行
-- 更丰富的 verification / change-flow 原生节点
-- workflow-first 覆盖更多 demo / app 路径
-- 更彻底的 codex-only 旧路径降级与清理
-- 全量回归里旧 `CodexAgentLoop` 修复链路的 3 个失败用例收口
+- 更丰富的 verification / change-flow / repair 原生节点
+- model-planned graph 的进一步扩展
+- subagent / MCP / skills 级别的一等图节点
+- 更彻底的兼容 fallback 缩减与 dead-code cleanup
 
 因此，当前框架可以描述为：
 
-**workflow 已成为顶层主运行时，但 Codex compatibility backend 仍在过渡期。**
+**workflow 已成为顶层主运行时，`WorkspaceAgentLoop` / `CodexAgentLoop` 仅保留为兼容 bridge backend。**

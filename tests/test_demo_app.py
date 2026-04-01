@@ -801,3 +801,156 @@ def test_demo_assistant_app_routes_non_compound_file_read_through_workflow(tmp_p
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "workflow"
     assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+
+
+
+def test_demo_assistant_app_routes_clarification_followup_through_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    docs = workspace / "docs"
+    docs.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    (docs / "service.md").write_text("# service docs\n", encoding="utf-8")
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    first = app.chat("请讲解 service 这个模块在做什么")
+
+    workflow_calls: list[str] = []
+
+    def _fake_run_workflow(self, message: str):
+        workflow_calls.append(message)
+        return {
+            "status": "completed",
+            "run_id": "workflow-follow-up",
+            "plan_id": "workflow-follow-up",
+            "final_answer": "src/service.py\nworkflow follow-up",
+            "capability_name": "workflow",
+            "runtime": "workflow",
+            "execution_trace": [{"name": "workflow_followup", "status": "completed", "detail": "workflow"}],
+            "approval_request": None,
+            "resume_token_id": None,
+            "session": app.session_payload(),
+            "plan_history": app.plan_history_payload(),
+            "run_history": app.run_history_payload(),
+            "memory": app.memory_payload(),
+            "context": app.context_payload(),
+            "workspace": str(app.workspace),
+        }
+
+    def _unexpected_loop_run(_message: str):
+        raise AssertionError("chat() should route clarification follow-up through workflow before touching loop")
+
+    monkeypatch.setattr(type(app), "_run_workflow", _fake_run_workflow)
+    monkeypatch.setattr(app.loop, "run", _unexpected_loop_run)
+
+    second = app.chat("src/service.py")
+
+    assert first["status"] == "needs_clarification"
+    assert workflow_calls == ["src/service.py"]
+    assert second["runtime"] == "workflow"
+    assert second["capability_name"] == "workflow"
+
+
+
+def test_demo_assistant_app_routes_simple_file_read_without_direct_loop_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    def _unexpected_loop_run(_message: str):
+        raise AssertionError("simple workflow-native file reads should not call app-level loop.run")
+
+    monkeypatch.setattr(app.loop, "run", _unexpected_loop_run)
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["runtime"] == "workflow"
+    assert payload["capability_name"] == "workflow"
+    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+
+
+
+def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoopResult
+    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
+    from agent_runtime_framework.workflow.models import GoalSpec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
+
+    def _fake_loop_run(goal: str):
+        task = WorkspaceTask(goal=goal, actions=[], task_profile="change_and_verify", state=TaskState())
+        task.summary = "changed README"
+        return WorkspaceAgentLoopResult(status="completed", final_output="changed README", task=task, action_kind="respond", run_id="workflow-subtask-run")
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(app.loop, "run", _fake_loop_run)
+
+    payload = app.chat("编辑 README.md 并验证修改结果")
+
+    assert payload["runtime"] == "workflow"
+    assert payload["capability_name"] == "workflow"
+    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+
+
+
+def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_subtask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoopResult
+    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
+    from agent_runtime_framework.workflow.models import GoalSpec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(
+            original_goal="直接删除 README.md",
+            primary_intent="dangerous_change",
+            metadata={"requires_approval": True},
+        )
+
+    def _fake_loop_run(goal: str):
+        task = WorkspaceTask(goal=goal, actions=[], task_profile="dangerous_change", state=TaskState())
+        task.summary = "dangerous change prepared"
+        return WorkspaceAgentLoopResult(status="completed", final_output="dangerous change prepared", task=task, action_kind="respond", run_id="approval-run")
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(app.loop, "run", _fake_loop_run)
+
+    first = app.chat("直接删除 README.md")
+
+    assert first["status"] == "waiting_approval"
+    assert first["runtime"] == "workflow"
+    assert first["resume_token_id"]
+
+    resumed = app.approve(first["resume_token_id"], approved=True)
+
+    assert resumed["status"] == "completed"
+    assert resumed["runtime"] == "workflow"
+
+
+
+def test_demo_assistant_app_routes_module_question_through_second_batch_graph_nodes(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    (src / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("请讲解 service 这个模块在做什么")
+
+    assert payload["runtime"] == "workflow"
+    assert any(step["name"] == "target_resolution" for step in payload["execution_trace"])
+    assert any(step["name"] == "file_inspection" for step in payload["execution_trace"])
+    assert any(step["name"] == "response_synthesis" for step in payload["execution_trace"])

@@ -605,3 +605,7 @@
 ## entity_binding | task:367063a5-dea9-4292-bceb-65d65aa4af35:fact:1
 - text: "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文 # Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："
 - metadata: {"confidence": 0.9, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
+
+## workspace_focus | focus:.DS_Store
+- text: ".DS_Store .DS_Store, .api_demo_config.json, .arf/, .arf/memory.md, .arf/memory.state.json"
+- metadata: {"path": ".DS_Store", "summary": ".DS_Store, .api_demo_config.json, .arf/, .arf/memory.md, .arf/memory.state.json"}

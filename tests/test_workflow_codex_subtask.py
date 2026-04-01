@@ -40,3 +40,29 @@ def test_workspace_subtask_executor_wraps_workspace_loop_result(tmp_path: Path):
     assert result.output["summary"] == "README summary"
     assert result.output["evidence_items"][0]["path"] == "README.md"
     assert result.references == ["README.md"]
+
+
+
+def test_workspace_subtask_executor_exposes_bridge_metadata(tmp_path: Path):
+    node = WorkflowNode(
+        node_id="workspace_change",
+        node_type="workspace_subtask",
+        task_profile="change_and_verify",
+        metadata={
+            "goal": "编辑 README.md 并验证修改结果",
+            "fallback_reason": "unsupported_primary_intent",
+            "compatibility_mode": "workspace_loop_bridge",
+            "source_loop": "WorkspaceAgentLoop",
+        },
+    )
+    run = WorkflowRun(goal="outer workflow")
+
+    result = WorkspaceSubtaskExecutor(workspace_loop=StubCodexLoop()).execute(
+        node,
+        run,
+        {"workspace_root": str(tmp_path)},
+    )
+
+    assert result.output["fallback_reason"] == "unsupported_primary_intent"
+    assert result.output["compatibility_mode"] == "workspace_loop_bridge"
+    assert result.output["source_loop"] == "WorkspaceAgentLoop"

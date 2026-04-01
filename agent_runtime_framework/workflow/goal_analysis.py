@@ -12,6 +12,16 @@ from agent_runtime_framework.workflow.models import GoalSpec
 README_PATTERN = re.compile(r"readme(?:\.md)?", re.IGNORECASE)
 
 
+def _extract_target_hint(user_input: str) -> str:
+    for part in user_input.replace("\n", " ").split():
+        candidate = part.strip('`"，。,. ')
+        if not candidate:
+            continue
+        if "/" in candidate or "." in candidate:
+            return candidate
+    return ""
+
+
 def analyze_goal(user_input: str, context: Any | None = None) -> GoalSpec:
     text = user_input.strip()
     if not text:
@@ -108,5 +118,13 @@ def _analyze_goal_with_keywords(user_input: str) -> GoalSpec:
             primary_intent="repository_overview",
             requires_repository_overview=True,
         )
+
+    target_hint = _extract_target_hint(user_input)
+    wants_target_explainer = target_hint or any(token in user_input for token in ["讲解", "解释", "模块", "文件", "看看", "查看", "读取", "总结"])
+    if wants_target_explainer:
+        metadata = {"target_query": user_input}
+        if target_hint:
+            metadata["target_hint"] = target_hint
+        return GoalSpec(original_goal=user_input, primary_intent="target_explainer", metadata=metadata)
 
     return GoalSpec(original_goal=user_input, primary_intent="generic")
