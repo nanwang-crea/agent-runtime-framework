@@ -2,7 +2,7 @@ from agent_runtime_framework.workflow.approval import WorkflowResumeToken
 from agent_runtime_framework.workflow.codex_subtask import CodexSubtaskExecutor
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
-from agent_runtime_framework.workflow.graph_builder import build_workflow_graph
+from agent_runtime_framework.workflow.graph_builder import build_codex_subtask_graph, build_workflow_graph
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.models import (
     NODE_STATUS_COMPLETED,
@@ -52,6 +52,7 @@ __all__ = [
     "WorkflowRuntime",
     "WorkflowScheduler",
     "analyze_goal",
+    "build_codex_subtask_graph",
     "build_workflow_graph",
     "decompose_goal",
 ]

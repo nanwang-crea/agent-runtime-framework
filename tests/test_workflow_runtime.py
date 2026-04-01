@@ -3,6 +3,7 @@ from agent_runtime_framework.workflow import (
     NODE_STATUS_FAILED,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
+    RUN_STATUS_WAITING_APPROVAL,
     NodeResult,
     NodeState,
     WorkflowEdge,
@@ -85,3 +86,36 @@ def test_failed_node_stops_downstream_execution():
     assert result.node_states["start"].status == NODE_STATUS_FAILED
     assert result.node_states["finish"].status != NODE_STATUS_COMPLETED
     assert result.node_states["finish"].result is None
+
+
+class ApprovalExecutor:
+    def execute(self, node, run, context=None):
+        return NodeResult(status="waiting_approval", approval_data={"kind": "custom"}, output={"summary": "needs approval"})
+
+    def resume(self, node, run, prior_result, *, approved, context=None):
+        if not approved:
+            return NodeResult(status=NODE_STATUS_FAILED, error="approval rejected")
+        return NodeResult(status=NODE_STATUS_COMPLETED, output={"node": node.node_id, "approved": True})
+
+
+def test_runtime_resumes_executor_managed_approval_node():
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="change", node_type="approval_executor"),
+            WorkflowNode(node_id="finish", node_type="noop", dependencies=["change"]),
+        ],
+        edges=[WorkflowEdge(source="change", target="finish")],
+    )
+    run = WorkflowRun(goal="demo", graph=graph)
+    runtime = WorkflowRuntime(executors={"approval_executor": ApprovalExecutor(), "noop": NoopExecutor()})
+
+    first = runtime.run(run)
+
+    assert first.status == RUN_STATUS_WAITING_APPROVAL
+    resume_token = first.shared_state["resume_token"]
+
+    resumed = runtime.resume(first, resume_token=resume_token, approved=True)
+
+    assert resumed.status == RUN_STATUS_COMPLETED
+    assert resumed.node_states["change"].result.output == {"node": "change", "approved": True}
+    assert resumed.node_states["finish"].status == NODE_STATUS_COMPLETED

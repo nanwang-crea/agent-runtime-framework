@@ -107,7 +107,8 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["plan_history"]
     assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
-    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "call_tool"
+    assert payload["capability_name"] == "workflow"
+    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "file_reader"
 
 
 def test_demo_planner_uses_semantic_directory_detection_before_default_planner(tmp_path: Path):
@@ -253,15 +254,15 @@ def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path
     assert selected["config"]["routes"]["conversation"]["model"] == "gpt-5.4"
 
 
-def test_demo_assistant_app_logs_unknown_errors_with_trace_id(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+def test_demo_assistant_app_logs_unknown_errors_with_trace_id(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = _create_demo_assistant_app_with_test_planner(workspace)
 
-    def _boom(_message: str):
+    def _boom(self, _message: str):
         raise RuntimeError("boom")
 
-    app.loop.run = _boom  # type: ignore[method-assign]
+    monkeypatch.setattr(type(app), "_run_workflow", _boom)
 
     with caplog.at_level("ERROR"):
         payload = app.chat("读取 README.md")
@@ -533,8 +534,9 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     payload = app.chat("列一下当前工作区都有什么文件")
 
     assert payload["status"] == "completed"
+    assert payload["runtime"] == "workflow"
     assert "README.md" in payload["final_answer"]
-    assert payload["execution_trace"][1]["name"] == "call_tool"
+    assert payload["execution_trace"][1]["name"] in {"repository_overview", "codex_subtask"}
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -654,10 +656,10 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     payload = app.chat("读取 README.md")
 
     assert payload["status"] == "completed"
+    assert payload["runtime"] == "workflow"
     assert payload["execution_trace"][0]["name"] == "router"
-    assert "codex" in str(payload["execution_trace"][0]["detail"])
-    assert payload["execution_trace"][1]["name"] == "call_tool"
-    assert payload["execution_trace"][-1]["name"] == "respond"
+    assert payload["execution_trace"][1]["name"] in {"file_read", "codex_subtask"}
+    assert payload["execution_trace"][-1]["name"] == "final_response"
 
 
 def test_demo_assistant_app_explains_directory_structure_with_specialized_pattern(tmp_path: Path):
@@ -680,10 +682,9 @@ def test_demo_assistant_app_explains_directory_structure_with_specialized_patter
 
     assert payload["status"] == "completed"
     assert payload["execution_trace"][0]["name"] == "router"
-    assert payload["execution_trace"][1]["name"] == "call_tool"
-    assert any(step["name"] == "evaluator" for step in payload["execution_trace"]) or sum(
-        1 for step in payload["execution_trace"] if step["name"] == "call_tool"
-    ) >= 2
+    assert payload["runtime"] == "workflow"
+    assert payload["execution_trace"][1]["name"] == "repository_overview"
+    assert payload["execution_trace"][-1]["name"] == "final_response"
     assert "agent_runtime_framework" in payload["final_answer"]
     assert "assistant/" in payload["final_answer"]
     assert "__init__.py" in payload["final_answer"]
@@ -773,3 +774,16 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
     assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
     assert events[-1]["payload"]["execution_trace"][0]["name"] == "router"
     assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)
+
+
+def test_demo_assistant_app_routes_non_compound_file_read_through_workflow(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["runtime"] == "workflow"
+    assert payload["capability_name"] == "workflow"
+    assert any(step["name"] == "file_read" for step in payload["execution_trace"])

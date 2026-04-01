@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.models import DriverCapabilities, InMemoryCredentialStore, ModelProfile, ModelRegistry, ModelRouter
@@ -132,6 +134,49 @@ def test_graph_builder_inserts_verification_node_for_change_flows():
     assert any(node.node_type == "verification" for node in graph.nodes)
 
 
+def test_graph_builder_uses_codex_node_for_non_native_request():
+    goal = GoalSpec(
+        original_goal="把 README.md 改成更正式的文案",
+        primary_intent="change_and_verify",
+        requires_file_read=True,
+        requires_final_synthesis=True,
+        target_paths=["README.md"],
+        metadata={"requires_verification": True},
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert any(node.node_type == "codex_subtask" for node in graph.nodes)
+    assert any(node.node_type == "verification" for node in graph.nodes)
+    assert any(node.node_type == "final_response" for node in graph.nodes)
+
+
+def test_graph_builder_can_enforce_model_only_mode():
+    context = _workflow_context('{"nodes":[{"node_id":"custom_plan","node_type":"codex_subtask","task_profile":"change_and_verify","dependencies":[],"metadata":{"goal":"demo"}}],"edges":[]}')
+    context.services["workflow_graph_model_only"] = True
+    goal = GoalSpec(
+        original_goal="demo",
+        primary_intent="change_and_verify",
+        metadata={"requires_verification": True},
+    )
+
+    graph = build_workflow_graph(goal, context=context)
+
+    assert graph.metadata["source"] == "model"
+
+
+def test_graph_builder_rejects_fallback_when_model_only_and_model_missing():
+    goal = GoalSpec(
+        original_goal="demo",
+        primary_intent="change_and_verify",
+        metadata={"requires_verification": True},
+    )
+    context = SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model=None, services={}), services={"workflow_graph_model_only": True})
+
+    with pytest.raises(ValueError, match="model-only"):
+        build_workflow_graph(goal, context=context)
+
+
 def test_graph_builder_prefers_model_output_when_available():
     context = _workflow_context(
         '{"nodes":[{"node_id":"file_read","node_type":"file_reader","task_profile":"file_reader",'
@@ -150,3 +195,15 @@ def test_graph_builder_prefers_model_output_when_available():
 
     assert [node.node_id for node in graph.nodes] == ["file_read", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
+
+
+def test_graph_builder_falls_back_to_codex_subtask_for_non_native_goal():
+    goal = GoalSpec(
+        original_goal="编辑 README.md 并验证修改结果",
+        primary_intent="change_and_verify",
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert [node.node_type for node in graph.nodes] == ["codex_subtask", "final_response"]
+    assert graph.nodes[0].metadata["goal"] == "编辑 README.md 并验证修改结果"
