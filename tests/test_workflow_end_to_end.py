@@ -16,8 +16,9 @@ def test_demo_app_routes_compound_goal_through_workflow_runtime(tmp_path: Path):
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert "README" in payload["final_answer"] or "Demo" in payload["final_answer"]
-    assert any(step["name"] == "repository_overview" for step in payload["execution_trace"])
-    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+    assert any(step["detail"] == "workspace_discovery" for step in payload["execution_trace"])
+    assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
+    assert any(step["detail"] == "chunked_file_read" for step in payload["execution_trace"])
 
 
 def test_public_surface_marks_workflow_runtime_as_primary():

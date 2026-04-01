@@ -103,8 +103,17 @@ def test_graph_builder_creates_small_graph_for_simple_file_read_request():
 
     graph = build_workflow_graph(goal)
 
-    assert [node.node_type for node in graph.nodes] == ["file_reader", "final_response"]
-    assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
+    assert [node.node_type for node in graph.nodes] == [
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
+        "final_response",
+    ]
+    assert [(edge.source, edge.target) for edge in graph.edges] == [
+        ("content_search", "chunked_file_read"),
+        ("chunked_file_read", "evidence_synthesis"),
+        ("evidence_synthesis", "final_response"),
+    ]
 
 
 def test_graph_builder_adds_aggregate_and_final_nodes_for_compound_goal():
@@ -118,15 +127,19 @@ def test_graph_builder_builds_multiple_nodes_and_edges_for_compound_read_list_re
     graph = build_workflow_graph(example_compound_goal())
 
     assert {node.node_id for node in graph.nodes} >= {
-        "repository_overview",
-        "file_read",
+        "workspace_discovery",
+        "content_search",
+        "chunked_file_read",
         "aggregate_results",
+        "evidence_synthesis",
         "final_response",
     }
     assert {(edge.source, edge.target) for edge in graph.edges} >= {
-        ("repository_overview", "aggregate_results"),
-        ("file_read", "aggregate_results"),
-        ("aggregate_results", "final_response"),
+        ("workspace_discovery", "aggregate_results"),
+        ("content_search", "chunked_file_read"),
+        ("chunked_file_read", "aggregate_results"),
+        ("aggregate_results", "evidence_synthesis"),
+        ("evidence_synthesis", "final_response"),
     }
 
 
@@ -208,6 +221,65 @@ def test_graph_builder_prefers_model_output_when_available():
     assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
 
 
+def test_graph_builder_accepts_model_defined_workspace_discovery_node():
+    context = _workflow_context(
+        '{"nodes":[{"node_id":"discover","node_type":"workspace_discovery","task_profile":"workspace_discovery",'
+        '"dependencies":[],"metadata":{"workspace_root":"."}},'
+        '{"node_id":"final_response","node_type":"final_response","dependencies":["discover"]}],'
+        '"edges":[{"source":"discover","target":"final_response"}]}'
+    )
+    goal = GoalSpec(
+        original_goal="列一下当前工作区都有什么文件",
+        primary_intent="repository_overview",
+        requires_repository_overview=True,
+    )
+
+    graph = build_workflow_graph(goal, context=context)
+
+    assert [node.node_type for node in graph.nodes] == ["workspace_discovery", "final_response"]
+    assert [(edge.source, edge.target) for edge in graph.edges] == [("discover", "final_response")]
+
+
+def test_graph_builder_accepts_model_defined_content_search_node():
+    context = _workflow_context(
+        '{"nodes":[{"node_id":"search","node_type":"content_search","task_profile":"content_search",'
+        '"dependencies":[],"metadata":{"target_hint":"README.md"}},'
+        '{"node_id":"final_response","node_type":"final_response","dependencies":["search"]}],'
+        '"edges":[{"source":"search","target":"final_response"}]}'
+    )
+    goal = GoalSpec(
+        original_goal="解释 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    graph = build_workflow_graph(goal, context=context)
+
+    assert [node.node_type for node in graph.nodes] == ["content_search", "final_response"]
+    assert [(edge.source, edge.target) for edge in graph.edges] == [("search", "final_response")]
+
+
+def test_graph_builder_accepts_model_defined_chunked_file_read_node():
+    context = _workflow_context(
+        '{"nodes":[{"node_id":"read","node_type":"chunked_file_read","task_profile":"chunked_file_read",'
+        '"dependencies":[],"metadata":{"target_path":"README.md"}},'
+        '{"node_id":"final_response","node_type":"final_response","dependencies":["read"]}],'
+        '"edges":[{"source":"read","target":"final_response"}]}'
+    )
+    goal = GoalSpec(
+        original_goal="读取 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    graph = build_workflow_graph(goal, context=context)
+
+    assert [node.node_type for node in graph.nodes] == ["chunked_file_read", "final_response"]
+    assert [(edge.source, edge.target) for edge in graph.edges] == [("read", "final_response")]
+
+
 def test_graph_builder_uses_model_without_feature_flag():
     context = _workflow_context(
         '{"nodes":[{"node_id":"file_read","node_type":"file_reader","task_profile":"file_reader",'
@@ -249,7 +321,7 @@ def test_graph_builder_creates_native_graph_for_repository_overview_request():
 
     graph = build_workflow_graph(goal)
 
-    assert [node.node_type for node in graph.nodes] == ["repository_explainer", "final_response"]
+    assert [node.node_type for node in graph.nodes] == ["workspace_discovery", "evidence_synthesis", "final_response"]
     assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
 
 
@@ -258,7 +330,23 @@ def test_graph_builder_keeps_compound_read_and_summarize_request_native():
     graph = build_workflow_graph(example_compound_goal())
 
     assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
-    assert {node.node_type for node in graph.nodes} >= {"repository_explainer", "file_reader", "aggregate_results", "final_response"}
+    assert {node.node_type for node in graph.nodes} >= {
+        "workspace_discovery",
+        "content_search",
+        "chunked_file_read",
+        "aggregate_results",
+        "evidence_synthesis",
+        "final_response",
+    }
+
+
+def test_graph_builder_no_longer_emits_legacy_native_nodes_by_default():
+    graph = build_workflow_graph(example_compound_goal())
+
+    node_types = {node.node_type for node in graph.nodes}
+
+    assert "repository_explainer" not in node_types
+    assert "file_reader" not in node_types
 
 
 

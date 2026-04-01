@@ -86,8 +86,8 @@ def _decompose_goal_deterministically(goal: GoalSpec) -> list[SubTaskSpec]:
     if goal.requires_repository_overview:
         subtasks.append(
             SubTaskSpec(
-                task_id="repository_overview",
-                task_profile="repository_explainer",
+                task_id="workspace_discovery",
+                task_profile="workspace_discovery",
                 target=".",
             )
         )
@@ -95,17 +95,25 @@ def _decompose_goal_deterministically(goal: GoalSpec) -> list[SubTaskSpec]:
     if goal.requires_file_read:
         subtasks.append(
             SubTaskSpec(
-                task_id="file_read",
-                task_profile="file_reader",
+                task_id="content_search",
+                task_profile="content_search",
                 target=(goal.target_paths[0] if goal.target_paths else None),
+            )
+        )
+        subtasks.append(
+            SubTaskSpec(
+                task_id="chunked_file_read",
+                task_profile="chunked_file_read",
+                target=(goal.target_paths[0] if goal.target_paths else None),
+                depends_on=["content_search"],
             )
         )
 
     if goal.requires_final_synthesis:
         subtasks.append(
             SubTaskSpec(
-                task_id="final_synthesis",
-                task_profile="final_synthesis",
+                task_id="evidence_synthesis",
+                task_profile="evidence_synthesis",
                 depends_on=[task.task_id for task in subtasks],
             )
         )

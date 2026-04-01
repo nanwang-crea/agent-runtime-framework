@@ -9,7 +9,7 @@ from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 
 
-_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis", "conversation_response"}
+_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis", "conversation_response"}
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
 _SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer", "generic", "chat", "conversation"}
@@ -46,7 +46,7 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
                             "You compile a workflow graph. Return JSON only with keys nodes and edges. "
                             "Each node needs: node_id, node_type, task_profile, dependencies, requires_approval, retry_limit, metadata. "
                             "Use node_type to choose the executor path directly. Supported node types include "
-                            "repository_explainer, file_reader, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
+                            "repository_explainer, file_reader, workspace_discovery, content_search, chunked_file_read, evidence_synthesis, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
                             "Each edge needs: source, target, condition, metadata."
                         ),
                     ),
@@ -125,6 +125,12 @@ def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -
         return _build_conversation_graph(goal)
     if goal.primary_intent == "target_explainer":
         return _build_target_explainer_graph(goal)
+    if goal.primary_intent == "repository_overview":
+        return _build_repository_overview_graph(goal)
+    if goal.primary_intent == "file_read":
+        return _build_file_read_graph(goal)
+    if goal.primary_intent == "compound":
+        return _build_compound_native_graph(goal)
     if goal.primary_intent not in _SUPPORTED_NATIVE_INTENTS:
         return build_workspace_subtask_graph(goal, fallback_reason="unsupported_primary_intent")
     subtasks = decompose_goal(goal, context=context)
@@ -147,6 +153,96 @@ def _build_conversation_graph(goal: GoalSpec) -> WorkflowGraph:
         edges=[],
         metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
     )
+    return _normalize_graph(graph, goal)
+
+
+def _build_repository_overview_graph(goal: GoalSpec) -> WorkflowGraph:
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="workspace_discovery", node_type="workspace_discovery", metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="evidence_synthesis", node_type="evidence_synthesis", dependencies=["workspace_discovery"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["evidence_synthesis"], metadata={"executor_kind": "native"}),
+        ],
+        edges=[
+            WorkflowEdge(source="workspace_discovery", target="evidence_synthesis"),
+            WorkflowEdge(source="evidence_synthesis", target="final_response"),
+        ],
+        metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
+    )
+    return _normalize_graph(graph, goal)
+
+
+def _build_file_read_graph(goal: GoalSpec) -> WorkflowGraph:
+    target_path = goal.target_paths[0] if goal.target_paths else None
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="content_search", node_type="content_search", metadata={"executor_kind": "native", "target_path": target_path}),
+            WorkflowNode(node_id="chunked_file_read", node_type="chunked_file_read", dependencies=["content_search"], metadata={"executor_kind": "native", "target_path": target_path}),
+            WorkflowNode(node_id="evidence_synthesis", node_type="evidence_synthesis", dependencies=["chunked_file_read"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["evidence_synthesis"], metadata={"executor_kind": "native"}),
+        ],
+        edges=[
+            WorkflowEdge(source="content_search", target="chunked_file_read"),
+            WorkflowEdge(source="chunked_file_read", target="evidence_synthesis"),
+            WorkflowEdge(source="evidence_synthesis", target="final_response"),
+        ],
+        metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
+    )
+    return _normalize_graph(graph, goal)
+
+
+def _build_compound_native_graph(goal: GoalSpec) -> WorkflowGraph:
+    target_path = goal.target_paths[0] if goal.target_paths else None
+    nodes = [
+        WorkflowNode(node_id="workspace_discovery", node_type="workspace_discovery", metadata={"executor_kind": "native"}),
+        WorkflowNode(node_id="content_search", node_type="content_search", dependencies=["workspace_discovery"], metadata={"executor_kind": "native", "target_path": target_path}),
+        WorkflowNode(node_id="chunked_file_read", node_type="chunked_file_read", dependencies=["content_search"], metadata={"executor_kind": "native", "target_path": target_path}),
+        WorkflowNode(node_id="aggregate_results", node_type="aggregate_results", dependencies=["workspace_discovery", "chunked_file_read"], metadata={"executor_kind": "native"}),
+        WorkflowNode(node_id="evidence_synthesis", node_type="evidence_synthesis", dependencies=["aggregate_results"], metadata={"executor_kind": "native"}),
+    ]
+    edges = [
+        WorkflowEdge(source="workspace_discovery", target="content_search"),
+        WorkflowEdge(source="content_search", target="chunked_file_read"),
+        WorkflowEdge(source="workspace_discovery", target="aggregate_results"),
+        WorkflowEdge(source="chunked_file_read", target="aggregate_results"),
+        WorkflowEdge(source="aggregate_results", target="evidence_synthesis"),
+    ]
+    anchor = "evidence_synthesis"
+    if goal.metadata.get("requires_verification"):
+        nodes.append(
+            WorkflowNode(
+                node_id="verification",
+                node_type="verification",
+                dependencies=[anchor],
+                task_profile="verification",
+                metadata={"executor_kind": "native", **dict(goal.metadata or {})},
+            )
+        )
+        edges.append(WorkflowEdge(source=anchor, target="verification"))
+        anchor = "verification"
+    if goal.metadata.get("requires_approval"):
+        nodes.append(
+            WorkflowNode(
+                node_id="approval_gate",
+                node_type="approval_gate",
+                dependencies=[anchor],
+                task_profile="approval_gate",
+                requires_approval=True,
+                metadata={"executor_kind": "native", **dict(goal.metadata or {})},
+            )
+        )
+        edges.append(WorkflowEdge(source=anchor, target="approval_gate"))
+        anchor = "approval_gate"
+    nodes.append(
+        WorkflowNode(
+            node_id="final_response",
+            node_type="final_response",
+            dependencies=[anchor],
+            metadata={"executor_kind": "native"},
+        )
+    )
+    edges.append(WorkflowEdge(source=anchor, target="final_response"))
+    graph = WorkflowGraph(nodes=nodes, edges=edges, metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"})
     return _normalize_graph(graph, goal)
 
 

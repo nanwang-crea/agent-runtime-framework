@@ -143,32 +143,50 @@ class AggregationExecutor:
 class VerificationExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
         node_results = run.shared_state.get("node_results", {})
-        latest_verification: dict[str, Any] | None = None
+        verification_events: list[dict[str, Any]] = []
         references: list[str] = []
         for key, result in node_results.items():
             if key == node.node_id:
                 continue
             if isinstance(result.output, dict):
+                events = result.output.get("verification_events")
+                if isinstance(events, list):
+                    for event in events:
+                        if isinstance(event, dict):
+                            verification_events.append(event)
                 verification = result.output.get("verification")
-                if isinstance(verification, dict):
-                    latest_verification = verification
+                if isinstance(verification, dict) and verification not in verification_events:
+                    verification_events.append(verification)
             for reference in result.references:
                 if reference not in references:
                     references.append(reference)
-        if latest_verification is None:
+        if not verification_events:
             summary = str(node.metadata.get("verification_summary") or "No explicit verification result was produced.")
+            verification = {"status": "not_run", "success": False, "summary": summary}
             return NodeResult(
                 status=NODE_STATUS_COMPLETED,
-                output={"summary": summary, "verification": {"success": True, "summary": summary}},
+                output={"summary": summary, "verification": verification, "verification_events": []},
                 references=references,
             )
-        success = bool(latest_verification.get("success", False))
-        summary = str(latest_verification.get("summary") or "Verification completed.")
+        failed_events = [event for event in verification_events if not bool(event.get("success", event.get("status") == "passed"))]
+        if failed_events:
+            summary = str(failed_events[-1].get("summary") or "Verification failed.")
+            verification = {"status": "failed", "success": False, "summary": summary}
+            return NodeResult(
+                status=NODE_STATUS_FAILED,
+                output={"summary": summary, "verification": verification, "verification_events": verification_events},
+                references=references,
+                error=summary,
+            )
+
+        summaries = [str(event.get("summary") or "").strip() for event in verification_events if str(event.get("summary") or "").strip()]
+        summary = "；".join(summaries) or "Verification completed."
+        verification = {"status": "passed", "success": True, "summary": summary}
         return NodeResult(
-            status=NODE_STATUS_COMPLETED if success else NODE_STATUS_FAILED,
-            output={"summary": summary, "verification": latest_verification},
+            status=NODE_STATUS_COMPLETED,
+            output={"summary": summary, "verification": verification, "verification_events": verification_events},
             references=references,
-            error=None if success else summary,
+            error=None,
         )
 
 
@@ -199,16 +217,26 @@ class FinalResponseExecutor:
         final_response = str(synthesized.get("final_response") or synthesized.get("summary") or "").strip()
         if not final_response:
             summaries = aggregated.output.get("summaries", []) if aggregated else []
+            facts = aggregated.output.get("facts", []) if aggregated and isinstance(aggregated.output, dict) else []
+            evidence_items = aggregated.output.get("evidence_items", []) if aggregated and isinstance(aggregated.output, dict) else []
+            verification = aggregated.output.get("verification") if aggregated and isinstance(aggregated.output, dict) else None
             final_response = synthesize_text(
                 context,
                 role="composer",
                 system_prompt=(
                     "You write the final workflow answer for an end user. "
-                    "Use the provided summaries and keep the answer direct, natural, and non-repetitive."
+                    "Use the provided evidence, summaries, and verification state. Keep the answer direct, natural, and non-repetitive."
                 ),
-                payload={"goal": run.goal, "summaries": summaries, "references": list(aggregated.references if aggregated else [])},
+                payload={
+                    "goal": run.goal,
+                    "summaries": summaries,
+                    "facts": facts,
+                    "evidence_items": evidence_items,
+                    "verification": verification,
+                    "references": list(aggregated.references if aggregated else []),
+                },
                 max_tokens=320,
-            ) or "\n".join(str(item) for item in summaries if item)
+            ) or self._fallback_final_response(summaries, facts, evidence_items, verification)
         result = NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={"final_response": final_response},
@@ -216,3 +244,24 @@ class FinalResponseExecutor:
         )
         run.final_output = final_response
         return result
+
+    def _fallback_final_response(
+        self,
+        summaries: list[Any],
+        facts: list[Any],
+        evidence_items: list[Any],
+        verification: Any,
+    ) -> str:
+        if summaries:
+            return "\n".join(str(item) for item in summaries if item)
+        parts: list[str] = []
+        if facts:
+            parts.append("；".join(f"{item.get('kind')}: {item.get('path')}" for item in facts if isinstance(item, dict)))
+        if evidence_items:
+            parts.append("；".join(str(item.get("summary") or item.get("path") or "") for item in evidence_items if isinstance(item, dict)))
+        if isinstance(verification, dict) and verification:
+            status = str(verification.get("status") or "")
+            summary = str(verification.get("summary") or "").strip()
+            if status or summary:
+                parts.append(f"verification={status}: {summary}".strip())
+        return "\n".join(part for part in parts if part)

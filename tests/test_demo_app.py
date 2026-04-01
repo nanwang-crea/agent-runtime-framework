@@ -11,6 +11,7 @@ from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo import app as demo_app_module
 from agent_runtime_framework.demo.server import _load_asset
+from agent_runtime_framework.workflow.models import GoalSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 from agent_runtime_framework.workflow import conversation
 
 
@@ -85,7 +86,7 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
     assert payload["capability_name"] == "workflow"
-    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "file_reader"
+    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "content_search"
 
 
 def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
@@ -593,7 +594,7 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert "README.md" in payload["final_answer"]
-    assert payload["execution_trace"][1]["name"] in {"repository_overview", "workspace_subtask"}
+    assert payload["execution_trace"][1]["detail"] in {"workspace_discovery", "workspace_subtask"}
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -634,7 +635,8 @@ def test_demo_assistant_app_ignores_router_conversation_hint_for_workspace_reque
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "workflow"
-    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+    assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
+    assert any(step["detail"] == "chunked_file_read" for step in payload["execution_trace"])
 
 
 def test_demo_context_payload_includes_sandbox_state(tmp_path: Path):
@@ -701,8 +703,8 @@ def test_demo_assistant_app_uses_workspace_loop_for_workspace_actions(tmp_path: 
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert payload["execution_trace"][0]["name"] == "router"
-    assert payload["execution_trace"][1]["name"] in {"file_read", "workspace_subtask"}
-    assert payload["execution_trace"][-1]["name"] == "final_response"
+    assert payload["execution_trace"][1]["detail"] in {"content_search", "workspace_subtask"}
+    assert payload["execution_trace"][-1]["detail"] == "final_response"
 
 
 def test_demo_assistant_app_explains_directory_structure_with_specialized_pattern(tmp_path: Path):
@@ -726,8 +728,8 @@ def test_demo_assistant_app_explains_directory_structure_with_specialized_patter
     assert payload["status"] == "completed"
     assert payload["execution_trace"][0]["name"] == "router"
     assert payload["runtime"] == "workflow"
-    assert payload["execution_trace"][1]["name"] == "repository_overview"
-    assert payload["execution_trace"][-1]["name"] == "final_response"
+    assert payload["execution_trace"][1]["detail"] == "workspace_discovery"
+    assert payload["execution_trace"][-1]["detail"] == "final_response"
     assert "agent_runtime_framework" in payload["final_answer"]
     assert "assistant/" in payload["final_answer"]
     assert "__init__.py" in payload["final_answer"]
@@ -810,7 +812,7 @@ def test_demo_assistant_app_qa_only_profile_does_not_bypass_workflow_for_workspa
     payload = app.chat("读取 README.md")
 
     assert payload["runtime"] == "workflow"
-    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+    assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
@@ -842,7 +844,7 @@ def test_demo_assistant_app_routes_non_compound_file_read_through_workflow(tmp_p
 
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "workflow"
-    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+    assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
 
 
 
@@ -907,7 +909,7 @@ def test_demo_assistant_app_routes_simple_file_read_without_workspace_subtask(tm
 
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "workflow"
-    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+    assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
 
 
 
@@ -1019,3 +1021,89 @@ def test_demo_assistant_app_routes_module_question_through_second_batch_graph_no
     assert any(step["name"] == "target_resolution" for step in payload["execution_trace"])
     assert any(step["name"] == "file_inspection" for step in payload["execution_trace"])
     assert any(step["name"] == "response_synthesis" for step in payload["execution_trace"])
+
+
+def test_demo_assistant_app_can_run_evidence_synthesis_node_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    monkeypatch.setattr(
+        demo_app_module,
+        "analyze_goal",
+        lambda _message, context=None: GoalSpec(
+            original_goal="列一下当前工作区都有什么文件",
+            primary_intent="repository_overview",
+            requires_repository_overview=True,
+        ),
+    )
+    monkeypatch.setattr(
+        demo_app_module,
+        "build_workflow_graph",
+        lambda goal, context=None: WorkflowGraph(
+            nodes=[
+                WorkflowNode(node_id="discover", node_type="workspace_discovery"),
+                WorkflowNode(node_id="aggregate", node_type="aggregate_results", dependencies=["discover"]),
+                WorkflowNode(node_id="synthesize", node_type="evidence_synthesis", dependencies=["aggregate"]),
+                WorkflowNode(node_id="finish", node_type="final_response", dependencies=["synthesize"]),
+            ],
+            edges=[
+                WorkflowEdge(source="discover", target="aggregate"),
+                WorkflowEdge(source="aggregate", target="synthesize"),
+                WorkflowEdge(source="synthesize", target="finish"),
+            ],
+        ),
+    )
+
+    payload = app.chat("列一下当前工作区都有什么文件")
+
+    assert payload["status"] == "completed"
+    assert any(step["detail"] == "evidence_synthesis" for step in payload["execution_trace"])
+    assert payload["execution_trace"][-1]["detail"] == "final_response"
+
+
+def test_demo_workflow_runtime_registers_new_and_legacy_native_executors(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    runtime = app._build_workflow_runtime()
+
+    assert {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis"} <= set(runtime.executors)
+    assert {"repository_explainer", "file_reader"} <= set(runtime.executors)
+
+
+def test_demo_assistant_app_can_still_execute_legacy_file_reader_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("legacy reader content", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    monkeypatch.setattr(
+        demo_app_module,
+        "analyze_goal",
+        lambda _message, context=None: GoalSpec(
+            original_goal="读取 README.md",
+            primary_intent="file_read",
+            requires_file_read=True,
+            target_paths=["README.md"],
+        ),
+    )
+    monkeypatch.setattr(
+        demo_app_module,
+        "build_workflow_graph",
+        lambda goal, context=None: WorkflowGraph(
+            nodes=[
+                WorkflowNode(node_id="file_read", node_type="file_reader", metadata={"target_path": "README.md"}),
+                WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["file_read"]),
+            ],
+            edges=[WorkflowEdge(source="file_read", target="final_response")],
+        ),
+    )
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    assert any(step["detail"] == "file_reader" for step in payload["execution_trace"])
+    assert payload["final_answer"] == "legacy reader content"

@@ -32,6 +32,10 @@ from agent_runtime_framework.workflow.conversation import build_conversation_mes
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
 from agent_runtime_framework.workflow.file_inspection_executor import FileInspectionExecutor
 from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
+from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
+from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
+from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
+from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 
 __all__ = [
@@ -64,6 +68,10 @@ __all__ = [
     "TargetResolutionExecutor",
     "FileInspectionExecutor",
     "ResponseSynthesisExecutor",
+    "WorkspaceDiscoveryExecutor",
+    "ContentSearchExecutor",
+    "ChunkedFileReadExecutor",
+    "EvidenceSynthesisExecutor",
     "synthesize_text",
     "analyze_goal",
     "build_workspace_subtask_graph",

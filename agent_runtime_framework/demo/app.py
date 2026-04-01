@@ -35,6 +35,10 @@ from agent_runtime_framework.demo.model_center import ModelCenterService, ModelC
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
+from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
+from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
+from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
+from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
@@ -398,6 +402,10 @@ class DemoAssistantApp:
         return WorkflowRuntime(
             executors={
                 "conversation_response": ConversationResponseExecutor(),
+                "workspace_discovery": WorkspaceDiscoveryExecutor(),
+                "content_search": ContentSearchExecutor(),
+                "chunked_file_read": ChunkedFileReadExecutor(),
+                "evidence_synthesis": EvidenceSynthesisExecutor(),
                 "repository_explainer": WorkspaceOverviewExecutor(),
                 "file_reader": FileReadExecutor(),
                 "aggregate_results": AggregationExecutor(),
@@ -805,4 +813,3 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     app.agent_runtime.app = app
     app.model_center.load()
     return app
-

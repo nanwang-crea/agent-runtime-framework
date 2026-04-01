@@ -92,7 +92,8 @@ def test_simple_file_read_request_becomes_single_subtask():
 
     assert goal.primary_intent == "file_read"
     assert subtasks == [
-        SubTaskSpec(task_id="file_read", task_profile="file_reader", target="README.md")
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
     ]
 
 
@@ -102,9 +103,10 @@ def test_compound_request_decomposes_into_multiple_subtasks():
     subtasks = decompose_goal(goal)
 
     assert [item.task_profile for item in subtasks] == [
-        "repository_explainer",
-        "file_reader",
-        "final_synthesis",
+        "workspace_discovery",
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
     ]
 
 
@@ -121,9 +123,10 @@ def test_directory_and_readme_request_decomposes_into_overview_file_read_and_syn
     subtasks = decompose_goal(goal)
 
     assert subtasks == [
-        SubTaskSpec(task_id="repository_overview", task_profile="repository_explainer", target="."),
-        SubTaskSpec(task_id="file_read", task_profile="file_reader", target="README.md"),
-        SubTaskSpec(task_id="final_synthesis", task_profile="final_synthesis", depends_on=["repository_overview", "file_read"]),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
+        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"]),
     ]
 
 
