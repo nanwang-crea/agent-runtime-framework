@@ -127,6 +127,23 @@ def test_demo_planner_uses_semantic_directory_detection_before_default_planner(t
     assert action.metadata["arguments"] == {"path": "agent_runtime_framework"}
 
 
+def test_demo_next_action_planner_maps_current_directory_to_inspection(tmp_path: Path):
+    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    planner = _build_demo_next_action_planner(workspace)
+    task = WorkspaceTask(goal="列一下当前目录都有什么内容", actions=[], task_profile="repository_explainer", state=TaskState())
+    context = SimpleNamespace(application_context=SimpleNamespace(tools=SimpleNamespace(names=lambda: ["inspect_workspace_path"])), services={})
+
+    action = planner(task, None, context, ["inspect_workspace_path"])
+
+    assert action is not None
+    assert action.kind == "call_tool"
+    assert action.metadata["tool_name"] == "inspect_workspace_path"
+    assert action.metadata["arguments"] == {"path": "."}
+
+
 def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -537,6 +554,40 @@ def test_demo_assistant_app_recovers_from_directory_summarize_request(tmp_path: 
     assert final_events
     assert final_events[-1]["payload"]["status"] == "completed"
     assert "guide.md" in final_events[-1]["payload"]["final_answer"]
+
+
+def test_demo_assistant_app_does_not_install_next_action_planner_by_default(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    app = create_demo_assistant_app(workspace)
+
+    assert "next_action_planner" not in app.context.services
+
+
+
+def test_demo_assistant_app_workspace_subtask_ignores_next_action_planner_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import GoalSpec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
+
+    def _unexpected_planner(*_args, **_kwargs):
+        raise AssertionError("legacy next_action_planner should not be consulted")
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    app.context.services["next_action_planner"] = _unexpected_planner
+
+    payload = app.chat("编辑 README.md 并验证修改结果")
+
+    assert payload["status"] == "completed"
+    assert payload["runtime"] == "workflow"
+    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path):

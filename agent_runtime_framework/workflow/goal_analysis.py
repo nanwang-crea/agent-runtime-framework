@@ -36,9 +36,6 @@ def analyze_goal(user_input: str, context: Any | None = None) -> GoalSpec:
 def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> GoalSpec | None:
     if context is None:
         return None
-    if not bool(getattr(context, "services", {}).get("model_first_workflow_goal_analysis")):
-        return None
-
     runtime = resolve_model_runtime(context.application_context, "planner")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model

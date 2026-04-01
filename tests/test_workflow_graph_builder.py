@@ -68,7 +68,7 @@ def _workflow_context(model_payload: str):
     router.set_route("planner", instance_id="fake", model_name="planner-model")
     app_context.services["model_registry"] = registry
     app_context.services["model_router"] = router
-    return SimpleNamespace(application_context=app_context, services={"model_first_workflow_graph_builder": True})
+    return SimpleNamespace(application_context=app_context, services={})
 
 
 def example_compound_goal() -> GoalSpec:
@@ -195,6 +195,25 @@ def test_graph_builder_prefers_model_output_when_available():
 
     assert [node.node_id for node in graph.nodes] == ["file_read", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
+
+
+def test_graph_builder_uses_model_without_feature_flag():
+    context = _workflow_context(
+        '{"nodes":[{"node_id":"file_read","node_type":"file_reader","task_profile":"file_reader",'
+        '"dependencies":[],"metadata":{"target_path":"README.md"}},'
+        '{"node_id":"final_response","node_type":"final_response","dependencies":["file_read"]}],'
+        '"edges":[{"source":"file_read","target":"final_response"}]}'
+    )
+    goal = GoalSpec(
+        original_goal="demo",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    graph = build_workflow_graph(goal, context=context)
+
+    assert [node.node_id for node in graph.nodes] == ["file_read", "final_response"]
 
 
 def test_graph_builder_falls_back_to_workspace_subtask_for_non_native_goal():

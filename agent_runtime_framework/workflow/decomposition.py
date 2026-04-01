@@ -18,9 +18,6 @@ def decompose_goal(goal: GoalSpec, context: Any | None = None) -> list[SubTaskSp
 def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> list[SubTaskSpec] | None:
     if context is None:
         return None
-    if not bool(getattr(context, "services", {}).get("model_first_workflow_decomposition")):
-        return None
-
     runtime = resolve_model_runtime(context.application_context, "planner")
     llm_client = runtime.client if runtime is not None else context.application_context.llm_client
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model

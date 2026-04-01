@@ -12,7 +12,7 @@ from agent_runtime_framework.memory import MemoryRecord
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
 
 from agent_runtime_framework.agents.workspace_backend.models import WorkspaceAction, WorkspaceActionResult, WorkspaceTask, TaskIntent, TaskState
-from agent_runtime_framework.agents.workspace_backend.planner import infer_task_intent, plan_next_workspace_action
+from agent_runtime_framework.agents.workspace_backend.planner import infer_task_intent, plan_workspace_actions
 from agent_runtime_framework.agents.workspace_backend.runtime import WorkspaceSessionRuntime
 
 _PENDING_CLARIFICATION_KEY = "workspace_backend:pending_clarification"
@@ -126,11 +126,34 @@ class WorkspaceAgentLoop:
         return WorkspaceAgentLoopResult(status="completed", final_output=final_output, task=task, action_kind=action_kind, run_id=str(uuid4()))
 
     def _next_action(self, task: WorkspaceTask, session: AssistantSession) -> WorkspaceAction | None:
-        planner = self.context.services.get("next_action_planner") if isinstance(self.context.services, dict) else None
-        if callable(planner):
-            tool_names = self.context.application_context.tools.names()
-            return planner(task, session, self.context, tool_names)
-        return plan_next_workspace_action(task, session, self.context)
+        del session
+        completed = [action for action in task.actions if action.status == "completed"]
+        tool_names = set(getattr(self.context.application_context.tools, "names", lambda: [])())
+        if not completed:
+            planned = plan_workspace_actions(task.goal)
+            return planned[0] if planned else None
+        last = completed[-1]
+        if last.kind == "respond":
+            return None
+        if last.kind != "call_tool":
+            return WorkspaceAction(kind="respond", instruction=str(last.observation or ""), metadata={"direct_output": True})
+        tool_name = str(last.metadata.get("tool_name") or "")
+        tool_output = dict((last.metadata.get("result") or {}).get("tool_output") or {})
+        if tool_name == "resolve_workspace_target":
+            status = str(tool_output.get("resolution_status") or "resolved")
+            if status in {"ambiguous", "unresolved"}:
+                return WorkspaceAction(
+                    kind="respond",
+                    instruction=str(tool_output.get("text") or last.observation or "请 уточнить 目标。"),
+                    metadata={"direct_output": True, "clarification_required": True},
+                )
+            resolved_path = str(tool_output.get("resolved_path") or tool_output.get("path") or "")
+            resolved_kind = str(tool_output.get("resolved_kind") or "file")
+            if resolved_kind == "directory" and "inspect_workspace_path" in tool_names:
+                return WorkspaceAction(kind="call_tool", instruction=task.goal, metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": resolved_path}})
+            if "read_workspace_text" in tool_names:
+                return WorkspaceAction(kind="call_tool", instruction=task.goal, metadata={"tool_name": "read_workspace_text", "arguments": {"path": resolved_path}})
+        return WorkspaceAction(kind="respond", instruction=str(last.observation or tool_output.get("text") or ""), metadata={"direct_output": True})
 
     def _execute_action(self, task: WorkspaceTask, action: WorkspaceAction) -> WorkspaceActionResult:
         if action.kind == "respond":

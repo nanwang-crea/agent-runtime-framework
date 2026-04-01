@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 from agent_runtime_framework.agents.workspace_backend.models import WorkspaceAction, WorkspaceTask, TaskIntent
 
 _READ_HINTS = ("读取", "read", "查看", "看看", "讲解", "总结", "explain")
@@ -30,37 +28,6 @@ def plan_workspace_actions(user_input: str) -> list[WorkspaceAction]:
     action = _plan_from_goal(user_input, tool_names=set())
     return [action] if action is not None else []
 
-
-def plan_next_workspace_action(task: WorkspaceTask, session: Any, context: Any) -> WorkspaceAction | None:
-    tool_names = set(getattr(context.application_context.tools, "names", lambda: [])())
-    completed = [action for action in task.actions if action.status == "completed"]
-    if not completed:
-        planner = context.services.get("next_action_planner") if isinstance(getattr(context, "services", None), dict) else None
-        if callable(planner):
-            return planner(task, session, context, list(tool_names))
-        return _plan_from_goal(task.goal, tool_names=tool_names)
-    last = completed[-1]
-    if last.kind == "respond":
-        return None
-    if last.kind != "call_tool":
-        return WorkspaceAction(kind="respond", instruction=str(last.observation or ""), metadata={"direct_output": True})
-    tool_name = str(last.metadata.get("tool_name") or "")
-    tool_output = dict((last.metadata.get("result") or {}).get("tool_output") or {})
-    if tool_name == "resolve_workspace_target":
-        status = str(tool_output.get("resolution_status") or "resolved")
-        if status in {"ambiguous", "unresolved"}:
-            return WorkspaceAction(
-                kind="respond",
-                instruction=str(tool_output.get("text") or last.observation or "请 уточнить 目标。"),
-                metadata={"direct_output": True, "clarification_required": True},
-            )
-        resolved_path = str(tool_output.get("resolved_path") or tool_output.get("path") or "")
-        resolved_kind = str(tool_output.get("resolved_kind") or "file")
-        if resolved_kind == "directory" and "inspect_workspace_path" in tool_names:
-            return WorkspaceAction(kind="call_tool", instruction=task.goal, metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": resolved_path}})
-        if "read_workspace_text" in tool_names:
-            return WorkspaceAction(kind="call_tool", instruction=task.goal, metadata={"tool_name": "read_workspace_text", "arguments": {"path": resolved_path}})
-    return WorkspaceAction(kind="respond", instruction=str(last.observation or tool_output.get("text") or ""), metadata={"direct_output": True})
 
 
 def _plan_from_goal(user_input: str, *, tool_names: set[str]) -> WorkspaceAction | None:

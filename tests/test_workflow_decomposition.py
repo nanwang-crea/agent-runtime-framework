@@ -81,10 +81,7 @@ def _workflow_context(model_payload: str):
     app_context.services["model_router"] = router
     return SimpleNamespace(
         application_context=app_context,
-        services={
-            "model_first_workflow_goal_analysis": True,
-            "model_first_workflow_decomposition": True,
-        },
+        services={},
     )
 
 
@@ -144,6 +141,15 @@ def test_analyze_goal_prefers_model_output_when_available():
     assert goal.target_paths == ["README.md"]
 
 
+def test_analyze_goal_uses_model_without_feature_flag():
+    context = _workflow_context('{"primary_intent":"repository_overview","requires_repository_overview":true}')
+
+    goal = analyze_goal("随便一句话", context=context)
+
+    assert goal.primary_intent == "repository_overview"
+    assert goal.requires_repository_overview is True
+
+
 def test_decompose_goal_prefers_model_output_when_available():
     context = _workflow_context(
         '{"subtasks":[{"task_id":"repository_overview","task_profile":"repository_explainer","target":"."},'
@@ -165,4 +171,19 @@ def test_decompose_goal_prefers_model_output_when_available():
         SubTaskSpec(task_id="repository_overview", task_profile="repository_explainer", target="."),
         SubTaskSpec(task_id="file_read", task_profile="file_reader", target="README.md"),
         SubTaskSpec(task_id="final_synthesis", task_profile="final_synthesis", depends_on=["repository_overview", "file_read"]),
+    ]
+
+
+def test_decompose_goal_uses_model_without_feature_flag():
+    context = _workflow_context('{"subtasks":[{"task_id":"repository_overview","task_profile":"repository_explainer","target":"."}]}')
+    goal = GoalSpec(
+        original_goal="demo",
+        primary_intent="repository_overview",
+        requires_repository_overview=True,
+    )
+
+    subtasks = decompose_goal(goal, context=context)
+
+    assert subtasks == [
+        SubTaskSpec(task_id="repository_overview", task_profile="repository_explainer", target="."),
     ]

@@ -8,9 +8,10 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
-from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceAgentLoop, WorkspaceContext, build_default_workspace_tools, evaluate_workspace_output, plan_next_workspace_action
+from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceAgentLoop, WorkspaceContext, build_default_workspace_tools, evaluate_workspace_output
 from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.workspace_backend.semantics import infer_task_intent
+from agent_runtime_framework.agents.workspace_backend.planner import _plan_from_goal
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
@@ -149,13 +150,6 @@ class DemoAssistantApp:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        if not self._is_conversation_agent(self._active_agent):
-            try:
-                self._ensure_codex_planner_available()
-            except Exception as exc:
-                payload = self._error_payload(exc)
-                yield {"type": "error", "error": dict(payload.get("error") or {})}
-                return
         if self._should_stream_conversation(message, session):
             yield from self._stream_conversation(message, session)
             return
@@ -824,7 +818,6 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         services={"active_agent": "workspace", "model_first_task_intent": True, "model_first_task_plan": True, "agent_registry": agent_registry},
         session=AssistantSession(session_id=str(uuid4())),
     )
-    context.services["next_action_planner"] = _build_demo_next_action_planner(workspace_path)
     context.services["output_evaluator"] = evaluate_workspace_output
     loop = WorkspaceAgentLoop(context)
     app = DemoAssistantApp(
@@ -851,20 +844,27 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
 
 def _build_demo_next_action_planner(workspace_root: Path):
     def _planner(task: Any, session: AssistantSession, context: WorkspaceContext, tool_names: list[str]):
-        application_context = getattr(context, "application_context", None)
-        if application_context is None or not hasattr(application_context, "tools"):
-            target_hint = _match_codebase_explanation_target(str(getattr(task, "goal", "") or ""), workspace_root)
-            if target_hint and "inspect_workspace_path" in set(tool_names):
-                return WorkspaceAction(
-                    kind="call_tool",
-                    instruction=str(getattr(task, "goal", "") or ""),
-                    metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": target_hint}},
-                )
-        return plan_next_workspace_action(task, session, context)
+        del session, context
+        goal = str(getattr(task, "goal", "") or "")
+        target_hint = _match_codebase_explanation_target(goal, workspace_root)
+        if target_hint is not None and "inspect_workspace_path" in set(tool_names):
+            return WorkspaceAction(
+                kind="call_tool",
+                instruction=goal,
+                metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": target_hint or "."}},
+            )
+        return _plan_from_goal(goal, tool_names=set(tool_names))
 
     return _planner
 
 
 def _match_codebase_explanation_target(user_input: str, workspace_root: Path) -> str | None:
     intent = infer_task_intent(user_input, workspace_root)
-    return "" if intent.target_hint == "." else (intent.target_hint or None)
+    text = str(user_input or "")
+    if intent.target_hint == ".":
+        return "."
+    if intent.target_hint:
+        return intent.target_hint
+    if intent.task_kind == "repository_explainer" and any(token in text for token in ("当前目录", "当前文件夹", "当前工作区", "当前仓库")):
+        return "."
+    return None
