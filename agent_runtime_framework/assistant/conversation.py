@@ -8,9 +8,9 @@ import ssl
 from typing import Any, Iterable
 from urllib.error import URLError
 
-from agent_runtime_framework.agents.codex.prompting import extract_json_block, render_codex_prompt_doc
-from agent_runtime_framework.agents.codex.run_context import build_run_context_block
-from agent_runtime_framework.agents.codex.semantics import resolve_task_intent
+from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block, render_workspace_prompt_doc
+from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
+from agent_runtime_framework.agents.workspace_backend.semantics import resolve_task_intent
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, chat_stream, resolve_model_runtime
 
 logger = logging.getLogger(__name__)
@@ -102,8 +102,8 @@ def _route_with_model(user_input: str, context: Any | None) -> str | None:
             ChatRequest(
                 model=runtime.profile.model_name,
                 messages=[
-                    ChatMessage(role="system", content=render_codex_prompt_doc("router_system")),
-                    ChatMessage(role="user", content=render_codex_prompt_doc("router_user", user_input=user_input)),
+                    ChatMessage(role="system", content=render_workspace_prompt_doc("router_system")),
+                    ChatMessage(role="user", content=render_workspace_prompt_doc("router_user", user_input=user_input)),
                 ],
                 temperature=0.0,
                 max_tokens=120,
@@ -225,7 +225,7 @@ def stream_conversation_reply(
 
 
 def _build_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
-    system_content = render_codex_prompt_doc("conversation_system")
+    system_content = render_workspace_prompt_doc("conversation_system")
     if context is not None:
         system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
     messages: list[ChatMessage] = [

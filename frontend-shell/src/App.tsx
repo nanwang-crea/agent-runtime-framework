@@ -70,7 +70,7 @@ type RunCardState = {
 function App() {
   const [workspace, setWorkspace] = useState("");
   const [contextState, setContextState] = useState<ContextPayload>({
-    active_agent: "codex",
+    active_agent: "workspace",
     available_agents: [],
     active_workspace: "",
     available_workspaces: [],

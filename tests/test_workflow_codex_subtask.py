@@ -1,19 +1,19 @@
 from pathlib import Path
 
-from agent_runtime_framework.agents.codex.loop import CodexAgentLoopResult
-from agent_runtime_framework.agents.codex.models import CodexTask, EvidenceItem, TaskState
+from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoopResult
+from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, EvidenceItem, TaskState
 from agent_runtime_framework.workflow import WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.codex_subtask import CodexSubtaskExecutor
+from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 
 
 class StubCodexLoop:
-    def run(self, goal: str) -> CodexAgentLoopResult:
-        task = CodexTask(goal=goal, actions=[], task_profile="file_reader", state=TaskState())
+    def run(self, goal: str) -> WorkspaceAgentLoopResult:
+        task = WorkspaceTask(goal=goal, actions=[], task_profile="file_reader", state=TaskState())
         task.summary = "README summary"
         task.state.evidence_items.append(
             EvidenceItem(source="workspace", kind="file", summary="README", path="README.md", content="# Demo")
         )
-        return CodexAgentLoopResult(
+        return WorkspaceAgentLoopResult(
             status="completed",
             final_output="README summary",
             task=task,
@@ -22,16 +22,16 @@ class StubCodexLoop:
         )
 
 
-def test_codex_subtask_executor_wraps_codex_loop_result(tmp_path: Path):
+def test_workspace_subtask_executor_wraps_workspace_loop_result(tmp_path: Path):
     node = WorkflowNode(
-        node_id="codex_file_read",
-        node_type="codex_subtask",
+        node_id="workspace_file_read",
+        node_type="workspace_subtask",
         task_profile="file_reader",
         metadata={"goal": "读取 README.md 并总结"},
     )
     run = WorkflowRun(goal="outer workflow")
 
-    result = CodexSubtaskExecutor(codex_loop=StubCodexLoop()).execute(
+    result = WorkspaceSubtaskExecutor(workspace_loop=StubCodexLoop()).execute(
         node,
         run,
         {"workspace_root": str(tmp_path)},

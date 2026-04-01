@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_runtime_framework.agents.codex.models import CodexAction
+from agent_runtime_framework.agents.workspace_backend.models import WorkspaceAction
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
-from agent_runtime_framework.agents.codex.planner import _plan_from_goal
+from agent_runtime_framework.agents.workspace_backend.planner import _plan_from_goal
 from agent_runtime_framework.demo.app import _build_demo_next_action_planner
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
@@ -30,13 +30,13 @@ def _create_demo_assistant_app_with_test_planner(workspace: Path):
                 resolution_status = str(tool_output.get("resolution_status") or "resolved").strip()
                 resolved_path = str(tool_output.get("resolved_path") or tool_output.get("path") or "").strip()
                 if resolution_status in {"ambiguous", "unresolved"}:
-                    return CodexAction(
+                    return WorkspaceAction(
                         kind="respond",
                         instruction=str(tool_output.get("text") or last_action.observation or "Please clarify the target."),
                         metadata={"direct_output": True, "clarification_required": True},
                     )
                 if resolved_path and "read_workspace_text" in tool_names:
-                    return CodexAction(
+                    return WorkspaceAction(
                         kind="call_tool",
                         instruction=task.goal,
                         subgoal="gather_evidence",
@@ -50,7 +50,7 @@ def _create_demo_assistant_app_with_test_planner(workspace: Path):
                     read_path = str(tool_output.get("path") or last_action.metadata.get("arguments", {}).get("path") or "").strip()
                     if read_path and "User clarification:" in str(task.goal):
                         instruction = f"{read_path}\n{last_action.observation}" if read_path not in last_action.observation else last_action.observation
-                return CodexAction(
+                return WorkspaceAction(
                     kind="respond",
                     instruction=instruction,
                     metadata={"direct_output": True},
@@ -215,12 +215,26 @@ def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
 
 def test_demo_assets_are_loadable():
     html = _load_asset("index.html")
-    script = _load_asset("app.js")
-    css = _load_asset("styles.css")
 
     assert "桌面端 AI 工具" in html
-    assert "fetchSession" in script
-    assert ":root" in css
+    assert 'src="/assets/' in html or 'href="/assets/' in html
+
+    asset_paths = []
+    for marker in ('src="/assets/', 'href="/assets/'):
+        start = 0
+        while True:
+            index = html.find(marker, start)
+            if index < 0:
+                break
+            begin = index + len('src="/' if marker.startswith('src') else 'href="/')
+            end = html.find('"', begin)
+            asset_paths.append(html[begin:end])
+            start = end + 1
+
+    loaded_assets = [_load_asset(path) for path in asset_paths]
+    assert loaded_assets
+    assert any(len(asset.strip()) > 20 for asset in loaded_assets)
+    assert any(":root" in asset or "body" in asset or "background" in asset for asset in loaded_assets)
 
 
 def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path):
@@ -536,7 +550,7 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert "README.md" in payload["final_answer"]
-    assert payload["execution_trace"][1]["name"] in {"repository_overview", "codex_subtask"}
+    assert payload["execution_trace"][1]["name"] in {"repository_overview", "workspace_subtask"}
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -647,7 +661,7 @@ def test_demo_assistant_app_emits_memory_event_after_successful_desktop_action(t
     assert "line one" in str(memory_events[-1]["memory"]["last_summary"])
 
 
-def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path):
+def test_demo_assistant_app_uses_workspace_loop_for_workspace_actions(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two", encoding="utf-8")
@@ -658,7 +672,7 @@ def test_demo_assistant_app_uses_codex_loop_for_workspace_actions(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert payload["execution_trace"][0]["name"] == "router"
-    assert payload["execution_trace"][1]["name"] in {"file_read", "codex_subtask"}
+    assert payload["execution_trace"][1]["name"] in {"file_read", "workspace_subtask"}
     assert payload["execution_trace"][-1]["name"] == "final_response"
 
 

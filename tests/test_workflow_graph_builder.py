@@ -146,13 +146,13 @@ def test_graph_builder_uses_codex_node_for_non_native_request():
 
     graph = build_workflow_graph(goal)
 
-    assert any(node.node_type == "codex_subtask" for node in graph.nodes)
+    assert any(node.node_type == "workspace_subtask" for node in graph.nodes)
     assert any(node.node_type == "verification" for node in graph.nodes)
     assert any(node.node_type == "final_response" for node in graph.nodes)
 
 
 def test_graph_builder_can_enforce_model_only_mode():
-    context = _workflow_context('{"nodes":[{"node_id":"custom_plan","node_type":"codex_subtask","task_profile":"change_and_verify","dependencies":[],"metadata":{"goal":"demo"}}],"edges":[]}')
+    context = _workflow_context('{"nodes":[{"node_id":"custom_plan","node_type":"workspace_subtask","task_profile":"change_and_verify","dependencies":[],"metadata":{"goal":"demo"}}],"edges":[]}')
     context.services["workflow_graph_model_only"] = True
     goal = GoalSpec(
         original_goal="demo",
@@ -197,7 +197,7 @@ def test_graph_builder_prefers_model_output_when_available():
     assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
 
 
-def test_graph_builder_falls_back_to_codex_subtask_for_non_native_goal():
+def test_graph_builder_falls_back_to_workspace_subtask_for_non_native_goal():
     goal = GoalSpec(
         original_goal="编辑 README.md 并验证修改结果",
         primary_intent="change_and_verify",
@@ -205,5 +205,5 @@ def test_graph_builder_falls_back_to_codex_subtask_for_non_native_goal():
 
     graph = build_workflow_graph(goal)
 
-    assert [node.node_type for node in graph.nodes] == ["codex_subtask", "final_response"]
+    assert [node.node_type for node in graph.nodes] == ["workspace_subtask", "final_response"]
     assert graph.nodes[0].metadata["goal"] == "编辑 README.md 并验证修改结果"

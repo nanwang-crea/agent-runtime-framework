@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_runtime_framework.agents.codex.prompting import extract_json_block
+from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 
 
 _NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate"}
-_SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"codex_subtask"}
+_SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
 
 
@@ -47,7 +47,7 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
                             "You compile a workflow graph. Return JSON only with keys nodes and edges. "
                             "Each node needs: node_id, node_type, task_profile, dependencies, requires_approval, retry_limit, metadata. "
                             "Use node_type to choose the executor path directly. Supported node types include "
-                            "repository_explainer, file_reader, codex_subtask, verification, approval_gate, aggregate_results, final_response. "
+                            "repository_explainer, file_reader, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
                             "Each edge needs: source, target, condition, metadata."
                         ),
                     ),
@@ -123,30 +123,30 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
 
 def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
     if goal.primary_intent not in {"file_read", "repository_overview", "compound"}:
-        return build_codex_subtask_graph(goal)
+        return build_workspace_subtask_graph(goal)
     subtasks = decompose_goal(goal, context=context)
     executable_subtasks = [subtask for subtask in subtasks if subtask.task_profile != "final_synthesis"]
     if not executable_subtasks:
-        return build_codex_subtask_graph(goal)
+        return build_workspace_subtask_graph(goal)
 
     nodes = [_node_for_subtask(subtask, goal) for subtask in executable_subtasks]
     edges = [WorkflowEdge(source=dependency, target=subtask.task_id) for subtask in executable_subtasks for dependency in subtask.depends_on]
     return _compose_graph(nodes, edges, goal, source="fallback")
 
 
-def build_codex_subtask_graph(goal: GoalSpec) -> WorkflowGraph:
+def build_workspace_subtask_graph(goal: GoalSpec) -> WorkflowGraph:
     node = WorkflowNode(
-        node_id="codex_subtask",
-        node_type="codex_subtask",
+        node_id="workspace_subtask",
+        node_type="workspace_subtask",
         task_profile=goal.primary_intent,
         metadata={
             "goal": goal.original_goal,
             "task_profile": goal.primary_intent,
-            "executor_kind": "codex_subtask",
+            "executor_kind": "workspace_subtask",
             **dict(goal.metadata or {}),
         },
     )
-    return _compose_graph([node], [], goal, source="codex_subtask_fallback")
+    return _compose_graph([node], [], goal, source="workspace_subtask_fallback")
 
 
 def _node_for_subtask(subtask: SubTaskSpec, goal: GoalSpec) -> WorkflowNode:
@@ -164,10 +164,10 @@ def _node_for_subtask(subtask: SubTaskSpec, goal: GoalSpec) -> WorkflowNode:
         )
     metadata.setdefault("goal", goal.original_goal)
     metadata.setdefault("task_profile", subtask.task_profile)
-    metadata.setdefault("executor_kind", "codex_subtask")
+    metadata.setdefault("executor_kind", "workspace_subtask")
     return WorkflowNode(
         node_id=subtask.task_id,
-        node_type="codex_subtask",
+        node_type="workspace_subtask",
         dependencies=list(subtask.depends_on),
         task_profile=subtask.task_profile,
         metadata=metadata,
@@ -238,12 +238,12 @@ def _normalize_graph(graph: WorkflowGraph, goal: GoalSpec) -> WorkflowGraph:
     normalized_nodes: list[WorkflowNode] = []
     for node in graph.nodes:
         metadata = dict(node.metadata or {})
-        if node.task_profile and node.node_type == "codex_subtask":
+        if node.task_profile and node.node_type == "workspace_subtask":
             metadata.setdefault("task_profile", node.task_profile)
         if node.node_type in _NATIVE_NODE_TYPES:
             metadata.setdefault("executor_kind", "native")
-        elif node.node_type == "codex_subtask":
-            metadata.setdefault("executor_kind", "codex_subtask")
+        elif node.node_type == "workspace_subtask":
+            metadata.setdefault("executor_kind", "workspace_subtask")
             metadata.setdefault("goal", goal.original_goal)
         normalized_nodes.append(
             WorkflowNode(

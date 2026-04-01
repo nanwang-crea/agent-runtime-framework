@@ -21,7 +21,7 @@ const EMPTY_MEMORY: AssistantResponse["memory"] = {
 };
 
 const EMPTY_CONTEXT: ContextPayload = {
-  active_agent: "assistant",
+  active_agent: "workspace",
   available_agents: [],
   active_workspace: "",
   available_workspaces: [],

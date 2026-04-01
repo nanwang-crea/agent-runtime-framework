@@ -8,9 +8,9 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
-from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext, build_default_codex_tools, evaluate_codex_output, plan_next_codex_action
-from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.codex.semantics import infer_task_intent
+from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceAgentLoop, WorkspaceContext, build_default_workspace_tools, evaluate_workspace_output, plan_next_workspace_action
+from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
+from agent_runtime_framework.agents.workspace_backend.semantics import infer_task_intent
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
@@ -33,7 +33,7 @@ from agent_runtime_framework.demo.model_center import ModelCenterService, ModelC
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
-from agent_runtime_framework.workflow.codex_subtask import CodexSubtaskExecutor
+from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class DemoAssistantApp:
     workspace: Path
-    context: CodexContext
-    loop: CodexAgentLoop
+    context: WorkspaceContext
+    loop: WorkspaceAgentLoop
     model_registry: ModelRegistry
     model_router: ModelRouter
     model_center: ModelCenterService
@@ -188,10 +188,10 @@ class DemoAssistantApp:
         source = str(diagnostics.get("source") or "fallback")
         reason = str(diagnostics.get("reason") or "")
         status = "completed" if source == "model" else "fallback"
-        task = type("CodexConversationTask", (), {})()
+        task = type("WorkspaceConversationTask", (), {})()
         task.task_id = str(uuid4())
         task.goal = message
-        task.actions = [type("CodexConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
+        task.actions = [type("WorkspaceConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
         self._task_history.insert(0, task)
         self._task_history = self._task_history[:40]
         payload = {
@@ -381,7 +381,7 @@ class DemoAssistantApp:
                 "verification": VerificationExecutor(),
                 "approval_gate": ApprovalGateExecutor(),
                 "final_response": FinalResponseExecutor(),
-                "codex_subtask": CodexSubtaskExecutor(codex_loop=self.loop),
+                "workspace_subtask": WorkspaceSubtaskExecutor(workspace_loop=self.loop),
             },
             context={"workspace_root": str(self.workspace)},
         )
@@ -410,7 +410,7 @@ class DemoAssistantApp:
         }
 
     def _capture_workflow_codex_history(self, run: Any) -> None:
-        results = run.shared_state.get("codex_loop_results", {})
+        results = run.shared_state.get("workspace_loop_results", {})
         for result in results.values():
             task = getattr(result, "task", None)
             if task is None:
@@ -605,10 +605,10 @@ class DemoAssistantApp:
                 chunks.append(chunk)
         final_answer = "".join(chunks).strip()
         session.add_turn("assistant", final_answer)
-        task = type("CodexConversationTask", (), {})()
+        task = type("WorkspaceConversationTask", (), {})()
         task.task_id = str(uuid4())
         task.goal = message
-        task.actions = [type("CodexConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
+        task.actions = [type("WorkspaceConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
         self._task_history.insert(0, task)
         self._task_history = self._task_history[:40]
         payload = {
@@ -794,18 +794,18 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
             ),
         },
     )
-    for tool in build_default_codex_tools():
+    for tool in build_default_workspace_tools():
         app_context.tools.register(tool)
     agent_registry = AgentRegistry()
     agent_registry.register_many(builtin_agent_definitions())
-    context = CodexContext(
+    context = WorkspaceContext(
         application_context=app_context,
         services={"active_agent": "workspace", "model_first_task_intent": True, "model_first_task_plan": True, "agent_registry": agent_registry},
         session=AssistantSession(session_id=str(uuid4())),
     )
     context.services["next_action_planner"] = _build_demo_next_action_planner(workspace_path)
-    context.services["output_evaluator"] = evaluate_codex_output
-    loop = CodexAgentLoop(context)
+    context.services["output_evaluator"] = evaluate_workspace_output
+    loop = WorkspaceAgentLoop(context)
     app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
@@ -829,17 +829,17 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
 
 
 def _build_demo_next_action_planner(workspace_root: Path):
-    def _planner(task: Any, session: AssistantSession, context: CodexContext, tool_names: list[str]):
+    def _planner(task: Any, session: AssistantSession, context: WorkspaceContext, tool_names: list[str]):
         application_context = getattr(context, "application_context", None)
         if application_context is None or not hasattr(application_context, "tools"):
             target_hint = _match_codebase_explanation_target(str(getattr(task, "goal", "") or ""), workspace_root)
             if target_hint and "inspect_workspace_path" in set(tool_names):
-                return CodexAction(
+                return WorkspaceAction(
                     kind="call_tool",
                     instruction=str(getattr(task, "goal", "") or ""),
                     metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": target_hint}},
                 )
-        return plan_next_codex_action(task, session, context)
+        return plan_next_workspace_action(task, session, context)
 
     return _planner
 

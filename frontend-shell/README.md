@@ -6,7 +6,7 @@
 - `Vite`
 - `Electron`
 
-当前状态：
+当前状态（正式前端）：
 
 - 已经接好现有 demo API 协议：`/api/session`、`/api/chat`、`/api/approve`
 - 已经接好统一模型中心协议：`GET /api/model-center`、`POST /api/model-center`、`POST /api/model-center/actions`
@@ -17,7 +17,7 @@
 
 ## 先作为 Web 壳运行
 
-先启动 assistant demo API：
+先启动 workspace backend API + UI server：
 
 ```bash
 cd /Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework
@@ -31,7 +31,7 @@ npm install
 npm run dev
 ```
 
-默认会把 `/api/*` 代理到 `http://127.0.0.1:8765`。
+默认会把 `/api/*` 代理到 `http://127.0.0.1:8765`；生产态则由 Python server 直接托管构建产物。
 
 ## 作为 Electron 壳运行
 

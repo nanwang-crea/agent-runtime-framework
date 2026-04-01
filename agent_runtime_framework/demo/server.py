@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,8 @@ logging.basicConfig(
 )
 logging.getLogger("agent_runtime_framework.assistant").setLevel(logging.WARNING)
 
+_FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend-shell" / "dist"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the desktop AI tool demo server.")
@@ -28,7 +30,7 @@ def main() -> None:
 
     app = create_demo_assistant_app(Path(args.workspace))
     server = ThreadingHTTPServer((args.host, args.port), _build_handler(app))
-    print(f"Desktop AI tool running at http://{args.host}:{args.port}")
+    print(f"Workspace Assistant running at http://{args.host}:{args.port}")
     print(f"Workspace: {app.workspace}")
     try:
         server.serve_forever()
@@ -44,15 +46,6 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             try:
-                if self.path == "/":
-                    self._send_text(_load_asset("index.html"), content_type="text/html; charset=utf-8")
-                    return
-                if self.path == "/app.js":
-                    self._send_text(_load_asset("app.js"), content_type="application/javascript; charset=utf-8")
-                    return
-                if self.path == "/styles.css":
-                    self._send_text(_load_asset("styles.css"), content_type="text/css; charset=utf-8")
-                    return
                 if self.path == "/api/session":
                     self._send_json(
                         {
@@ -67,6 +60,10 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     return
                 if self.path == "/api/model-center":
                     self._send_json(app.model_center_payload())
+                    return
+                asset_path = _resolve_frontend_path(self.path)
+                if asset_path is not None:
+                    self._send_file(asset_path)
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -125,28 +122,26 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/model-center/actions":
                     payload = self._read_json()
                     action = str(payload.get("action") or "").strip()
-                    if not action:
-                        self._send_json({"error": "action is required"}, status=HTTPStatus.BAD_REQUEST)
-                        return
-                    self._send_json(app.run_model_center_action(action, payload))
+                    instance = str(payload.get("instance") or "").strip() or None
+                    self._send_json(app.run_model_center_action(action, instance=instance))
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
             except Exception as exc:
                 self._send_exception(exc, operation="POST")
 
         def log_message(self, format: str, *args: Any) -> None:
-            return
+            logging.getLogger("demo.server").info("%s - %s", self.address_string(), format % args)
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0:
+            content_length = int(self.headers.get("Content-Length") or 0)
+            if content_length <= 0:
                 return {}
-            raw = self.rfile.read(length)
+            raw = self.rfile.read(content_length)
             if not raw:
                 return {}
-            return json.loads(raw.decode("utf-8"))
+            return dict(json.loads(raw.decode("utf-8")))
 
-        def _send_json(self, payload: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _send_json(self, payload: Any, *, status: HTTPStatus = HTTPStatus.OK) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -154,19 +149,11 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
-        def _send_exception(self, exc: Exception, *, operation: str) -> None:
-            error = normalize_app_error(
-                exc,
-                code="HTTP_HANDLER_ERROR",
-                message="请求处理失败。",
-                stage="http",
-                context={"method": operation, "path": self.path},
-            )
-            log_app_error(logging.getLogger("demo.server"), error, exc=exc, event="http_handler_error")
-            self._send_json({"error": error.as_dict()}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
-
-        def _send_text(self, content: str, *, content_type: str) -> None:
-            data = content.encode("utf-8")
+        def _send_file(self, path: Path) -> None:
+            data = path.read_bytes()
+            content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+            if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
+                content_type = f"{content_type}; charset=utf-8"
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -210,11 +197,46 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                 self.wfile.flush()
             self.close_connection = True
 
+        def _send_exception(self, exc: Exception, *, operation: str) -> None:
+            error = normalize_app_error(
+                exc,
+                code="DEMO_SERVER_ERROR",
+                message="Demo server 处理请求时发生错误。",
+                stage=operation.lower(),
+                retriable=False,
+            )
+            log_app_error(logging.getLogger("demo.server"), error, exc=exc, event="http_handler_error")
+            self._send_json({"error": error.as_dict()}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
     return DemoHandler
 
 
+def _frontend_dist_root() -> Path:
+    if not _FRONTEND_DIST_DIR.exists():
+        raise FileNotFoundError(f"frontend dist not found: {_FRONTEND_DIST_DIR}")
+    return _FRONTEND_DIST_DIR
+
+
+def _resolve_frontend_path(request_path: str) -> Path | None:
+    root = _frontend_dist_root()
+    clean_path = request_path.split("?", 1)[0].split("#", 1)[0]
+    if clean_path in {"", "/"}:
+        return root / "index.html"
+    relative = clean_path.lstrip("/")
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file():
+        return candidate
+    if "/api/" in clean_path or clean_path.startswith("/api"):
+        return None
+    return root / "index.html"
+
+
 def _load_asset(name: str) -> str:
-    return resources.files("agent_runtime_framework.demo.assets").joinpath(name).read_text(encoding="utf-8")
+    return (_frontend_dist_root() / name).read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
