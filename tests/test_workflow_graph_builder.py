@@ -390,8 +390,9 @@ def test_graph_builder_creates_target_explainer_graph_for_module_question():
 
     assert [node.node_type for node in graph.nodes] == [
         "target_resolution",
-        "file_inspection",
-        "response_synthesis",
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
         "final_response",
     ]
     assert graph.metadata["execution_mode"] == "native"

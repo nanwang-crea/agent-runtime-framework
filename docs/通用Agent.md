@@ -132,7 +132,7 @@
 - 先修掉最明显的“不智能”表现，让目录 / 代码库理解任务更稳定。
 
 实施内容：
-- 扩大 `repository_explainer` 的自然语言识别覆盖。
+- 扩大 `workspace_discovery` / `workspace_read` / `compound_read` 的自然语言识别覆盖。
 - 提升目标路径抽取能力，支持中英混杂表达。
 - 在 `read/summarize` 打到目录时自动恢复到目录 inspect。
 

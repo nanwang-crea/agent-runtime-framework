@@ -39,7 +39,7 @@ class WorkflowPersistenceStore:
             run_id=str(payload.get("run_id") or ""),
             goal=str(payload.get("goal") or ""),
             graph=graph,
-            shared_state=dict(payload.get("shared_state", {})),
+            shared_state=self._restore_shared_state(dict(payload.get("shared_state", {}))),
             status=str(payload.get("status") or "pending"),
             final_output=payload.get("final_output"),
             error=payload.get("error"),
@@ -58,3 +58,19 @@ class WorkflowPersistenceStore:
                 metadata=dict(state_payload.get("metadata", {})),
             )
         return run
+
+
+    def _restore_shared_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+        restored: dict[str, Any] = {}
+        for key, value in payload.items():
+            restored[key] = self._restore_value(value)
+        return restored
+
+    def _restore_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if "status" in value and ("output" in value or "references" in value or "approval_data" in value):
+                return NodeResult(**value)
+            return {key: self._restore_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._restore_value(item) for item in value]
+        return value

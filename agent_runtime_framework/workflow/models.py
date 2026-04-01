@@ -1,8 +1,88 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 from uuid import uuid4
+
+
+class EvidenceItemPayload(TypedDict, total=False):
+    kind: str
+    path: str
+    relative_path: str
+    summary: str
+    score: float
+    line: int
+    line_start: int
+    line_end: int
+    start_line: int
+    end_line: int
+    matched_terms: list[str]
+    text: str
+    source: str
+    content: str
+    metadata: dict[str, Any]
+
+
+class FactPayload(TypedDict, total=False):
+    kind: str
+    path: str
+    summary: str
+    value: Any
+    metadata: dict[str, Any]
+
+
+class VerificationPayload(TypedDict, total=False):
+    status: str
+    success: bool
+    summary: str
+    verification_type: NotRequired[str]
+    details: NotRequired[dict[str, Any]]
+
+
+class AggregatedWorkflowPayload(TypedDict):
+    summaries: list[str]
+    facts: list[FactPayload]
+    evidence_items: list[EvidenceItemPayload]
+    chunks: list[dict[str, Any]]
+    artifacts: dict[str, list[Any]]
+    open_questions: list[str]
+    verification: VerificationPayload | None
+    verification_events: list[VerificationPayload]
+
+
+def normalize_aggregated_workflow_payload(output: dict[str, Any] | None = None) -> AggregatedWorkflowPayload:
+    data = dict(output or {})
+    summaries = [str(item) for item in data.get("summaries", []) or [] if str(item).strip()]
+    single_summary = str(data.get("summary") or "").strip()
+    if single_summary and single_summary not in summaries:
+        summaries.append(single_summary)
+
+    verification = data.get("verification")
+    verification_events = [
+        event
+        for event in (data.get("verification_events", []) or [])
+        if isinstance(event, dict)
+    ]
+    if isinstance(verification, dict) and verification not in verification_events:
+        verification_events.append(verification)
+    if verification is None and verification_events:
+        verification = verification_events[-1]
+
+    artifacts: dict[str, list[Any]] = {}
+    for key, value in dict(data.get("artifacts") or {}).items():
+        values = value if isinstance(value, list) else [value]
+        artifacts[str(key)] = list(values)
+
+    return {
+        "summaries": summaries,
+        "facts": [item for item in (data.get("facts", []) or []) if isinstance(item, dict)],
+        "evidence_items": [item for item in (data.get("evidence_items", []) or []) if isinstance(item, dict)],
+        "chunks": [item for item in (data.get("chunks", []) or []) if isinstance(item, dict)],
+        "artifacts": artifacts,
+        "open_questions": [str(item) for item in (data.get("open_questions", []) or []) if str(item).strip()],
+        "verification": verification if isinstance(verification, dict) else None,
+        "verification_events": verification_events,
+    }
 
 
 RUN_STATUS_PENDING = "pending"

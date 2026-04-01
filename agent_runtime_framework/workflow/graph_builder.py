@@ -9,7 +9,7 @@ from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 
 
-_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis", "conversation_response"}
+_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "conversation_response"}
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
 _SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer", "generic", "chat", "conversation"}
@@ -46,7 +46,7 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
                             "You compile a workflow graph. Return JSON only with keys nodes and edges. "
                             "Each node needs: node_id, node_type, task_profile, dependencies, requires_approval, retry_limit, metadata. "
                             "Use node_type to choose the executor path directly. Supported node types include "
-                            "repository_explainer, file_reader, workspace_discovery, content_search, chunked_file_read, evidence_synthesis, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
+                            "repository_explainer, file_reader, workspace_discovery, target_resolution, content_search, chunked_file_read, evidence_synthesis, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
                             "Each edge needs: source, target, condition, metadata."
                         ),
                     ),
@@ -252,14 +252,16 @@ def _build_target_explainer_graph(goal: GoalSpec) -> WorkflowGraph:
     graph = WorkflowGraph(
         nodes=[
             WorkflowNode(node_id="target_resolution", node_type="target_resolution", metadata={"query": query, "target_hint": target_hint, "executor_kind": "native"}),
-            WorkflowNode(node_id="file_inspection", node_type="file_inspection", dependencies=["target_resolution"], metadata={"executor_kind": "native"}),
-            WorkflowNode(node_id="response_synthesis", node_type="response_synthesis", dependencies=["file_inspection"], metadata={"executor_kind": "native"}),
-            WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["response_synthesis"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="content_search", node_type="content_search", dependencies=["target_resolution"], metadata={"target_hint": target_hint, "executor_kind": "native"}),
+            WorkflowNode(node_id="chunked_file_read", node_type="chunked_file_read", dependencies=["content_search"], metadata={"target_hint": target_hint, "executor_kind": "native"}),
+            WorkflowNode(node_id="evidence_synthesis", node_type="evidence_synthesis", dependencies=["chunked_file_read"], metadata={"executor_kind": "native"}),
+            WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["evidence_synthesis"], metadata={"executor_kind": "native"}),
         ],
         edges=[
-            WorkflowEdge(source="target_resolution", target="file_inspection"),
-            WorkflowEdge(source="file_inspection", target="response_synthesis"),
-            WorkflowEdge(source="response_synthesis", target="final_response"),
+            WorkflowEdge(source="target_resolution", target="content_search"),
+            WorkflowEdge(source="content_search", target="chunked_file_read"),
+            WorkflowEdge(source="chunked_file_read", target="evidence_synthesis"),
+            WorkflowEdge(source="evidence_synthesis", target="final_response"),
         ],
         metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
     )

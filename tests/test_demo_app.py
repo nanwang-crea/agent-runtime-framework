@@ -1007,7 +1007,7 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_sub
 
 
 
-def test_demo_assistant_app_routes_module_question_through_second_batch_graph_nodes(tmp_path: Path):
+def test_demo_assistant_app_routes_module_question_through_evidence_chain(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     src = workspace / "src"
@@ -1019,8 +1019,9 @@ def test_demo_assistant_app_routes_module_question_through_second_batch_graph_no
 
     assert payload["runtime"] == "workflow"
     assert any(step["name"] == "target_resolution" for step in payload["execution_trace"])
-    assert any(step["name"] == "file_inspection" for step in payload["execution_trace"])
-    assert any(step["name"] == "response_synthesis" for step in payload["execution_trace"])
+    assert any(step["name"] == "content_search" for step in payload["execution_trace"])
+    assert any(step["name"] == "chunked_file_read" for step in payload["execution_trace"])
+    assert any(step["name"] == "evidence_synthesis" for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_can_run_evidence_synthesis_node_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1063,7 +1064,24 @@ def test_demo_assistant_app_can_run_evidence_synthesis_node_chain(tmp_path: Path
     assert payload["execution_trace"][-1]["detail"] == "final_response"
 
 
-def test_demo_workflow_runtime_registers_new_and_legacy_native_executors(tmp_path: Path):
+def test_demo_assistant_app_includes_structured_evidence_payload(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    src = workspace / "src"
+    src.mkdir()
+    (src / "service.py").write_text("class BillingService:\n    pass\n", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("读取 src/service.py")
+
+    assert payload["status"] == "completed"
+    assert payload["evidence"]["candidates"]
+    assert payload["evidence"]["chunks"]
+    assert payload["evidence"]["verification"]["status"] in {"passed", "not_run"}
+    assert any(item["path"].endswith("service.py") for item in payload["evidence"]["candidates"])
+
+
+def test_demo_workflow_runtime_registers_only_new_native_executors(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
@@ -1071,10 +1089,11 @@ def test_demo_workflow_runtime_registers_new_and_legacy_native_executors(tmp_pat
     runtime = app._build_workflow_runtime()
 
     assert {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis"} <= set(runtime.executors)
-    assert {"repository_explainer", "file_reader"} <= set(runtime.executors)
+    assert "repository_explainer" not in runtime.executors
+    assert "file_reader" not in runtime.executors
 
 
-def test_demo_assistant_app_can_still_execute_legacy_file_reader_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_demo_assistant_app_rejects_legacy_file_reader_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("legacy reader content", encoding="utf-8")
@@ -1104,6 +1123,6 @@ def test_demo_assistant_app_can_still_execute_legacy_file_reader_graph(tmp_path:
 
     payload = app.chat("读取 README.md")
 
-    assert payload["status"] == "completed"
+    assert payload["status"] == "failed"
     assert any(step["detail"] == "file_reader" for step in payload["execution_trace"])
-    assert payload["final_answer"] == "legacy reader content"
+    assert payload["final_answer"] == ""

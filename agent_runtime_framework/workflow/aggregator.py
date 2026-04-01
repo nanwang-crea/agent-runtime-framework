@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult
+from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, normalize_aggregated_workflow_payload
 
 
 def aggregate_node_results(results: list[NodeResult]) -> NodeResult:
@@ -44,15 +44,17 @@ def aggregate_node_results(results: list[NodeResult]) -> NodeResult:
                 references.append(reference)
     return NodeResult(
         status=NODE_STATUS_COMPLETED,
-        output={
-            "summaries": summaries,
-            "facts": facts,
-            "evidence_items": evidence_items,
-            "chunks": chunks,
-            "artifacts": artifacts,
-            "open_questions": open_questions,
-            "verification": verification_events[-1] if verification_events else None,
-            "verification_events": verification_events,
-        },
+        output=normalize_aggregated_workflow_payload(
+            {
+                "summaries": summaries,
+                "facts": facts,
+                "evidence_items": evidence_items,
+                "chunks": chunks,
+                "artifacts": artifacts,
+                "open_questions": open_questions,
+                "verification": verification_events[-1] if verification_events else None,
+                "verification_events": verification_events,
+            }
+        ),
         references=references,
     )

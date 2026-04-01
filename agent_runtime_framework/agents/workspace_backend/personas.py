@@ -56,7 +56,7 @@ def require_runtime_persona(name: str) -> RuntimePersona:
 
 def resolve_runtime_persona(context: Any | None, *, task: Any | None = None, user_input: str = "") -> RuntimePersona:
     profile = str(getattr(task, "task_profile", "") or "").strip().lower()
-    if profile in {"repository_explainer", "file_reader"}:
+    if profile in {"workspace_discovery", "workspace_read", "compound_read"}:
         return require_runtime_persona("explore")
     return require_runtime_persona("general")
 

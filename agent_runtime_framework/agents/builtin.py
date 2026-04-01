@@ -38,7 +38,7 @@ def builtin_agent_definitions() -> list[AgentDefinition]:
             label="Explore Agent",
             description="Repository exploration specialist.",
             default_persona="explore",
-            workflow_preferences=("repository_overview", "file_reader"),
+            workflow_preferences=("workspace_discovery", "workspace_read", "compound_read"),
             executor_kind="workflow",
             optional_skills=(repo_skill,),
             allowed_mcp_servers=(workspace_mcp,),

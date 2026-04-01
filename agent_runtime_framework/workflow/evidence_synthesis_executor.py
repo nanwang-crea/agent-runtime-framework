@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun, normalize_aggregated_workflow_payload
 
 
 @dataclass(slots=True)
@@ -18,7 +18,7 @@ class EvidenceSynthesisExecutor:
                     continue
                 if isinstance(result.output, dict) and any(field in result.output for field in ("facts", "evidence_items", "summaries")):
                     aggregated = result
-        aggregated_output = aggregated.output if isinstance(getattr(aggregated, "output", None), dict) else {}
+        aggregated_output = normalize_aggregated_workflow_payload(aggregated.output if isinstance(getattr(aggregated, "output", None), dict) else {})
         facts = list(aggregated_output.get("facts", []) or [])
         evidence_items = list(aggregated_output.get("evidence_items", []) or [])
         chunks = list(aggregated_output.get("chunks", []) or [])
@@ -29,7 +29,7 @@ class EvidenceSynthesisExecutor:
             summaries.append(single_summary)
         references = list(getattr(aggregated, "references", []) or [])
         if chunks:
-            summary = self._chunk_fallback(chunks)
+            summary = self._chunk_fallback(chunks, evidence_items, include_path=bool(run.shared_state.get("resolved_target")))
         else:
             summary = synthesize_text(
                 context,
@@ -72,10 +72,14 @@ class EvidenceSynthesisExecutor:
             return "；".join(str(item.get("summary") or item.get("path") or "") for item in evidence_items[:6])
         return "No synthesized evidence available."
 
-    def _chunk_fallback(self, chunks: list[dict[str, Any]]) -> str:
+    def _chunk_fallback(self, chunks: list[dict[str, Any]], evidence_items: list[dict[str, Any]], *, include_path: bool) -> str:
         texts = [str(chunk.get("text") or "").rstrip() for chunk in chunks if str(chunk.get("text") or "").strip()]
         if not texts:
             return "No synthesized evidence available."
+        path_hint = ""
+        if include_path and evidence_items and isinstance(evidence_items[0], dict):
+            path_hint = str(evidence_items[0].get("relative_path") or evidence_items[0].get("path") or "").strip()
         if len(texts) == 1:
-            return texts[0]
-        return f"{texts[0]}\n...[已截断]\n{texts[-1]}"
+            return f"{path_hint}\n{texts[0]}".strip() if path_hint else texts[0]
+        body = f"{texts[0]}\n...[已截断]\n{texts[-1]}"
+        return f"{path_hint}\n{body}".strip() if path_hint else body

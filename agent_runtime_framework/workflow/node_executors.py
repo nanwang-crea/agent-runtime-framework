@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 
 from agent_runtime_framework.models import ChatRequest, chat_once, resolve_model_runtime
@@ -54,77 +53,6 @@ def _generate_conversation_reply(user_input: str, application_context: Any, *, s
     return content
 
 
-
-
-@dataclass(slots=True)
-class WorkspaceOverviewExecutor:
-    max_entries: int = 50
-
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
-        workspace_root = Path(str((context or {}).get("workspace_root", ".")))
-        entries = []
-        references = []
-        for path in sorted(workspace_root.iterdir(), key=lambda item: item.name)[: self.max_entries]:
-            label = f"{path.name}/" if path.is_dir() else path.name
-            entries.append(label)
-            references.append(str(path))
-            if path.is_dir():
-                for child in sorted(path.iterdir(), key=lambda item: item.name)[:3]:
-                    child_label = f"{path.name}/{child.name}/" if child.is_dir() else f"{path.name}/{child.name}"
-                    entries.append(child_label)
-                    references.append(str(child))
-        summary = synthesize_text(
-            context,
-            role="composer",
-            system_prompt=(
-                "You summarize a workspace overview for an end user. "
-                "Respond with one concise natural-language paragraph in the user's language."
-            ),
-            payload={"goal": run.goal, "workspace_root": str(workspace_root), "entries": entries},
-            max_tokens=180,
-        ) or ", ".join(entries[:5])
-        return NodeResult(
-            status=NODE_STATUS_COMPLETED,
-            output={"workspace_root": str(workspace_root), "entries": entries, "summary": summary},
-            references=references,
-        )
-
-
-@dataclass(slots=True)
-class FileReadExecutor:
-    max_chars: int = 4000
-
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
-        workspace_root = Path(str((context or {}).get("workspace_root", ".")))
-        target_path = str(node.metadata.get("target_path") or "")
-        if not target_path:
-            return NodeResult(status=NODE_STATUS_FAILED, error="Missing target_path")
-
-        path = workspace_root / target_path
-        content = path.read_text(encoding="utf-8")
-        truncated = len(content) > self.max_chars
-        visible_content = content[: self.max_chars]
-        summary = visible_content[:200]
-        if truncated:
-            visible_content = f"{visible_content.rstrip()}\n...[已截断]"
-            summary = f"{summary.rstrip()} ...[已截断]"
-        summary = synthesize_text(
-            context,
-            role="composer",
-            system_prompt=(
-                "You summarize file contents for an end user. "
-                "Focus on what the file is about and keep the answer concise in the user's language."
-            ),
-            payload={"goal": run.goal, "path": target_path, "content": visible_content},
-            max_tokens=220,
-        ) or summary
-        return NodeResult(
-            status=NODE_STATUS_COMPLETED,
-            output={"path": target_path, "content": visible_content, "summary": summary},
-            references=[str(path)],
-        )
-
-
 @dataclass(slots=True)
 class AggregationExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
@@ -168,13 +96,28 @@ class VerificationExecutor:
                 output={"summary": summary, "verification": verification, "verification_events": []},
                 references=references,
             )
+        verification_by_type: dict[str, dict[str, Any]] = {}
+        for event in verification_events:
+            verification_type = str(event.get("verification_type") or "general").strip() or "general"
+            bucket = verification_by_type.setdefault(verification_type, {"status": "passed", "success": True, "summary": "", "events": []})
+            bucket["events"].append(event)
+            event_success = bool(event.get("success", event.get("status") == "passed"))
+            event_status = str(event.get("status") or ("passed" if event_success else "failed"))
+            if event_status == "failed" or event_success is False and event_status != "not_run":
+                bucket["status"] = "failed"
+                bucket["success"] = False
+            elif event_status == "not_run" and bucket["status"] != "failed":
+                bucket["status"] = "not_run"
+                bucket["success"] = False
+            bucket["summary"] = str(event.get("summary") or bucket.get("summary") or "").strip()
+
         failed_events = [event for event in verification_events if not bool(event.get("success", event.get("status") == "passed"))]
         if failed_events:
             summary = str(failed_events[-1].get("summary") or "Verification failed.")
             verification = {"status": "failed", "success": False, "summary": summary}
             return NodeResult(
                 status=NODE_STATUS_FAILED,
-                output={"summary": summary, "verification": verification, "verification_events": verification_events},
+                output={"summary": summary, "verification": verification, "verification_events": verification_events, "verification_by_type": verification_by_type},
                 references=references,
                 error=summary,
             )
@@ -184,7 +127,7 @@ class VerificationExecutor:
         verification = {"status": "passed", "success": True, "summary": summary}
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={"summary": summary, "verification": verification, "verification_events": verification_events},
+            output={"summary": summary, "verification": verification, "verification_events": verification_events, "verification_by_type": verification_by_type},
             references=references,
             error=None,
         )

@@ -83,3 +83,26 @@ def test_workflow_models_expose_stable_status_values():
     assert node.status == NODE_STATUS_PENDING
     assert run.status == RUN_STATUS_PENDING
     assert result.status == NODE_STATUS_COMPLETED
+
+
+
+def test_workflow_payload_helpers_normalize_aggregated_schema():
+    from agent_runtime_framework.workflow.models import normalize_aggregated_workflow_payload
+
+    payload = normalize_aggregated_workflow_payload(
+        {
+            "summary": "workspace summary",
+            "facts": [{"kind": "entrypoint", "path": "README.md"}],
+            "evidence_items": [{"kind": "path", "path": "README.md", "summary": "README"}],
+            "verification": {"status": "passed", "success": True, "summary": "verified"},
+        }
+    )
+
+    assert payload["summaries"] == ["workspace summary"]
+    assert payload["facts"] == [{"kind": "entrypoint", "path": "README.md"}]
+    assert payload["evidence_items"] == [{"kind": "path", "path": "README.md", "summary": "README"}]
+    assert payload["verification"] == {"status": "passed", "success": True, "summary": "verified"}
+    assert payload["verification_events"] == [{"status": "passed", "success": True, "summary": "verified"}]
+    assert payload["chunks"] == []
+    assert payload["artifacts"] == {}
+    assert payload["open_questions"] == []

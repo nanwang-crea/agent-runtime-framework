@@ -39,12 +39,10 @@ from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscove
 from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
 from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
 from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
+from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FinalResponseExecutor, VerificationExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.file_inspection_executor import FileInspectionExecutor
-from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
 from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 
 logger = logging.getLogger(__name__)
@@ -153,6 +151,7 @@ class DemoAssistantApp:
         payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
         self._pending_workflow_clarification = dict(clarification_request or {}) if payload_status == "needs_clarification" else None
         final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
+        evidence = self._workflow_evidence_payload(run)
         return {
             "status": payload_status,
             "run_id": run.run_id,
@@ -161,6 +160,8 @@ class DemoAssistantApp:
             "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in graph.nodes) else "workflow"),
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
+            "evidence": evidence,
+            "evidence": evidence,
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
@@ -380,6 +381,7 @@ class DemoAssistantApp:
         payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
         self._pending_workflow_clarification = dict(clarification_request or {}) if payload_status == "needs_clarification" else None
         final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
+        evidence = self._workflow_evidence_payload(run)
         return {
             "status": payload_status,
             "run_id": run.run_id,
@@ -388,6 +390,7 @@ class DemoAssistantApp:
             "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in run.graph.nodes) else "workflow"),
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
+            "evidence": evidence,
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
@@ -398,6 +401,42 @@ class DemoAssistantApp:
             "workspace": str(self.workspace),
         }
 
+
+    def _workflow_evidence_payload(self, run: Any) -> dict[str, Any]:
+        node_results = run.shared_state.get("node_results", {})
+        aggregated = run.shared_state.get("aggregated_result")
+        aggregated_output = aggregated.output if isinstance(getattr(aggregated, "output", None), dict) else {}
+        synthesized = dict(run.shared_state.get("response_synthesis") or {})
+        candidates: list[dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
+        verification = dict(synthesized.get("verification") or aggregated_output.get("verification") or {})
+        if not verification:
+            verification = {"status": "not_run", "success": False, "summary": "No explicit verification result was produced."}
+        for result in node_results.values():
+            if not isinstance(getattr(result, "output", None), dict):
+                continue
+            output = result.output
+            for item in output.get("candidates", output.get("matches", [])) or []:
+                if isinstance(item, dict) and item not in candidates:
+                    candidates.append(item)
+            for chunk in output.get("chunks", []) or []:
+                if isinstance(chunk, dict) and chunk not in chunks:
+                    chunks.append(chunk)
+            if not verification and isinstance(output.get("verification"), dict):
+                verification = dict(output.get("verification") or {})
+        if not chunks:
+            for chunk in synthesized.get("chunks", []) or aggregated_output.get("chunks", []) or []:
+                if isinstance(chunk, dict) and chunk not in chunks:
+                    chunks.append(chunk)
+        return {
+            "candidates": candidates,
+            "evidence_items": list(synthesized.get("evidence_items") or aggregated_output.get("evidence_items") or []),
+            "chunks": chunks,
+            "facts": list(synthesized.get("facts") or aggregated_output.get("facts") or []),
+            "open_questions": list(synthesized.get("open_questions") or aggregated_output.get("open_questions") or []),
+            "verification": verification,
+        }
+
     def _build_workflow_runtime(self) -> WorkflowRuntime:
         return WorkflowRuntime(
             executors={
@@ -406,8 +445,6 @@ class DemoAssistantApp:
                 "content_search": ContentSearchExecutor(),
                 "chunked_file_read": ChunkedFileReadExecutor(),
                 "evidence_synthesis": EvidenceSynthesisExecutor(),
-                "repository_explainer": WorkspaceOverviewExecutor(),
-                "file_reader": FileReadExecutor(),
                 "aggregate_results": AggregationExecutor(),
                 "verification": VerificationExecutor(),
                 "approval_gate": ApprovalGateExecutor(),
@@ -415,8 +452,6 @@ class DemoAssistantApp:
                 "tool_call": ToolCallExecutor(),
                 "clarification": ClarificationExecutor(),
                 "target_resolution": TargetResolutionExecutor(),
-                "file_inspection": FileInspectionExecutor(),
-                "response_synthesis": ResponseSynthesisExecutor(),
                 "workspace_subtask": WorkspaceSubtaskExecutor(run_subtask=self._run_workspace_subtask),
             },
             context={"workspace_root": str(self.workspace), "application_context": self.context.application_context, "workspace_context": self.context},

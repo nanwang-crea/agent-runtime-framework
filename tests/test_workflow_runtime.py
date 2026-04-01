@@ -220,13 +220,15 @@ def test_runtime_executes_target_explainer_node_chain_with_workspace_tools(tmp_p
     graph = WorkflowGraph(
         nodes=[
             WorkflowNode(node_id="resolve", node_type="target_resolution", metadata={"query": "请讲解 service 这个模块在做什么"}),
-            WorkflowNode(node_id="inspect", node_type="file_inspection", dependencies=["resolve"]),
-            WorkflowNode(node_id="synthesize", node_type="response_synthesis", dependencies=["inspect"]),
+            WorkflowNode(node_id="search", node_type="content_search", dependencies=["resolve"]),
+            WorkflowNode(node_id="read", node_type="chunked_file_read", dependencies=["search"]),
+            WorkflowNode(node_id="synthesize", node_type="evidence_synthesis", dependencies=["read"]),
             WorkflowNode(node_id="finish", node_type="final_response", dependencies=["synthesize"]),
         ],
         edges=[
-            WorkflowEdge(source="resolve", target="inspect"),
-            WorkflowEdge(source="inspect", target="synthesize"),
+            WorkflowEdge(source="resolve", target="search"),
+            WorkflowEdge(source="search", target="read"),
+            WorkflowEdge(source="read", target="synthesize"),
             WorkflowEdge(source="synthesize", target="finish"),
         ],
     )
@@ -235,8 +237,9 @@ def test_runtime_executes_target_explainer_node_chain_with_workspace_tools(tmp_p
     result = WorkflowRuntime(
         executors={
             "target_resolution": TargetResolutionExecutor(),
-            "file_inspection": FileInspectionExecutor(),
-            "response_synthesis": ResponseSynthesisExecutor(),
+            "content_search": ContentSearchExecutor(),
+            "chunked_file_read": ChunkedFileReadExecutor(),
+            "evidence_synthesis": EvidenceSynthesisExecutor(),
             "final_response": FinalResponseExecutor(),
         },
         context={"application_context": app_context, "workspace_context": workspace_context, "workspace_root": str(tmp_path)},
@@ -244,7 +247,8 @@ def test_runtime_executes_target_explainer_node_chain_with_workspace_tools(tmp_p
 
     assert result.status == RUN_STATUS_COMPLETED
     assert result.node_states["resolve"].result.output["resolution_status"] == "resolved"
-    assert result.node_states["inspect"].result.output["path"] == "src/service.py"
+    assert result.node_states["search"].result.output["candidates"][0]["relative_path"] == "src/service.py"
+    assert result.node_states["read"].result.output["path"] == "src/service.py"
     assert "src/service.py" in result.final_output
 
 
@@ -614,3 +618,210 @@ def test_final_response_executor_falls_back_to_evidence_rich_aggregate_payload()
 
     assert "src" in result.output["final_response"]
     assert "not_run" in result.output["final_response"] or "未验证" in result.output["final_response"] or "No explicit verification" in result.output["final_response"]
+
+
+
+def test_content_search_executor_prefers_symbol_hint_and_source_extensions(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    service_py = src_dir / "billing.py"
+    service_py.write_text("class BillingService\n    def run(self):\n        return 'ok'\n".replace("\n    def", ":\n    def"), encoding="utf-8")
+    service_md = docs_dir / "billing.md"
+    service_md.write_text("BillingService overview\n", encoding="utf-8")
+
+    run = WorkflowRun(
+        goal="解释 BillingService",
+        shared_state={
+            "node_results": {
+                "discover": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "evidence_items": [
+                            {"kind": "path", "path": str(service_py), "summary": "python source"},
+                            {"kind": "path", "path": str(service_md), "summary": "docs"},
+                        ],
+                    },
+                    references=[str(service_py), str(service_md)],
+                )
+            }
+        },
+    )
+
+    result = ContentSearchExecutor().execute(
+        WorkflowNode(node_id="search", node_type="content_search", metadata={"symbol_hint": "BillingService"}),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.output["ranked_targets"][0]["relative_path"] == "src/billing.py"
+    assert "billingservice" in result.output["ranked_targets"][0]["matched_terms"]
+
+
+def test_content_search_executor_returns_line_hits_with_context(tmp_path):
+    target = tmp_path / "service.py"
+    target.write_text(
+        "\n".join(
+            [
+                "def helper():",
+                "    return 1",
+                "",
+                "class BillingService:",
+                "    def run(self):",
+                "        return 'ok'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    run = WorkflowRun(
+        goal="解释 BillingService run",
+        shared_state={
+            "node_results": {
+                "discover": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={"evidence_items": [{"kind": "path", "path": str(target), "summary": "service source"}]},
+                    references=[str(target)],
+                )
+            }
+        },
+    )
+
+    result = ContentSearchExecutor().execute(
+        WorkflowNode(node_id="search", node_type="content_search", metadata={"symbol_hint": "BillingService"}),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    top_match = result.output["matches"][0]
+    assert top_match["line"] == 4
+    assert "BillingService" in top_match["context"]
+    assert "def run" in top_match["context"]
+
+
+
+def test_chunked_file_read_executor_merges_multiple_hit_windows(tmp_path):
+    target = tmp_path / "service.py"
+    target.write_text("\n".join(f"line {index}" for index in range(1, 81)), encoding="utf-8")
+
+    run = WorkflowRun(
+        goal="解释多个命中",
+        shared_state={
+            "node_results": {
+                "search": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "matches": [
+                            {"path": str(target), "line": 10, "score": 5},
+                            {"path": str(target), "line": 60, "score": 4},
+                        ],
+                        "ranked_targets": [{"path": str(target), "score": 5}],
+                    },
+                    references=[str(target)],
+                )
+            }
+        },
+    )
+
+    result = ChunkedFileReadExecutor(max_chars=120, window_radius=2).execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read"),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert len(result.output["chunks"]) == 2
+    assert result.output["chunks"][0]["start_line"] == 8
+    assert result.output["chunks"][1]["start_line"] == 58
+
+
+
+def test_chunked_file_read_executor_merges_overlapping_hit_windows(tmp_path):
+    target = tmp_path / "service.py"
+    target.write_text("\n".join(f"line {index}" for index in range(1, 41)), encoding="utf-8")
+
+    run = WorkflowRun(
+        goal="解释相邻命中",
+        shared_state={
+            "node_results": {
+                "search": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "matches": [
+                            {"path": str(target), "line": 10, "score": 5},
+                            {"path": str(target), "line": 12, "score": 4},
+                        ],
+                        "ranked_targets": [{"path": str(target), "score": 5}],
+                    },
+                    references=[str(target)],
+                )
+            }
+        },
+    )
+
+    result = ChunkedFileReadExecutor(max_chars=120, window_radius=3).execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read"),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert len(result.output["chunks"]) == 1
+    assert result.output["chunks"][0]["start_line"] == 7
+    assert result.output["chunks"][0]["end_line"] == 15
+
+
+
+def test_chunked_file_read_executor_reports_pagination_for_large_files(tmp_path):
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(f"line {index}" for index in range(1, 401)), encoding="utf-8")
+
+    result = ChunkedFileReadExecutor(max_chars=80, window_radius=2).execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={"target_path": "large.txt"}),
+        WorkflowRun(goal="读取 large.txt"),
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.output["artifacts"]["page"] == 1
+    assert result.output["artifacts"]["has_more"] is True
+
+
+
+def test_verification_executor_groups_events_by_verification_type():
+    run = WorkflowRun(
+        goal="verify",
+        shared_state={
+            "node_results": {
+                "search": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "verification_events": [
+                            {"status": "passed", "success": True, "summary": "evidence checked", "verification_type": "evidence"},
+                            {"status": "passed", "success": True, "summary": "tool call succeeded", "verification_type": "tool"},
+                        ]
+                    },
+                    references=["README.md"],
+                ),
+                "tests": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "verification_events": [
+                            {"status": "passed", "success": True, "summary": "pytest passed", "verification_type": "test"},
+                            {"status": "not_run", "success": False, "summary": "approval not requested", "verification_type": "approval"},
+                        ]
+                    },
+                    references=[],
+                ),
+            }
+        },
+    )
+
+    result = VerificationExecutor().execute(
+        WorkflowNode(node_id="verification", node_type="verification"),
+        run,
+    )
+
+    assert result.output["verification"]["status"] == "failed"
+    assert result.output["verification_by_type"]["evidence"]["status"] == "passed"
+    assert result.output["verification_by_type"]["tool"]["status"] == "passed"
+    assert result.output["verification_by_type"]["test"]["status"] == "passed"
+    assert result.output["verification_by_type"]["approval"]["status"] == "not_run"

@@ -112,7 +112,7 @@ def test_markdown_index_memory_persists_records_and_searches_them(tmp_path: Path
 def test_markdown_index_memory_persists_values_across_reloads(tmp_path: Path):
     memory_file = tmp_path / "agent-memory.md"
     memory = MarkdownIndexMemory(memory_file)
-    payload = {"goal": "请讲解 service 模块", "task_profile": "repository_explainer"}
+    payload = {"goal": "请讲解 service 模块", "task_profile": "workspace_discovery"}
 
     memory.put("codex:pending_clarification", payload)
 
@@ -205,3 +205,16 @@ def test_simple_desktop_policy_requires_confirmation_for_destructive_write():
     assert decision.allowed is True
     assert decision.requires_confirmation is True
     assert decision.reason == "destructive_write_requires_confirmation"
+
+
+
+def test_workspace_planner_uses_new_intent_terms(tmp_path: Path):
+    from agent_runtime_framework.agents.workspace_backend.planner import infer_task_intent
+
+    overview_intent = infer_task_intent("列一下当前工作区都有什么文件", workspace_root=tmp_path)
+    read_intent = infer_task_intent("读取 README.md", workspace_root=tmp_path)
+    compound_intent = infer_task_intent("总结 docs 目录并读取 README.md", workspace_root=tmp_path)
+
+    assert overview_intent.task_kind == "workspace_discovery"
+    assert read_intent.task_kind == "workspace_read"
+    assert compound_intent.task_kind == "compound_read"
