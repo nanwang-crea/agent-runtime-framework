@@ -1,13 +1,13 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。
+`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。
 
 当前生效的主链路是：
 
 - `agent_runtime_framework.demo.server`
 - `agent_runtime_framework.demo.app`
 - `agent_runtime_framework.workflow.*`
-- `agent_runtime_framework.agents.codex.*`（兼容子任务执行后端）
+- `agent_runtime_framework.agents.*`（agent definitions / registry / workspace backend）
 
 这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如：
 
@@ -27,7 +27,7 @@
   - scheduler / runtime / approval / persistence
   - aggregation / final response / native node executors
 
-- `agent_runtime_framework.agents.codex`
+- `agent_runtime_framework.agents`
   - 兼容单子任务执行器
   - planner / evaluator / tool execution / answer synthesis
   - 作为 workflow node 的兼容 backend，而不是顶层主运行时
@@ -54,7 +54,7 @@
 
 - **compound / multi-step workspace goals** 走 workflow 主路径
 - **conversation-style requests** 仍然走 conversation routing
-- `CodexAgentLoop` 仍然保留，但定位是 **compatibility execution backend**，而不是顶层唯一运行时
+- `WorkspaceBackend` 仍然保留，但定位是 **compatibility execution backend**，而不是顶层唯一运行时
 
 ## Workflow Runtime Status
 
@@ -160,3 +160,15 @@ The scaffold includes an Electron main process and preload bridge so it can grow
 - `docs/plans/2026-03-31-task-graph-workflow-engine-implementation.md`
 
 当前工作区里部分早期设计文档已经被移除或处于删除状态；不要再把它们视为当前主架构说明。
+## Five-Layer Agent Stack
+
+The target architecture is organized as:
+
+- Entry Trigger Layer
+- AgentTool Orchestration Layer
+- Agent Definition Layer
+- Runtime Execution Layer
+- Supporting Capability Layer
+
+`WorkflowRuntime` remains the execution kernel. `WorkspaceBackend` is a backend executor. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.
+

@@ -4,7 +4,7 @@
 
 **Goal:** Evolve the current workflow-first runtime into a five-layer agent architecture with explicit entrypoints, agent-tool orchestration, built-in agent definitions, extensible runtime execution, and stronger supporting infrastructure.
 
-**Architecture:** Keep `WorkflowRuntime` as the top-level execution kernel, but insert two missing middle layers: a first-class `AgentDefinition` registry and a unified `AgentTool` orchestration surface. Promote `CodexAgentLoop` from a hidden backend into one executable engine behind graph nodes and agent tools, then add subagent sessioning, agent loading, and richer display/coordination support incrementally.
+**Architecture:** Keep `WorkflowRuntime` as the top-level execution kernel, but insert two missing middle layers: a first-class `AgentDefinition` registry and a unified `AgentTool` orchestration surface. Promote `WorkspaceBackend` from a hidden backend into one executable engine behind graph nodes and agent tools, then add subagent sessioning, agent loading, richer display/coordination support, and future-ready extension slots for `skills` and `MCP` services without coupling those concerns into the demo app.
 
 **Tech Stack:** Python dataclasses, workflow runtime, tool registry, Markdown memory, demo server/app, pytest.
 
@@ -31,7 +31,7 @@
 **Step 3: Document the key architectural rule**
 - Rule: `DemoAssistantApp` should orchestrate routing and presentation, but not encode agent definitions or runtime internals.
 - Rule: `WorkflowRuntime` remains the execution kernel.
-- Rule: `CodexAgentLoop` becomes one executor backend, not the whole product surface.
+- Rule: `WorkspaceBackend` becomes one executor backend, not the whole product surface.
 
 **Step 4: Add migration notes to README**
 - Update top-level architecture bullets to reflect the new target stack.
@@ -275,6 +275,72 @@ git add agent_runtime_framework/agents/loader.py agent_runtime_framework/agents/
 git commit -m "feat: add load-agents-dir style extension point"
 ```
 
+### Task 6.5: Reserve extension interfaces for skills and MCP services
+
+**Files:**
+- Create: `agent_runtime_framework/skills/models.py`
+- Create: `agent_runtime_framework/skills/registry.py`
+- Create: `agent_runtime_framework/mcp/models.py`
+- Create: `agent_runtime_framework/mcp/registry.py`
+- Modify: `agent_runtime_framework/agents/definitions.py`
+- Modify: `agent_runtime_framework/agent_tools/models.py`
+- Modify: `agent_runtime_framework/agent_tools/executor.py`
+- Modify: `agent_runtime_framework/workflow/models.py`
+- Modify: `README.md`
+- Test: `tests/test_agent_extension_interfaces.py`
+
+**Step 1: Write the failing test**
+- Add tests proving the architecture can declare, load, and pass through extension metadata for:
+  - default skill attachments on an agent
+  - per-call skill activation
+  - allowed MCP service domains
+  - per-node external capability hints
+- Do not execute real skills or MCP calls yet; verify shape and propagation only.
+
+**Step 2: Run test to verify it fails**
+Run:
+```bash
+pytest tests/test_agent_extension_interfaces.py -q
+```
+Expected: FAIL because no extension interface models exist yet.
+
+**Step 3: Write minimal implementation**
+- Add `SkillSpecRef` / `SkillAttachment` style models under `skills/`.
+- Add `McpServiceRef` / `McpCapabilityRef` style models under `mcp/`.
+- Extend `AgentDefinition` so an agent can declare:
+  - `default_skills`
+  - `optional_skills`
+  - `allowed_mcp_servers`
+  - `allowed_mcp_capabilities`
+- Extend `AgentTool` request/plan models so each call can carry:
+  - requested skills
+  - enabled skills
+  - external capability hints
+- Extend workflow node metadata conventions so future graph compilation can emit:
+  - `skill_hints`
+  - `mcp_hints`
+  - `external_capability_policy`
+- Keep these as declarative interfaces only; no concrete skill engine or MCP client implementation in this phase.
+
+**Step 4: Run tests**
+Run:
+```bash
+pytest tests/test_agent_extension_interfaces.py -q
+```
+Expected: PASS
+
+**Step 5: Update docs**
+- Add a short section clarifying:
+  - `skills` are behavior/protocol extensions, not raw tools
+  - `MCP` services are external capability providers, not agents
+  - both attach through `AgentDefinition + AgentTool + WorkflowRuntime`
+
+**Step 6: Commit**
+```bash
+git add agent_runtime_framework/skills/models.py agent_runtime_framework/skills/registry.py agent_runtime_framework/mcp/models.py agent_runtime_framework/mcp/registry.py agent_runtime_framework/agents/definitions.py agent_runtime_framework/agent_tools/models.py agent_runtime_framework/agent_tools/executor.py agent_runtime_framework/workflow/models.py README.md tests/test_agent_extension_interfaces.py
+git commit -m "feat: reserve skill and mcp extension interfaces"
+```
+
 ### Task 7: Strengthen the Supporting Capability Layer
 
 **Files:**
@@ -379,7 +445,7 @@ Expected: FAIL because public exports are incomplete.
 
 **Step 3: Write minimal implementation**
 - Export the new public objects cleanly.
-- Remove stale references that imply `CodexAgentLoop` is still the top runtime.
+- Remove stale references that imply `WorkspaceBackend` is still the top runtime.
 
 **Step 4: Run final focused suite**
 Run:
@@ -401,9 +467,10 @@ git commit -m "chore: finalize five-layer agent architecture public surface"
 3. `Entry Trigger Layer`
 4. `Runtime Execution Layer` subagents
 5. `External agent loading`
-6. `Supporting display/swarm upgrades`
-7. `Demo migration`
-8. `Public surface cleanup`
+6. `Reserve skills / MCP extension interfaces`
+7. `Supporting display/swarm upgrades`
+8. `Demo migration`
+9. `Public surface cleanup`
 
 ## Scope guardrails
 
@@ -412,6 +479,8 @@ git commit -m "chore: finalize five-layer agent architecture public surface"
 - Do not implement full swarm autonomy in phase one; start with lineage, coordination state, and handoff metadata.
 - Do not collapse agent definitions into personas; personas remain a lower-level execution hint.
 - Do not move all existing tools into `AgentTool`; raw tools and agent-tools should stay as separate abstractions.
+- Do not implement a concrete skill execution engine in the interface phase; only define attachment and propagation contracts.
+- Do not implement a full MCP client stack in the interface phase; only define registry and capability reference contracts.
 
 ## Phase-by-phase outcome targets
 
@@ -420,5 +489,6 @@ git commit -m "chore: finalize five-layer agent architecture public surface"
 - **Phase 3:** We can trigger the same agent flow from server, SDK, and CLI adapters.
 - **Phase 4:** We can run, resume, and fork subagents with lineage.
 - **Phase 5:** We can load external agent definitions safely.
-- **Phase 6:** We can visualize and trace multiple agents coherently.
-- **Phase 7:** Demo app becomes a consumer of the new stack, not the place where the stack is defined.
+- **Phase 6:** We can declare future skill attachments and MCP capability slots without hard-coding them into the app layer.
+- **Phase 7:** We can visualize and trace multiple agents coherently.
+- **Phase 8:** Demo app becomes a consumer of the new stack, not the place where the stack is defined.

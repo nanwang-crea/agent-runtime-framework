@@ -1,6 +1,6 @@
 # 通用 Agent 改造清单
 
-> 状态说明：本页中的“通用 Agent / assistant runtime”改造设想对应的旧链路已从当前代码库移除。现阶段仅将其作为历史设计记录保留，当前实际实现以 Codex Agent 主链为准。
+> 状态说明：本页中的“通用 Agent / assistant runtime”改造设想对应的旧链路已从当前代码库移除。现阶段仅将其作为历史设计记录保留，当前实际实现以 Workspace Agent 主链为准。
 
 ## 目标
 
@@ -174,7 +174,7 @@
 4. 为 resolver 增加了显式资源语义，能够区分 `file` / `directory` 及其允许动作。
 5. 将资源语义传播到了 Codex plan state，使 `gather_context` 可以按目标类型选择 `list` 或 `read`。
 6. 将目录类继续探索判断从工具名特例，收敛为基于资源语义和证据充分性的 evaluator 逻辑。
-7. 在 `CodexAgentLoop` 中加入了统一的低风险重试机制：`retriable` 的低风险动作会自动重试，避免临时失败直接终止任务。
+7. 在 `WorkspaceBackend` 中加入了统一的低风险重试机制：`retriable` 的低风险动作会自动重试，避免临时失败直接终止任务。
 8. 将 `retriable` 的 `AppError` 收敛为结构化失败结果，并接入 plan 流转，而不是直接把异常抛到用户面前。
 9. 为 plan 增加了通用 `recover_failed_action` 扩展点，允许在动作失败后由模型插入一个恢复动作，再继续后续 synthesize。
 10. 修正了恢复任务插入时的依赖传播，避免恢复任务错误地继续依赖已失败节点。
@@ -244,3 +244,15 @@
 1. 先把 `index_memory` 从简单 KV 缓存扩展为“结构化记忆条目 + 查询接口”。
 2. 再把工作区焦点、路径摘要、任务结论沉淀为可检索记忆，并逐步转成可审阅的 Markdown 记录。
 3. 然后让 `resolve_workspace_target` 和后续 planner 能消费这些记忆，开始真正影响任务行为。
+## 五层目标架构补充
+
+当前建议把 Agent 栈拆成五层：入口触发层、AgentTool 编排层、Agent 定义层、运行时执行层、支撑能力层。
+
+其中：
+- `WorkflowRuntime` 继续作为顶层执行内核
+- `WorkspaceBackend` 作为兼容执行 backend
+- `skills` 预留为行为协议扩展接口
+- `MCP` 预留为外部能力服务接口
+
+这些接口先以声明式 registry / metadata 的形式存在，再逐步补具体执行能力。
+

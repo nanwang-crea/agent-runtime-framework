@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
 from agent_runtime_framework.agents.codex import CodexAction, CodexAgentLoop, CodexContext, build_default_codex_tools, evaluate_codex_output, plan_next_codex_action
 from agent_runtime_framework.agents.codex.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.codex.semantics import infer_task_intent
@@ -15,6 +16,7 @@ from agent_runtime_framework.assistant.conversation import get_route_decision, s
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.memory.index import MemoryRecord
+from agent_runtime_framework.runtime import AgentRuntime
 from agent_runtime_framework.models import (
     CodexCliDriver,
     InMemoryCredentialStore,
@@ -51,10 +53,12 @@ class DemoAssistantApp:
     _last_route_decision: dict[str, str] | None
     _active_agent: str
     _available_workspaces: list[str]
+    agent_registry: AgentRegistry
+    agent_runtime: AgentRuntime
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
-            if self._active_agent == "qa_only":
+            if self._is_conversation_agent(self._active_agent):
                 self._last_route_decision = {"route": "conversation", "source": "profile"}
                 return self._conversation_payload(message)
             has_pending_clarification = self.loop.has_pending_clarification(self.context.session)
@@ -132,7 +136,7 @@ class DemoAssistantApp:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        if self._active_agent != "qa_only":
+        if not self._is_conversation_agent(self._active_agent):
             try:
                 self._ensure_codex_planner_available()
             except Exception as exc:
@@ -275,10 +279,7 @@ class DemoAssistantApp:
         return {
             "active_agent": self._active_agent,
             "active_persona": self._active_persona_name(),
-            "available_agents": [
-                {"id": "codex", "label": "Codex Agent", "kind": "agent"},
-                {"id": "qa_only", "label": "Q&A", "kind": "chat"},
-            ],
+            "available_agents": [definition.to_payload() for definition in self.agent_registry.list()],
             "active_workspace": str(self.workspace),
             "available_workspaces": list(dict.fromkeys([str(self.workspace), *self._available_workspaces])),
             "sandbox": resolve_sandbox(self.context).to_payload(),
@@ -286,11 +287,11 @@ class DemoAssistantApp:
 
     def switch_context(self, *, agent_profile: str | None = None, workspace: str | None = None) -> dict[str, Any]:
         if agent_profile:
-            if agent_profile not in {"codex", "qa_only"}:
+            if self.agent_registry.get(agent_profile) is None:
                 raise ValueError(f"unknown agent profile: {agent_profile}")
             self._active_agent = agent_profile
             self.context.services["active_agent"] = agent_profile
-            if agent_profile == "qa_only" and self.context.session is not None:
+            if self._is_conversation_agent(agent_profile) and self.context.session is not None:
                 self.context.session.active_persona = "general"
         if workspace:
             next_workspace = Path(workspace).expanduser().resolve()
@@ -313,11 +314,17 @@ class DemoAssistantApp:
             "context": self.context_payload(),
         }
 
+    def _is_conversation_agent(self, agent_id: str | None) -> bool:
+        if not agent_id:
+            return False
+        definition = self.agent_registry.get(agent_id)
+        return bool(definition and definition.executor_kind == "conversation")
+
     def _active_persona_name(self) -> str:
         session = self.context.session
         if session is not None and session.active_persona:
             return session.active_persona
-        if self._active_agent == "qa_only":
+        if self._is_conversation_agent(self._active_agent):
             return "general"
         return resolve_runtime_persona(self.context).name
 
@@ -789,17 +796,20 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     )
     for tool in build_default_codex_tools():
         app_context.tools.register(tool)
+    agent_registry = AgentRegistry()
+    agent_registry.register_many(builtin_agent_definitions())
     context = CodexContext(
         application_context=app_context,
-        services={"active_agent": "codex", "model_first_task_intent": True, "model_first_task_plan": True},
+        services={"active_agent": "workspace", "model_first_task_intent": True, "model_first_task_plan": True, "agent_registry": agent_registry},
         session=AssistantSession(session_id=str(uuid4())),
     )
     context.services["next_action_planner"] = _build_demo_next_action_planner(workspace_path)
     context.services["output_evaluator"] = evaluate_codex_output
+    loop = CodexAgentLoop(context)
     app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
-        loop=CodexAgentLoop(context),
+        loop=loop,
         model_registry=model_registry,
         model_router=model_router,
         model_center=model_center,
@@ -808,9 +818,12 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _task_history=[],
         _run_inputs={},
         _last_route_decision=None,
-        _active_agent="codex",
+        _active_agent="workspace",
         _available_workspaces=[str(workspace_path)],
+        agent_registry=agent_registry,
+        agent_runtime=AgentRuntime(app=None),
     )
+    app.agent_runtime.app = app
     app.model_center.load()
     return app
 

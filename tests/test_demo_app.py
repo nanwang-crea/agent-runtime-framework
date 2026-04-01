@@ -271,7 +271,7 @@ def test_demo_assistant_app_logs_unknown_errors_with_trace_id(tmp_path: Path, ca
     assert payload["error"]["code"] == "INTERNAL_ERROR"
     assert payload["error"]["trace_id"]
     assert payload["error"]["context"]["workspace"] == str(workspace)
-    assert payload["error"]["context"]["active_agent"] == "codex"
+    assert payload["error"]["context"]["active_agent"] == "workspace"
     assert any(payload["error"]["trace_id"] in record.message for record in caplog.records)
 
 
@@ -476,7 +476,7 @@ def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path
     events = list(app.stream_chat("你是谁？", chunk_size=8))
     payload = events[-1]["payload"]
 
-    assert payload["context"]["active_agent"] in {"codex", "qa_only"}
+    assert payload["context"]["active_agent"] in {"workspace", "qa_only"}
     assert payload["context"]["active_workspace"] == str(workspace)
     assert payload["context"]["available_agents"]
 
@@ -713,7 +713,7 @@ def test_demo_assistant_app_can_switch_agent_profile_within_session(tmp_path: Pa
     payload = app.switch_context(agent_profile="qa_only")
 
     assert payload["context"]["active_agent"] == "qa_only"
-    assert any(profile["id"] == "codex" for profile in payload["context"]["available_agents"])
+    assert any(profile["id"] == "workspace" for profile in payload["context"]["available_agents"])
     assert any(profile["id"] == "qa_only" for profile in payload["context"]["available_agents"])
 
 
