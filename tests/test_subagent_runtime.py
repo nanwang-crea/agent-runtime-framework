@@ -3,6 +3,7 @@ from pathlib import Path
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.entrypoints import AgentRequest
 from agent_runtime_framework.runtime import AgentRuntime
+from tests.test_demo_app import _install_conversation_model
 
 
 def test_agent_runtime_can_run_and_fork_subagent(tmp_path: Path):
@@ -10,6 +11,7 @@ def test_agent_runtime_can_run_and_fork_subagent(tmp_path: Path):
     workspace.mkdir()
 
     app = create_demo_assistant_app(workspace)
+    _install_conversation_model(app)
     runtime = AgentRuntime(app)
 
     parent = runtime.run_agent(AgentRequest(message="你是谁？", agent_id="qa_only"))

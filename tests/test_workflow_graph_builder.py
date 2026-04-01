@@ -82,6 +82,17 @@ def example_compound_goal() -> GoalSpec:
     )
 
 
+def test_graph_builder_creates_conversation_node_for_generic_goal():
+    goal = GoalSpec(
+        original_goal="你是谁？",
+        primary_intent="generic",
+    )
+
+    graph = build_workflow_graph(goal)
+
+    assert [node.node_type for node in graph.nodes] == ["conversation_response"]
+
+
 def test_graph_builder_creates_small_graph_for_simple_file_read_request():
     goal = GoalSpec(
         original_goal="读取 README.md",

@@ -6,60 +6,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_runtime_framework.agents.workspace_backend.models import WorkspaceAction
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
-from agent_runtime_framework.agents.workspace_backend.planner import _plan_from_goal
-from agent_runtime_framework.demo.app import _build_demo_next_action_planner
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo.server import _load_asset
 
 
-def _create_demo_assistant_app_with_test_planner(workspace: Path):
-    app = create_demo_assistant_app(workspace)
-    def _planner(task, _session, _context, tool_names):
-        completed = [action for action in task.actions if action.status == "completed"]
-        if completed:
-            last_action = completed[-1]
-            if last_action.kind == "respond":
-                return None
-            tool_name = str(last_action.metadata.get("tool_name") or "")
-            if tool_name == "resolve_workspace_target":
-                result_meta = dict((last_action.metadata.get("result") or {}))
-                tool_output = dict(result_meta.get("tool_output") or {})
-                resolution_status = str(tool_output.get("resolution_status") or "resolved").strip()
-                resolved_path = str(tool_output.get("resolved_path") or tool_output.get("path") or "").strip()
-                if resolution_status in {"ambiguous", "unresolved"}:
-                    return WorkspaceAction(
-                        kind="respond",
-                        instruction=str(tool_output.get("text") or last_action.observation or "Please clarify the target."),
-                        metadata={"direct_output": True, "clarification_required": True},
-                    )
-                if resolved_path and "read_workspace_text" in tool_names:
-                    return WorkspaceAction(
-                        kind="call_tool",
-                        instruction=task.goal,
-                        subgoal="gather_evidence",
-                        metadata={"tool_name": "read_workspace_text", "arguments": {"path": resolved_path}},
-                    )
-            if last_action.observation:
-                instruction = last_action.observation
-                if tool_name == "read_workspace_text":
-                    result_meta = dict((last_action.metadata.get("result") or {}))
-                    tool_output = dict(result_meta.get("tool_output") or {})
-                    read_path = str(tool_output.get("path") or last_action.metadata.get("arguments", {}).get("path") or "").strip()
-                    if read_path and "User clarification:" in str(task.goal):
-                        instruction = f"{read_path}\n{last_action.observation}" if read_path not in last_action.observation else last_action.observation
-                return WorkspaceAction(
-                    kind="respond",
-                    instruction=instruction,
-                    metadata={"direct_output": True},
-                )
-            return None
-        return _plan_from_goal(task.goal, tool_names=set(tool_names))
 
-    app.context.services["next_action_planner"] = _planner
-    return app
+
+class _ConversationLLM:
+    def __init__(self, content: str = "我可以继续和你对话。") -> None:
+        self.content = content
+        self.completions = SimpleNamespace(create=self._create)
+        self.chat = SimpleNamespace(completions=self.completions)
+        self.calls: list[dict] = []
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=self.content))])])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self.content))])
+
+
+def _install_conversation_model(app, content: str = "我可以继续和你对话。"):
+    app.context.application_context.llm_client = _ConversationLLM(content)
+    app.context.application_context.llm_model = "test-model"
+    return app.context.application_context.llm_client
+
+def _create_demo_assistant_app_with_test_planner(workspace: Path):
+    return create_demo_assistant_app(workspace)
 
 
 def _register_router_model(app, route: str):
@@ -109,39 +84,6 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
     assert payload["capability_name"] == "workflow"
     assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "file_reader"
-
-
-def test_demo_planner_uses_semantic_directory_detection_before_default_planner(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    package = workspace / "agent_runtime_framework"
-    package.mkdir()
-    planner = _build_demo_next_action_planner(workspace)
-    task = SimpleNamespace(goal="能不能带我看看 agent_runtime_framework 这个文件夹的职责分布", actions=[])
-
-    action = planner(task, SimpleNamespace(), SimpleNamespace(), ["inspect_workspace_path"])
-
-    assert action is not None
-    assert action.kind == "call_tool"
-    assert action.metadata["tool_name"] == "inspect_workspace_path"
-    assert action.metadata["arguments"] == {"path": "agent_runtime_framework"}
-
-
-def test_demo_next_action_planner_maps_current_directory_to_inspection(tmp_path: Path):
-    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    planner = _build_demo_next_action_planner(workspace)
-    task = WorkspaceTask(goal="列一下当前目录都有什么内容", actions=[], task_profile="repository_explainer", state=TaskState())
-    context = SimpleNamespace(application_context=SimpleNamespace(tools=SimpleNamespace(names=lambda: ["inspect_workspace_path"])), services={})
-
-    action = planner(task, None, context, ["inspect_workspace_path"])
-
-    assert action is not None
-    assert action.kind == "call_tool"
-    assert action.metadata["tool_name"] == "inspect_workspace_path"
-    assert action.metadata["arguments"] == {"path": "."}
 
 
 def test_demo_assistant_app_can_replay_run_by_run_id(tmp_path: Path):
@@ -214,20 +156,33 @@ def test_demo_assistant_app_resumes_clarification_after_restart(tmp_path: Path):
     assert "src/service.py" in second["final_answer"]
 
 
-def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
+def test_demo_assistant_app_routes_normal_chat_without_conversation_module_import(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = _create_demo_assistant_app_with_test_planner(workspace)
+    app = create_demo_assistant_app(workspace)
+    _install_conversation_model(app)
 
     payload = app.chat("你是谁？")
 
     assert payload["status"] == "completed"
+    assert payload["runtime"] == "workflow"
+    assert payload["capability_name"] == "conversation"
+
+
+def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app)
+
+    payload = app.chat("你是谁？")
+
+    assert payload["status"] == "completed"
+    assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "conversation"
     assert "我可以继续和你对话" in payload["final_answer"]
     assert payload["execution_trace"]
-    assert payload["execution_trace"][0]["name"] == "router"
-    assert "conversation" in str(payload["execution_trace"][0]["detail"])
-    assert payload["execution_trace"][-1]["name"] == "respond"
+    assert payload["execution_trace"][-1]["name"] == "conversation_response"
 
 
 def test_demo_assets_are_loadable():
@@ -489,6 +444,7 @@ def test_demo_assistant_app_streams_chat_events(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app)
 
     events = list(app.stream_chat("你是谁？", chunk_size=8))
 
@@ -503,6 +459,7 @@ def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app)
 
     events = list(app.stream_chat("你是谁？", chunk_size=8))
     payload = events[-1]["payload"]
@@ -512,10 +469,33 @@ def test_demo_assistant_app_stream_final_payload_includes_context(tmp_path: Path
     assert payload["context"]["available_agents"]
 
 
+def test_demo_assistant_app_returns_error_for_conversation_without_model(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    payload = app.chat("你是谁？")
+
+    assert payload["status"] == "error"
+    assert "模型" in payload["final_answer"] or "llm" in payload["final_answer"].lower()
+
+
+
+def test_demo_assistant_app_stream_returns_error_for_conversation_without_model(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    events = list(app.stream_chat("你是谁？"))
+
+    assert events[-1]["type"] == "error"
+
+
 def test_demo_assistant_app_emits_single_delta_for_fallback_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app, "你好")
 
     events = list(app.stream_chat("你现在是跟我流式输出嘛？", chunk_size=6))
     delta_events = [event for event in events if event["type"] == "delta"]
@@ -608,55 +588,41 @@ def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    _register_router_model(app, "conversation")
-
-    def _unexpected_planner(*_args, **_kwargs):
-        raise AssertionError("planner should not be called for plain conversation")
-
-    app.context.services["next_action_planner"] = _unexpected_planner
-
+    _install_conversation_model(app, "你好")
     payload = app.chat("你好")
 
     assert payload["status"] == "completed"
     assert payload["capability_name"] == "conversation"
-    assert payload["execution_trace"][-1]["name"] == "respond"
+    assert payload["execution_trace"][-1]["name"] == "conversation_response"
 
 
 def test_demo_assistant_app_stream_routes_plain_greeting_without_planner(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    _register_router_model(app, "conversation")
-
-    def _unexpected_planner(*_args, **_kwargs):
-        raise AssertionError("planner should not be called for plain conversation")
-
-    app.context.services["next_action_planner"] = _unexpected_planner
-
+    _install_conversation_model(app, "你好")
     events = list(app.stream_chat("你好"))
 
     assert events[-1]["type"] == "final"
     assert events[-1]["payload"]["status"] == "completed"
+    assert events[-1]["payload"]["runtime"] == "workflow"
     assert events[-1]["payload"]["capability_name"] == "conversation"
 
 
-def test_demo_assistant_app_uses_router_role_before_planner(tmp_path: Path):
+def test_demo_assistant_app_ignores_router_conversation_hint_for_workspace_request(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "README.md").write_text("demo", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
     _register_router_model(app, "conversation")
 
-    def _unexpected_planner(*_args, **_kwargs):
-        raise AssertionError("planner should not be called when router chooses conversation")
-
-    app.context.services["next_action_planner"] = _unexpected_planner
-
     payload = app.chat("读取 README.md")
 
     assert payload["status"] == "completed"
-    assert payload["capability_name"] == "conversation"
-    assert payload["execution_trace"][0]["name"] == "router"
+    assert payload["runtime"] == "workflow"
+    assert payload["capability_name"] == "workflow"
+    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
 
 
 def test_demo_context_payload_includes_sandbox_state(tmp_path: Path):
@@ -822,6 +788,19 @@ class _StreamingLLM:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+def test_demo_assistant_app_qa_only_profile_does_not_bypass_workflow_for_workspace_request(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+    app.switch_context(agent_profile="qa_only")
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["runtime"] == "workflow"
+    assert any(step["name"] == "file_read" for step in payload["execution_trace"])
+
+
 def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -836,8 +815,8 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
 
     assert [event["delta"] for event in delta_events] == ["你好", "，我是流式回复"]
     assert events[-1]["payload"]["final_answer"] == "你好，我是流式回复"
+    assert events[-1]["payload"]["execution_trace"][-1]["name"] == "conversation_response"
     assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
-    assert events[-1]["payload"]["execution_trace"][0]["name"] == "router"
     assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)
 
 
@@ -890,11 +869,7 @@ def test_demo_assistant_app_routes_clarification_followup_through_workflow(tmp_p
             "workspace": str(app.workspace),
         }
 
-    def _unexpected_loop_run(_message: str):
-        raise AssertionError("chat() should route clarification follow-up through workflow before touching loop")
-
     monkeypatch.setattr(type(app), "_run_workflow", _fake_run_workflow)
-    monkeypatch.setattr(app.loop, "run", _unexpected_loop_run)
 
     second = app.chat("src/service.py")
 
@@ -905,16 +880,16 @@ def test_demo_assistant_app_routes_clarification_followup_through_workflow(tmp_p
 
 
 
-def test_demo_assistant_app_routes_simple_file_read_without_direct_loop_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_demo_assistant_app_routes_simple_file_read_without_workspace_subtask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = _create_demo_assistant_app_with_test_planner(workspace)
 
-    def _unexpected_loop_run(_message: str):
-        raise AssertionError("simple workflow-native file reads should not call app-level loop.run")
+    def _unexpected_run_workspace_subtask(*_args, **_kwargs):
+        raise AssertionError("simple workflow-native file reads should not call workspace subtask runner")
 
-    monkeypatch.setattr(app.loop, "run", _unexpected_loop_run)
+    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _unexpected_run_workspace_subtask(*args, **kwargs))
 
     payload = app.chat("读取 README.md")
 
@@ -924,10 +899,37 @@ def test_demo_assistant_app_routes_simple_file_read_without_direct_loop_fallback
 
 
 
-def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoopResult
-    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
+def test_demo_assistant_app_runs_workspace_subtask_without_legacy_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from agent_runtime_framework.workflow.models import GoalSpec
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
+
+    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
+        from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
+        from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
+
+        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
+        task.summary = "changed README"
+        return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="subtask-run")
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
+
+    payload = app.chat("编辑 README.md 并验证修改结果")
+
+    assert payload["runtime"] == "workflow"
+    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+
+
+def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import GoalSpec
+    from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
+    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -937,13 +939,13 @@ def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runt
     def _fake_analyze_goal(_message: str, context=None):
         return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
 
-    def _fake_loop_run(goal: str):
-        task = WorkspaceTask(goal=goal, actions=[], task_profile="change_and_verify", state=TaskState())
+    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
+        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
         task.summary = "changed README"
-        return WorkspaceAgentLoopResult(status="completed", final_output="changed README", task=task, action_kind="respond", run_id="workflow-subtask-run")
+        return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="workflow-subtask-run")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(app.loop, "run", _fake_loop_run)
+    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
 
     payload = app.chat("编辑 README.md 并验证修改结果")
 
@@ -954,9 +956,9 @@ def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runt
 
 
 def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_subtask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoopResult
     from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState
     from agent_runtime_framework.workflow.models import GoalSpec
+    from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -970,13 +972,13 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_sub
             metadata={"requires_approval": True},
         )
 
-    def _fake_loop_run(goal: str):
-        task = WorkspaceTask(goal=goal, actions=[], task_profile="dangerous_change", state=TaskState())
+    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
+        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
         task.summary = "dangerous change prepared"
-        return WorkspaceAgentLoopResult(status="completed", final_output="dangerous change prepared", task=task, action_kind="respond", run_id="approval-run")
+        return WorkspaceSubtaskResult(status="completed", final_output="dangerous change prepared", task=task, action_kind="workspace_subtask", run_id="approval-run")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(app.loop, "run", _fake_loop_run)
+    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
 
     first = app.chat("直接删除 README.md")
 

@@ -4,7 +4,6 @@ import re
 from typing import Any
 
 from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
-from agent_runtime_framework.agents.workspace_backend.semantics import build_task_intent_block as _build_task_intent_block
 
 
 _MINIMAL_PROMPTS = {
@@ -79,6 +78,3 @@ def build_resource_semantics_block(task: Any) -> str:
         f"- resource_kind: {semantics['resource_kind'] or '(unknown)'}"
     )
 
-
-def build_task_intent_block(goal: str, workspace_root: str = "") -> str:
-    return _build_task_intent_block(goal, workspace_root=workspace_root)

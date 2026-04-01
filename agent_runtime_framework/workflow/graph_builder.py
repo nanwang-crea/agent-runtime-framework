@@ -9,10 +9,10 @@ from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 
 
-_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis"}
+_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "file_inspection", "response_synthesis", "conversation_response"}
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
-_SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer"}
+_SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer", "generic", "chat", "conversation"}
 
 
 
@@ -121,6 +121,8 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
 
 
 def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
+    if goal.primary_intent in {"generic", "chat", "conversation"}:
+        return _build_conversation_graph(goal)
     if goal.primary_intent == "target_explainer":
         return _build_target_explainer_graph(goal)
     if goal.primary_intent not in _SUPPORTED_NATIVE_INTENTS:
@@ -135,6 +137,17 @@ def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -
     return _compose_graph(nodes, edges, goal, source="deterministic")
 
 
+
+
+def _build_conversation_graph(goal: GoalSpec) -> WorkflowGraph:
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="conversation_response", node_type="conversation_response", metadata={"executor_kind": "native"}),
+        ],
+        edges=[],
+        metadata={"goal": goal.original_goal, "source": "deterministic", "execution_mode": "native"},
+    )
+    return _normalize_graph(graph, goal)
 
 
 def _build_target_explainer_graph(goal: GoalSpec) -> WorkflowGraph:

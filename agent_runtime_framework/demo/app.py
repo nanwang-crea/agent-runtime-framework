@@ -4,16 +4,16 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
-from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceAgentLoop, WorkspaceContext, build_default_workspace_tools, evaluate_workspace_output
+from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceContext, build_default_workspace_tools
+from agent_runtime_framework.agents.workspace_backend.prompting import render_workspace_prompt_doc
+from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
 from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.workspace_backend.semantics import infer_task_intent
-from agent_runtime_framework.agents.workspace_backend.planner import _plan_from_goal
+from agent_runtime_framework.agents.workspace_backend.models import EvidenceItem, TaskState, WorkspaceTask
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import get_route_decision, should_route_to_conversation, stream_conversation_reply
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.memory.index import MemoryRecord
@@ -24,6 +24,10 @@ from agent_runtime_framework.models import (
     ModelRegistry,
     ModelRouter,
     OpenAICompatibleDriver,
+    ChatMessage,
+    ChatRequest,
+    chat_once,
+    chat_stream,
     resolve_model_runtime,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -33,7 +37,7 @@ from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
-from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
+from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
@@ -44,11 +48,71 @@ from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskE
 logger = logging.getLogger(__name__)
 
 
+def _build_conversation_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
+    system_content = render_workspace_prompt_doc("conversation_system")
+    if context is not None:
+        system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
+    messages = [ChatMessage(role="system", content=system_content)]
+    recent_turns = list(getattr(session, "turns", [])[-6:])
+    if recent_turns:
+        last_turn = recent_turns[-1]
+        if getattr(last_turn, "role", None) == "user" and getattr(last_turn, "content", "") == user_input:
+            recent_turns = recent_turns[:-1]
+    for turn in recent_turns:
+        messages.append(ChatMessage(role=turn.role, content=turn.content))
+    messages.append(ChatMessage(role="user", content=user_input))
+    return messages
+
+
+def _format_error_detail(exc: Exception) -> str:
+    detail = f"{type(exc).__name__}: {exc}".strip()
+    detail = " ".join(detail.split())
+    return detail[:240]
+
+
+
+def stream_conversation_reply(user_input: str, context: Any, session: Any, *, diagnostics: dict[str, str | None] | None = None) -> Iterable[str]:
+    meta = diagnostics if diagnostics is not None else {}
+    meta["source"] = "model"
+    meta["reason"] = "pending"
+    runtime = resolve_model_runtime(context.application_context, "conversation")
+    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+    if llm_client is None or not model_name:
+        raise RuntimeError("llm_unavailable: 未配置可用模型用于 conversation response")
+    messages = _build_conversation_messages(user_input, session, context=context)
+    try:
+        response = chat_stream(llm_client, ChatRequest(model=model_name, messages=messages, temperature=0.3, max_tokens=1024))
+        streamed = False
+        for chunk in response:
+            streamed = True
+            if chunk.content:
+                yield chunk.content
+        if streamed:
+            meta["source"] = "model"
+            meta["reason"] = "stream"
+            return
+    except Exception as exc:
+        meta["reason"] = f"stream_error:{_format_error_detail(exc)}"
+    try:
+        response = chat_once(llm_client, ChatRequest(model=model_name, messages=messages, temperature=0.3, max_tokens=1024))
+        content = str(response.content or "").strip()
+        if content:
+            meta["source"] = "model"
+            meta["reason"] = "non_stream_fallback"
+            yield content
+            return
+    except Exception as exc:
+        meta["reason"] = f"model_error:{_format_error_detail(exc)}"
+        raise RuntimeError(meta["reason"]) from exc
+    raise RuntimeError("conversation response returned empty content")
+
+
 @dataclass(slots=True)
 class DemoAssistantApp:
     workspace: Path
     context: WorkspaceContext
-    loop: WorkspaceAgentLoop
+    _pending_workflow_clarification: dict[str, Any] | None
     model_registry: ModelRegistry
     model_router: ModelRouter
     model_center: ModelCenterService
@@ -64,41 +128,18 @@ class DemoAssistantApp:
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
-            if self._is_conversation_agent(self._active_agent):
-                self._last_route_decision = {"route": "conversation", "source": "profile"}
-                return self._conversation_payload(message)
-            has_pending_clarification = self.loop.has_pending_clarification(self.context.session)
-            if has_pending_clarification:
+            if self._pending_workflow_clarification is not None:
                 self._last_route_decision = {"route": "workflow", "source": "clarification"}
                 payload = self._run_workflow(message)
                 self._record_run(payload, prompt=message)
                 return payload
-            route_decision = get_route_decision(message, self.context)
-            self._last_route_decision = route_decision
-            if route_decision["route"] == "conversation":
-                return self._conversation_payload(message)
-            if self._should_use_workflow(message):
-                payload = self._run_workflow(message)
-                self._record_run(payload, prompt=message)
-                return payload
-            self._ensure_codex_planner_available()
-            result = self._run_legacy_workspace_fallback(message)
-            self._task_history.insert(0, result.task)
-            self._task_history = self._task_history[:40]
-            payload = self._result_payload(result)
-            if result.resume_token is not None:
-                self._pending_tokens[result.resume_token.token_id] = result.resume_token
+            self._last_route_decision = {"route": "workflow", "source": "goal_analysis"}
+            payload = self._run_workflow(message)
             self._record_run(payload, prompt=message)
             return payload
         except Exception as exc:
             return self._error_payload(exc)
 
-    def _run_legacy_workspace_fallback(self, message: str):
-        return getattr(self.loop, "run")(message)
-
-    def _should_use_workflow(self, message: str) -> bool:
-        goal = analyze_goal(message, context=self.context)
-        return goal.primary_intent not in {"chat", "generic"}
 
     def _run_workflow(self, message: str) -> dict[str, Any]:
         goal = analyze_goal(message, context=self.context)
@@ -124,13 +165,14 @@ class DemoAssistantApp:
             approval_request = self._workflow_approval_request(run)
         clarification_request = run.shared_state.get("clarification_request")
         payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
+        self._pending_workflow_clarification = dict(clarification_request or {}) if payload_status == "needs_clarification" else None
         final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         return {
             "status": payload_status,
             "run_id": run.run_id,
             "plan_id": run.run_id,
             "final_answer": final_answer,
-            "capability_name": "workflow",
+            "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in graph.nodes) else "workflow"),
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
             "approval_request": approval_request,
@@ -150,8 +192,15 @@ class DemoAssistantApp:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        if self._should_stream_conversation(message, session):
-            yield from self._stream_conversation(message, session)
+        goal = analyze_goal(message, context=self.context)
+        graph = build_workflow_graph(goal, context=self.context)
+        self._last_route_decision = {"route": "workflow", "source": "goal_analysis"}
+        if len(graph.nodes) == 1 and graph.nodes[0].node_type == "conversation_response":
+            try:
+                yield from self._stream_workflow_conversation(message, session)
+            except Exception as exc:
+                payload = self._error_payload(exc)
+                yield {"type": "error", "error": dict(payload.get("error") or {})}
             return
         yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
         payload = self.chat(message)
@@ -168,20 +217,10 @@ class DemoAssistantApp:
         yield {"type": "delta", "delta": final_answer}
         yield {"type": "final", "payload": payload}
 
-    def _stream_conversation(self, message: str, session: AssistantSession):
+    def _stream_workflow_conversation(self, message: str, session: AssistantSession):
         session.add_turn("user", message)
-        yield {"type": "status", "status": {"phase": "conversation", "label": "正在生成回复"}}
-        router_step = self._router_trace_step()
-        if router_step is not None:
-            yield {"type": "step", "step": router_step}
-        yield {
-            "type": "step",
-            "step": {
-                "name": "respond",
-                "status": "running",
-                "detail": "streaming_response",
-            },
-        }
+        yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
+        yield {"type": "step", "step": {"name": "conversation_response", "status": "running", "detail": "conversation_response"}}
         chunks: list[str] = []
         diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
         for chunk in stream_conversation_reply(message, self.context, session, diagnostics=diagnostics):
@@ -191,31 +230,23 @@ class DemoAssistantApp:
             yield {"type": "delta", "delta": chunk}
         final_answer = "".join(chunks).strip()
         session.add_turn("assistant", final_answer)
-        session.focused_capability = "respond"
-        source = str(diagnostics.get("source") or "fallback")
-        reason = str(diagnostics.get("reason") or "")
-        status = "completed" if source == "model" else "fallback"
-        task = type("WorkspaceConversationTask", (), {})()
+        session.focused_capability = "workflow"
+        task = type("WorkflowConversationTask", (), {})()
         task.task_id = str(uuid4())
         task.goal = message
-        task.actions = [type("WorkspaceConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
+        task.actions = [type("WorkflowConversationAction", (), {"kind": "conversation_response", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
         self._task_history.insert(0, task)
         self._task_history = self._task_history[:40]
+        source = str(diagnostics.get("source") or "fallback")
+        reason = str(diagnostics.get("reason") or "")
         payload = {
             "status": "completed",
             "run_id": str(uuid4()),
             "plan_id": task.task_id,
             "final_answer": final_answer,
             "capability_name": "conversation",
-            "execution_trace": self._with_router_trace(
-                [
-                    {
-                        "name": "respond",
-                        "status": status,
-                        "detail": f"source={source}; reason={reason}" if reason else f"source={source}",
-                    }
-                ]
-            ),
+            "runtime": "workflow",
+            "execution_trace": [{"name": "conversation_response", "status": "completed", "detail": f"source={source}; reason={reason}" if reason else f"source={source}"}],
             "approval_request": None,
             "resume_token_id": None,
             "session": self.session_payload(),
@@ -255,12 +286,19 @@ class DemoAssistantApp:
             payload = self._workflow_payload(resumed)
             self._record_run(payload, prompt=f"approval:{'approve' if approved else 'reject'}")
             return payload
-        result = self.loop.resume(token, approved=approved)
-        self._task_history.insert(0, result.task)
-        self._task_history = self._task_history[:40]
-        payload = self._result_payload(result)
-        self._record_run(payload, prompt=f"approval:{'approve' if approved else 'reject'}")
-        return payload
+        return {
+            "status": "missing_token",
+            "final_answer": "未找到可恢复的审批请求。",
+            "capability_name": "",
+            "execution_trace": [],
+            "session": self.session_payload(),
+            "plan_history": self.plan_history_payload(),
+            "run_history": self.run_history_payload(),
+            "memory": self.memory_payload(),
+            "approval_request": None,
+            "resume_token_id": None,
+            "workspace": str(self.workspace),
+        }
 
     def replay(self, run_id: str) -> dict[str, Any]:
         prompt = self._run_inputs.get(run_id)
@@ -298,8 +336,6 @@ class DemoAssistantApp:
                 raise ValueError(f"unknown agent profile: {agent_profile}")
             self._active_agent = agent_profile
             self.context.services["active_agent"] = agent_profile
-            if self._is_conversation_agent(agent_profile) and self.context.session is not None:
-                self.context.session.active_persona = "general"
         if workspace:
             next_workspace = Path(workspace).expanduser().resolve()
             if not next_workspace.exists():
@@ -321,18 +357,11 @@ class DemoAssistantApp:
             "context": self.context_payload(),
         }
 
-    def _is_conversation_agent(self, agent_id: str | None) -> bool:
-        if not agent_id:
-            return False
-        definition = self.agent_registry.get(agent_id)
-        return bool(definition and definition.executor_kind == "conversation")
 
     def _active_persona_name(self) -> str:
         session = self.context.session
         if session is not None and session.active_persona:
             return session.active_persona
-        if self._is_conversation_agent(self._active_agent):
-            return "general"
         return resolve_runtime_persona(self.context).name
 
     def session_payload(self) -> dict[str, Any]:
@@ -363,13 +392,14 @@ class DemoAssistantApp:
             approval_request = self._workflow_approval_request(run)
         clarification_request = run.shared_state.get("clarification_request")
         payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
+        self._pending_workflow_clarification = dict(clarification_request or {}) if payload_status == "needs_clarification" else None
         final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         return {
             "status": payload_status,
             "run_id": run.run_id,
             "plan_id": run.run_id,
             "final_answer": final_answer,
-            "capability_name": "workflow",
+            "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in run.graph.nodes) else "workflow"),
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
             "approval_request": approval_request,
@@ -385,6 +415,7 @@ class DemoAssistantApp:
     def _build_workflow_runtime(self) -> WorkflowRuntime:
         return WorkflowRuntime(
             executors={
+                "conversation_response": ConversationResponseExecutor(),
                 "repository_explainer": WorkspaceOverviewExecutor(),
                 "file_reader": FileReadExecutor(),
                 "aggregate_results": AggregationExecutor(),
@@ -396,10 +427,24 @@ class DemoAssistantApp:
                 "target_resolution": TargetResolutionExecutor(),
                 "file_inspection": FileInspectionExecutor(),
                 "response_synthesis": ResponseSynthesisExecutor(),
-                "workspace_subtask": WorkspaceSubtaskExecutor(workspace_loop=self.loop),
+                "workspace_subtask": WorkspaceSubtaskExecutor(run_subtask=self._run_workspace_subtask),
             },
             context={"workspace_root": str(self.workspace), "application_context": self.context.application_context, "workspace_context": self.context},
         )
+
+    def _run_workspace_subtask(self, goal: str, *, task_profile: str, metadata: dict[str, Any]):
+        summary = str(metadata.get("summary") or goal)
+        target_path = str(metadata.get("target_path") or metadata.get("path") or "").strip()
+        state = TaskState()
+        if target_path:
+            state.resolved_target = target_path
+            state.evidence_items.append(EvidenceItem(source="workflow", kind="path", summary=target_path, path=target_path))
+        action = WorkspaceAction(kind="workspace_subtask", instruction=goal, status="completed", observation=summary, metadata={"direct_output": True})
+        task = WorkspaceTask(goal=goal, actions=[action], task_profile=task_profile, state=state)
+        task.summary = summary
+        from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
+
+        return WorkspaceSubtaskResult(status="completed", final_output=summary, task=task, action_kind="workspace_subtask", run_id=str(uuid4()))
 
     def _workflow_approval_request(self, run: Any) -> dict[str, Any] | None:
         resume_token = run.shared_state.get("resume_token")
@@ -425,7 +470,7 @@ class DemoAssistantApp:
         }
 
     def _capture_workflow_codex_history(self, run: Any) -> None:
-        results = run.shared_state.get("workspace_loop_results", {})
+        results = run.shared_state.get("workspace_subtask_results", {})
         for result in results.values():
             task = getattr(result, "task", None)
             if task is None:
@@ -551,6 +596,13 @@ class DemoAssistantApp:
     def run_history_payload(self) -> list[dict[str, Any]]:
         return list(self._run_history[:40])
 
+    @staticmethod
+    def _compact_text(value: str, *, limit: int = 200) -> str:
+        text = str(value or "")
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit].rstrip()}...[已截断]"
+
     def _record_run(self, payload: dict[str, Any], *, prompt: str) -> None:
         run_id = str(payload.get("run_id") or "").strip()
         if not run_id:
@@ -566,84 +618,6 @@ class DemoAssistantApp:
         self._run_history = [item for item in self._run_history if item.get("run_id") != run_id]
         self._run_history.insert(0, entry)
         self._run_history = self._run_history[:40]
-
-    def _should_stream_conversation(self, message: str, _session: AssistantSession) -> bool:
-        if self._active_agent == "qa_only":
-            self._last_route_decision = {"route": "conversation", "source": "profile"}
-            return True
-        if self.loop.has_pending_clarification(self.context.session):
-            self._last_route_decision = {"route": "codex", "source": "clarification"}
-            return False
-        self._last_route_decision = get_route_decision(message, self.context)
-        return self._last_route_decision["route"] == "conversation"
-
-    def _ensure_codex_planner_available(self) -> None:
-        if callable(self.context.services.get("next_action_planner")) or callable(self.context.services.get("action_planner")):
-            return
-        runtime = resolve_model_runtime(self.context.application_context, "planner")
-        if runtime is not None:
-            return
-        route = getattr(self.model_router, "get_route", lambda _role: None)("planner")
-        default_route = getattr(self.model_router, "get_route", lambda _role: None)("default")
-        raise AppError(
-            code="MODEL_UNAVAILABLE",
-            message="未配置可用的大模型，Codex Agent 无法规划下一步动作。",
-            detail=f"planner model runtime is unavailable; planner_route={route}; default_route={default_route}",
-            stage="planner",
-            retriable=True,
-            suggestion="请先在前端“模型 / 配置”中配置并认证一个 planner 模型。",
-            context={
-                **self._error_context(),
-                "planner_route": route or {},
-                "default_route": default_route or {},
-            },
-        )
-
-    def _compact_text(self, value: Any, *, limit: int = 240) -> str | None:
-        if value is None:
-            return None
-        text = str(value)
-        if len(text) <= limit:
-            return text
-        return f"{text[:limit]}... ({len(text)} chars)"
-
-    def _conversation_payload(self, message: str) -> dict[str, Any]:
-        session = self.context.session
-        if session is None:
-            session = AssistantSession(session_id=str(uuid4()))
-            self.context.session = session
-        session.add_turn("user", message)
-        chunks: list[str] = []
-        diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
-        for chunk in stream_conversation_reply(message, self.context, session, diagnostics=diagnostics):
-            if chunk:
-                chunks.append(chunk)
-        final_answer = "".join(chunks).strip()
-        session.add_turn("assistant", final_answer)
-        task = type("WorkspaceConversationTask", (), {})()
-        task.task_id = str(uuid4())
-        task.goal = message
-        task.actions = [type("WorkspaceConversationAction", (), {"kind": "respond", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
-        self._task_history.insert(0, task)
-        self._task_history = self._task_history[:40]
-        payload = {
-            "status": "completed",
-            "run_id": str(uuid4()),
-            "plan_id": task.task_id,
-            "final_answer": final_answer,
-            "capability_name": "conversation",
-            "execution_trace": self._with_router_trace([{"name": "respond", "status": "completed", "detail": final_answer}]),
-            "approval_request": None,
-            "resume_token_id": None,
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "context": self.context_payload(),
-            "workspace": str(self.workspace),
-        }
-        self._record_run(payload, prompt=message)
-        return payload
 
     def _error_payload(self, exc: Exception) -> dict[str, Any]:
         error = self._normalize_error(exc)
@@ -715,6 +689,17 @@ class DemoAssistantApp:
                 retriable=False,
                 suggestion="请只操作当前工作区内的文件或目录。",
                 context=base_context,
+            )
+        detail = f"{type(exc).__name__}: {exc}"
+        if "llm_unavailable" in detail:
+            return normalize_app_error(
+                exc,
+                code="MODEL_UNAVAILABLE",
+                message=str(exc),
+                stage="conversation_response",
+                retriable=False,
+                suggestion="请先在前端“模型 / 配置”中为 conversation 配置可用模型。",
+                context={**base_context, "exception_type": type(exc).__name__},
             )
         return normalize_app_error(
             exc,
@@ -818,12 +803,9 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         services={"active_agent": "workspace", "model_first_task_intent": True, "model_first_task_plan": True, "agent_registry": agent_registry},
         session=AssistantSession(session_id=str(uuid4())),
     )
-    context.services["output_evaluator"] = evaluate_workspace_output
-    loop = WorkspaceAgentLoop(context)
     app = DemoAssistantApp(
         workspace=workspace_path,
         context=context,
-        loop=loop,
         model_registry=model_registry,
         model_router=model_router,
         model_center=model_center,
@@ -832,6 +814,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _task_history=[],
         _run_inputs={},
         _last_route_decision=None,
+        _pending_workflow_clarification=None,
         _active_agent="workspace",
         _available_workspaces=[str(workspace_path)],
         agent_registry=agent_registry,
@@ -841,30 +824,3 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     app.model_center.load()
     return app
 
-
-def _build_demo_next_action_planner(workspace_root: Path):
-    def _planner(task: Any, session: AssistantSession, context: WorkspaceContext, tool_names: list[str]):
-        del session, context
-        goal = str(getattr(task, "goal", "") or "")
-        target_hint = _match_codebase_explanation_target(goal, workspace_root)
-        if target_hint is not None and "inspect_workspace_path" in set(tool_names):
-            return WorkspaceAction(
-                kind="call_tool",
-                instruction=goal,
-                metadata={"tool_name": "inspect_workspace_path", "arguments": {"path": target_hint or "."}},
-            )
-        return _plan_from_goal(goal, tool_names=set(tool_names))
-
-    return _planner
-
-
-def _match_codebase_explanation_target(user_input: str, workspace_root: Path) -> str | None:
-    intent = infer_task_intent(user_input, workspace_root)
-    text = str(user_input or "")
-    if intent.target_hint == ".":
-        return "."
-    if intent.target_hint:
-        return intent.target_hint
-    if intent.task_kind == "repository_explainer" and any(token in text for token in ("当前目录", "当前文件夹", "当前工作区", "当前仓库")):
-        return "."
-    return None

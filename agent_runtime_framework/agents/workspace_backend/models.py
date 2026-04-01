@@ -6,6 +6,13 @@ from uuid import uuid4
 
 
 @dataclass(slots=True)
+class WorkspaceContext:
+    application_context: Any
+    services: dict[str, Any] = field(default_factory=dict)
+    session: Any | None = None
+
+
+@dataclass(slots=True)
 class VerificationResult:
     success: bool
     summary: str

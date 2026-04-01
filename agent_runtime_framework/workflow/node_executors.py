@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from agent_runtime_framework.agents.workspace_backend.prompting import render_workspace_prompt_doc
+from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
+from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
@@ -11,6 +15,60 @@ from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_
 
 class NodeExecutor(Protocol):
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult: ...
+
+
+@dataclass(slots=True)
+class ConversationResponseExecutor:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+        runtime_context = dict(context or {})
+        application_context = runtime_context.get("application_context")
+        workspace_context = runtime_context.get("workspace_context")
+        session = getattr(workspace_context, "session", None) if workspace_context is not None else None
+        reply = _generate_conversation_reply(run.goal, application_context, session=session, context=workspace_context)
+        run.final_output = reply
+        return NodeResult(status=NODE_STATUS_COMPLETED, output={"summary": reply, "final_response": reply}, references=[])
+
+
+def _generate_conversation_reply(user_input: str, application_context: Any, *, session: Any = None, context: Any = None) -> str:
+    if application_context is None:
+        raise RuntimeError("missing application context for conversation response")
+    runtime = resolve_model_runtime(application_context, "conversation")
+    llm_client = runtime.client if runtime is not None else application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
+    if llm_client is None or not model_name:
+        raise RuntimeError("llm_unavailable: 未配置可用模型用于 conversation response")
+    try:
+        response = chat_once(
+            llm_client,
+            ChatRequest(
+                model=model_name,
+                messages=_build_conversation_messages(user_input, session, context=context),
+                temperature=0.3,
+                max_tokens=1024,
+            ),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"conversation response failed: {type(exc).__name__}: {exc}") from exc
+    content = str(response.content or "").strip()
+    if not content:
+        raise RuntimeError("conversation response returned empty content")
+    return content
+
+
+def _build_conversation_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
+    system_content = render_workspace_prompt_doc("conversation_system")
+    if context is not None:
+        system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
+    messages = [ChatMessage(role="system", content=system_content)]
+    recent_turns = list(getattr(session, "turns", [])[-6:]) if session is not None else []
+    if recent_turns:
+        last_turn = recent_turns[-1]
+        if getattr(last_turn, "role", None) == "user" and getattr(last_turn, "content", "") == user_input:
+            recent_turns = recent_turns[:-1]
+    for turn in recent_turns:
+        messages.append(ChatMessage(role=turn.role, content=turn.content))
+    messages.append(ChatMessage(role="user", content=user_input))
+    return messages
 
 
 @dataclass(slots=True)

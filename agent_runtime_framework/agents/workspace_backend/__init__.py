@@ -1,8 +1,8 @@
 from agent_runtime_framework.agents.workspace_backend.evaluator import evaluate_workspace_output
-from agent_runtime_framework.agents.workspace_backend.loop import WorkspaceAgentLoop, WorkspaceAgentLoopResult, WorkspaceContext
 from agent_runtime_framework.agents.workspace_backend.models import (
     WorkspaceAction,
     WorkspaceActionResult,
+    WorkspaceContext,
     WorkspaceEvaluationDecision,
     WorkspacePlan,
     WorkspacePlanTask,
@@ -18,17 +18,9 @@ from agent_runtime_framework.agents.workspace_backend.planner import infer_task_
 from agent_runtime_framework.agents.workspace_backend.runtime import WorkspaceSessionRuntime
 from agent_runtime_framework.agents.workspace_backend.tools import build_default_workspace_tools
 
-WorkspaceBackend = WorkspaceAgentLoop
-WorkspaceBackendResult = WorkspaceAgentLoopResult
-# Compatibility aliases: workflow nodes and legacy imports may still reference these names,
-# but `WorkflowRuntime` remains the top-level execution kernel.
-WorkspaceContext = WorkspaceContext
-
 __all__ = [
     "WorkspaceAction",
     "WorkspaceActionResult",
-    "WorkspaceAgentLoop",
-    "WorkspaceAgentLoopResult",
     "WorkspaceContext",
     "WorkspaceEvaluationDecision",
     "WorkspacePlan",
@@ -41,9 +33,6 @@ __all__ = [
     "TaskIntent",
     "TaskState",
     "VerificationResult",
-    "WorkspaceBackend",
-    "WorkspaceBackendResult",
-    "WorkspaceContext",
     "build_default_workspace_tools",
     "evaluate_workspace_output",
     "infer_task_intent",

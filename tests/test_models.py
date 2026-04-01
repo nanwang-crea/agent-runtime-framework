@@ -9,7 +9,6 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from agent_runtime_framework.applications import ApplicationContext
-from agent_runtime_framework.assistant.conversation import should_route_to_conversation
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,
@@ -233,45 +232,6 @@ def test_resolve_model_runtime_falls_back_to_default_route(tmp_path: Path):
 
     assert runtime is not None
     assert runtime.profile.model_name == "fast-model"
-
-
-def test_should_route_to_conversation_prefers_router_model_when_available(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    context = _app_context(workspace)
-    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    instance = _FakeInstance(client_content='{"route":"conversation"}')
-    registry.register_instance(instance)
-    registry.authenticate("fake", {"api_key": "secret"})
-    router = ModelRouter(registry)
-    router.set_route("router", instance_id="fake", model_name="router-model")
-    context.services["model_registry"] = registry
-    context.services["model_router"] = router
-
-    routed = should_route_to_conversation("读取 README.md", SimpleNamespace(application_context=context))
-
-    assert routed is True
-    prompt = "\n".join(message["content"] for message in instance.last_client.completions.last_kwargs["messages"])
-    assert '{"route":"conversation"}' in prompt
-    assert '{"route":"codex"}' in prompt
-    assert "不要输出原因" in prompt
-
-
-def test_should_route_to_conversation_falls_back_when_router_output_is_invalid(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    context = _app_context(workspace)
-    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
-    registry.register_instance(_FakeInstance(client_content="not-json"))
-    registry.authenticate("fake", {"api_key": "secret"})
-    router = ModelRouter(registry)
-    router.set_route("router", instance_id="fake", model_name="router-model")
-    context.services["model_registry"] = registry
-    context.services["model_router"] = router
-
-    routed = should_route_to_conversation("读取 README.md", SimpleNamespace(application_context=context))
-
-    assert routed is False
 
 
 def test_openai_compatible_driver_builds_instance_with_pure_python_http_client():
