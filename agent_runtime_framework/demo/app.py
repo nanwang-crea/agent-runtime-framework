@@ -112,12 +112,7 @@ class DemoAssistantApp:
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
-            if self._pending_workflow_clarification is not None:
-                self._last_route_decision = {"route": "workflow", "source": "clarification"}
-                payload = self._run_workflow(message)
-                self._record_run(payload, prompt=message)
-                return payload
-            self._last_route_decision = {"route": "workflow", "source": "goal_analysis"}
+            self._ensure_session()
             payload = self._run_workflow(message)
             self._record_run(payload, prompt=message)
             return payload
@@ -125,13 +120,32 @@ class DemoAssistantApp:
             return self._error_payload(exc)
 
 
-    def _run_workflow(self, message: str) -> dict[str, Any]:
+    def _ensure_session(self) -> AssistantSession:
+        session = self.context.session
+        if session is None:
+            session = AssistantSession(session_id=str(uuid4()))
+            self.context.session = session
+        return session
+
+    def _compile_workflow(self, message: str) -> tuple[Any, Any]:
+        route_source = "clarification" if self._pending_workflow_clarification is not None else "goal_analysis"
+        self._last_route_decision = {"route": "workflow", "source": route_source}
         goal = analyze_goal(message, context=self.context)
         graph = build_workflow_graph(goal, context=self.context)
+        return goal, graph
+
+    def _run_workflow(self, message: str) -> dict[str, Any]:
+        _goal, graph = self._compile_workflow(message)
+        return self._run_compiled_workflow(message, graph=graph)
+
+    def _run_compiled_workflow(self, message: str, *, graph: Any) -> dict[str, Any]:
         runtime = self._build_workflow_runtime()
         from agent_runtime_framework.workflow import WorkflowRun
 
-        run = runtime.run(WorkflowRun(goal=message, graph=graph))
+        run = WorkflowRun(goal=message, graph=graph)
+        run.shared_state["memory"] = self.memory_payload()
+        run.shared_state["session_memory_snapshot"] = self.context.application_context.session_memory.snapshot()
+        run = runtime.run(run)
         self._remember_workflow_run(message, run)
         self._capture_workflow_codex_history(run)
         execution_trace = [
@@ -161,7 +175,6 @@ class DemoAssistantApp:
             "runtime": "workflow",
             "execution_trace": self._with_router_trace(execution_trace),
             "evidence": evidence,
-            "evidence": evidence,
             "approval_request": approval_request,
             "resume_token_id": resume_token_id,
             "session": self.session_payload(),
@@ -174,14 +187,9 @@ class DemoAssistantApp:
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
-        session = self.context.session
-        if session is None:
-            session = AssistantSession(session_id=str(uuid4()))
-            self.context.session = session
+        session = self._ensure_session()
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        goal = analyze_goal(message, context=self.context)
-        graph = build_workflow_graph(goal, context=self.context)
-        self._last_route_decision = {"route": "workflow", "source": "goal_analysis"}
+        _goal, graph = self._compile_workflow(message)
         if len(graph.nodes) == 1 and graph.nodes[0].node_type == "conversation_response":
             try:
                 yield from self._stream_workflow_conversation(message, session)
@@ -190,7 +198,13 @@ class DemoAssistantApp:
                 yield {"type": "error", "error": dict(payload.get("error") or {})}
             return
         yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
-        payload = self.chat(message)
+        try:
+            payload = self._run_compiled_workflow(message, graph=graph)
+            self._record_run(payload, prompt=message)
+        except Exception as exc:
+            payload = self._error_payload(exc)
+            yield {"type": "error", "error": dict(payload.get("error") or {})}
+            return
         if payload.get("status") == "error":
             yield {"type": "error", "error": dict(payload.get("error") or {})}
             return
@@ -437,6 +451,15 @@ class DemoAssistantApp:
             "verification": verification,
         }
 
+    def _workflow_runtime_context(self) -> dict[str, Any]:
+        return {
+            "workspace_root": str(self.workspace),
+            "application_context": self.context.application_context,
+            "workspace_context": self.context,
+            "memory": self.memory_payload(),
+            "session_memory_snapshot": self.context.application_context.session_memory.snapshot(),
+        }
+
     def _build_workflow_runtime(self) -> WorkflowRuntime:
         return WorkflowRuntime(
             executors={
@@ -454,7 +477,7 @@ class DemoAssistantApp:
                 "target_resolution": TargetResolutionExecutor(),
                 "workspace_subtask": WorkspaceSubtaskExecutor(run_subtask=self._run_workspace_subtask),
             },
-            context={"workspace_root": str(self.workspace), "application_context": self.context.application_context, "workspace_context": self.context},
+            context=self._workflow_runtime_context(),
         )
 
     def _run_workspace_subtask(self, goal: str, *, task_profile: str, metadata: dict[str, Any]):

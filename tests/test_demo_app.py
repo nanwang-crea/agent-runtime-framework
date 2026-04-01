@@ -1126,3 +1126,83 @@ def test_demo_assistant_app_rejects_legacy_file_reader_graph(tmp_path: Path, mon
     assert payload["status"] == "failed"
     assert any(step["detail"] == "file_reader" for step in payload["execution_trace"])
     assert payload["final_answer"] == ""
+
+
+
+def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow import WorkflowRuntime, WorkflowRun
+    from agent_runtime_framework.workflow.models import NodeResult
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    analyze_calls = {"count": 0}
+    build_calls = {"count": 0}
+
+    def _fake_analyze_goal(_message: str, context=None):
+        analyze_calls["count"] += 1
+        return GoalSpec(original_goal="列一下当前工作区", primary_intent="repository_overview", requires_repository_overview=True)
+
+    def _fake_build_graph(_goal, context=None):
+        build_calls["count"] += 1
+        return WorkflowGraph(
+            nodes=[WorkflowNode(node_id="finish", node_type="final_response")],
+            edges=[],
+        )
+
+    class _FinalOnlyRuntime(WorkflowRuntime):
+        def run(self, run: WorkflowRun) -> WorkflowRun:
+            run.final_output = "done"
+            run.status = "completed"
+            run.node_states["finish"] = type("State", (), {"status": "completed"})()
+            return run
+
+    monkeypatch.setattr(demo_app_module, "analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(demo_app_module, "build_workflow_graph", _fake_build_graph)
+    monkeypatch.setattr(type(app), "chat", lambda self, message: (_ for _ in ()).throw(AssertionError("stream_chat should not call chat")))
+    monkeypatch.setattr(type(app), "_build_workflow_runtime", lambda self: _FinalOnlyRuntime(executors={}))
+
+    events = list(app.stream_chat("列一下当前工作区"))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["payload"]["status"] == "completed"
+    assert analyze_calls["count"] == 1
+    assert build_calls["count"] == 1
+
+
+
+def test_demo_assistant_workflow_runtime_context_includes_memory_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.resources import ResourceRef
+    from agent_runtime_framework.workflow import WorkflowRuntime, WorkflowRun
+    from agent_runtime_framework.workflow.models import NodeResult
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    readme = workspace / "README.md"
+    readme.write_text("demo", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+    app.context.application_context.session_memory.remember_focus([ResourceRef.for_path(readme)], summary="remembered readme")
+    captured = {}
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="读取 README.md", primary_intent="file_read", requires_file_read=True, target_paths=["README.md"])
+
+    def _fake_build_graph(_goal, context=None):
+        return WorkflowGraph(nodes=[WorkflowNode(node_id="probe", node_type="probe")], edges=[])
+
+    class _ProbeExecutor:
+        def execute(self, node, run, context=None):
+            captured.update(dict(context or {}))
+            run.final_output = "ok"
+            return NodeResult(status="completed", output={"summary": "ok"}, references=[])
+
+    monkeypatch.setattr(demo_app_module, "analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(demo_app_module, "build_workflow_graph", _fake_build_graph)
+    monkeypatch.setattr(type(app), "_build_workflow_runtime", lambda self: WorkflowRuntime(executors={"probe": _ProbeExecutor()}, context=self._workflow_runtime_context()))
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    assert captured["memory"]["last_summary"] == "remembered readme"
+    assert captured["memory"]["focused_resource"]["title"] == "README.md"
