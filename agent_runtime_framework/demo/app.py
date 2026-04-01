@@ -9,8 +9,6 @@ from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
 from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceContext, build_default_workspace_tools
-from agent_runtime_framework.agents.workspace_backend.prompting import render_workspace_prompt_doc
-from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
 from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
 from agent_runtime_framework.agents.workspace_backend.models import EvidenceItem, TaskState, WorkspaceTask
 from agent_runtime_framework.applications import ApplicationContext
@@ -24,7 +22,6 @@ from agent_runtime_framework.models import (
     ModelRegistry,
     ModelRouter,
     OpenAICompatibleDriver,
-    ChatMessage,
     ChatRequest,
     chat_once,
     chat_stream,
@@ -37,6 +34,7 @@ from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import WorkflowRuntime, analyze_goal, build_workflow_graph
+from agent_runtime_framework.workflow.conversation import build_conversation_messages
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FileReadExecutor, FinalResponseExecutor, VerificationExecutor, WorkspaceOverviewExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
@@ -46,22 +44,6 @@ from agent_runtime_framework.workflow.response_synthesis_executor import Respons
 from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 
 logger = logging.getLogger(__name__)
-
-
-def _build_conversation_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
-    system_content = render_workspace_prompt_doc("conversation_system")
-    if context is not None:
-        system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
-    messages = [ChatMessage(role="system", content=system_content)]
-    recent_turns = list(getattr(session, "turns", [])[-6:])
-    if recent_turns:
-        last_turn = recent_turns[-1]
-        if getattr(last_turn, "role", None) == "user" and getattr(last_turn, "content", "") == user_input:
-            recent_turns = recent_turns[:-1]
-    for turn in recent_turns:
-        messages.append(ChatMessage(role=turn.role, content=turn.content))
-    messages.append(ChatMessage(role="user", content=user_input))
-    return messages
 
 
 def _format_error_detail(exc: Exception) -> str:
@@ -80,7 +62,7 @@ def stream_conversation_reply(user_input: str, context: Any, session: Any, *, di
     model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
     if llm_client is None or not model_name:
         raise RuntimeError("llm_unavailable: 未配置可用模型用于 conversation response")
-    messages = _build_conversation_messages(user_input, session, context=context)
+    messages = build_conversation_messages(user_input, session, context=context)
     try:
         response = chat_stream(llm_client, ChatRequest(model=model_name, messages=messages, temperature=0.3, max_tokens=1024))
         streamed = False

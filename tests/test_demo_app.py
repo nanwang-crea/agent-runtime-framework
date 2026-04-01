@@ -9,7 +9,9 @@ import pytest
 from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.demo import create_demo_assistant_app
+from agent_runtime_framework.demo import app as demo_app_module
 from agent_runtime_framework.demo.server import _load_asset
+from agent_runtime_framework.workflow import conversation
 
 
 
@@ -183,6 +185,16 @@ def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
     assert "我可以继续和你对话" in payload["final_answer"]
     assert payload["execution_trace"]
     assert payload["execution_trace"][-1]["name"] == "conversation_response"
+
+
+def test_demo_app_reuses_shared_conversation_message_builder():
+    assert demo_app_module.build_conversation_messages is conversation.build_conversation_messages
+
+
+def test_workflow_package_exports_shared_conversation_message_builder():
+    from agent_runtime_framework import workflow
+
+    assert workflow.build_conversation_messages is conversation.build_conversation_messages
 
 
 def test_demo_assets_are_loadable():

@@ -28,6 +28,7 @@ from agent_runtime_framework.workflow.runtime import WorkflowRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
+from agent_runtime_framework.workflow.conversation import build_conversation_messages
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
 from agent_runtime_framework.workflow.file_inspection_executor import FileInspectionExecutor
 from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
@@ -59,6 +60,7 @@ __all__ = [
     "WorkflowScheduler",
     "ToolCallExecutor",
     "ClarificationExecutor",
+    "build_conversation_messages",
     "TargetResolutionExecutor",
     "FileInspectionExecutor",
     "ResponseSynthesisExecutor",
