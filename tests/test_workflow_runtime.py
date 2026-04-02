@@ -941,6 +941,11 @@ def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
     assert result.final_output == "enough"
     assert result.metadata["agent_graph_state"]["current_iteration"] == 1
     assert len(result.metadata["agent_graph_state"]["planned_subgraphs"]) == 1
+    node_ids = [node.node_id for node in result.graph.nodes]
+    assert node_ids[:3] == ["goal_intake", "context_assembly", "plan_1"]
+    assert "aggregate_results_1" in node_ids
+    assert "evidence_synthesis_1" in node_ids
+    assert "judge_1" in node_ids
 
 
 def test_agent_graph_runtime_appends_second_iteration_when_more_evidence_is_needed():

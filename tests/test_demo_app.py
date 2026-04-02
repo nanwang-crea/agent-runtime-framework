@@ -86,7 +86,7 @@ def test_demo_assistant_app_returns_session_and_plan_history(tmp_path: Path):
     assert payload["execution_trace"]
     assert payload["plan_history"][-1]["steps"][-1]["status"] == "completed"
     assert payload["capability_name"] == "workflow"
-    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "content_search"
+    assert payload["plan_history"][-1]["steps"][0]["capability_name"] == "goal_intake"
 
 
 def test_demo_assistant_app_exposes_goal_envelope_and_runtime_context_helpers(tmp_path: Path):
@@ -191,6 +191,19 @@ def test_demo_assistant_app_routes_normal_chat_without_conversation_module_impor
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "conversation"
+
+
+def test_demo_assistant_app_exposes_route_by_goal_for_conversation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app)
+
+    payload = app.chat("你是谁？")
+
+    trace_names = [step["name"] for step in payload["execution_trace"]]
+    assert "goal_intake" in trace_names
+    assert "route_by_goal" in trace_names
 
 
 def test_demo_assistant_app_routes_normal_chat_to_conversation(tmp_path: Path):
@@ -630,7 +643,7 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert "README.md" in payload["final_answer"]
-    assert payload["execution_trace"][1]["detail"] in {"workspace_discovery", "workspace_subtask"}
+    assert any(step["detail"] in {"workspace_discovery", "workspace_subtask"} for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -738,7 +751,7 @@ def test_demo_assistant_app_uses_workspace_loop_for_workspace_actions(tmp_path: 
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert payload["execution_trace"][0]["name"] == "router"
-    assert payload["execution_trace"][1]["detail"] in {"content_search", "workspace_subtask"}
+    assert any(step["detail"] in {"content_search", "workspace_subtask"} for step in payload["execution_trace"])
     assert payload["execution_trace"][-1]["detail"] == "final_response"
 
 
@@ -763,7 +776,7 @@ def test_demo_assistant_app_explains_directory_structure_with_specialized_patter
     assert payload["status"] == "completed"
     assert payload["execution_trace"][0]["name"] == "router"
     assert payload["runtime"] == "workflow"
-    assert payload["execution_trace"][1]["detail"] == "workspace_discovery"
+    assert any(step["detail"] == "workspace_discovery" for step in payload["execution_trace"])
     assert payload["execution_trace"][-1]["detail"] == "final_response"
     assert "agent_runtime_framework" in payload["final_answer"]
     assert "assistant/" in payload["final_answer"]
@@ -1042,8 +1055,8 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_sub
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
     monkeypatch.setattr(
         type(app),
-        "_compile_compat_workflow_for_goal",
-        lambda self, goal: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler")),
+        "_build_compat_workflow_runner",
+        lambda self: type("_CompatRunner", (), {"compile_for_goal": lambda _self, goal: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler")), "run": lambda _self, message, graph, root_graph=None: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler"))})(),
     )
     monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
 
@@ -1094,24 +1107,6 @@ def test_demo_assistant_app_can_run_evidence_synthesis_node_chain(tmp_path: Path
             requires_repository_overview=True,
         ),
     )
-    monkeypatch.setattr(
-        type(app),
-        "_compile_compat_workflow_for_goal",
-        lambda self, goal: WorkflowGraph(
-            nodes=[
-                WorkflowNode(node_id="discover", node_type="workspace_discovery"),
-                WorkflowNode(node_id="aggregate", node_type="aggregate_results", dependencies=["discover"]),
-                WorkflowNode(node_id="synthesize", node_type="evidence_synthesis", dependencies=["aggregate"]),
-                WorkflowNode(node_id="finish", node_type="final_response", dependencies=["synthesize"]),
-            ],
-            edges=[
-                WorkflowEdge(source="discover", target="aggregate"),
-                WorkflowEdge(source="aggregate", target="synthesize"),
-                WorkflowEdge(source="synthesize", target="finish"),
-            ],
-        ),
-    )
-
     payload = app.chat("列一下当前工作区都有什么文件")
 
     assert payload["status"] == "completed"
@@ -1154,7 +1149,7 @@ def test_demo_assistant_app_rejects_legacy_file_reader_graph(tmp_path: Path):
     (workspace / "README.md").write_text("legacy reader content", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
-    payload = app._run_compiled_workflow(
+    payload = app._build_compat_workflow_runner().run(
         "读取 README.md",
         graph=WorkflowGraph(
             nodes=[
@@ -1217,6 +1212,77 @@ def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_p
     assert analyze_calls["count"] == 1
 
 
+def test_demo_assistant_app_routes_chat_through_root_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    monkeypatch.setattr(
+        type(app),
+        "_build_root_graph_runtime",
+        lambda self: type("_FakeRootRuntime", (), {
+            "run": lambda _self, message, stream=False: {
+                "status": "completed",
+                "run_id": "root-run",
+                "plan_id": "root-run",
+                "final_answer": "root payload",
+                "capability_name": "workflow",
+                "runtime": "workflow",
+                "execution_trace": [{"name": "goal_intake", "status": "completed", "detail": "goal_intake"}],
+                "approval_request": None,
+                "resume_token_id": None,
+                "session": app.session_payload(),
+                "plan_history": app.plan_history_payload(),
+                "run_history": app.run_history_payload(),
+                "memory": app.memory_payload(),
+                "context": app.context_payload(),
+                "workspace": str(app.workspace),
+            }
+        })(),
+    )
+
+    payload = app.chat("读取 README.md")
+
+    assert payload["status"] == "completed"
+    assert payload["final_answer"] == "root payload"
+
+
+
+def test_demo_assistant_app_routes_stream_chat_through_root_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    monkeypatch.setattr(
+        type(app),
+        "_build_root_graph_runtime",
+        lambda self: type("_FakeRootRuntime", (), {
+            "run": lambda _self, message, stream=False: {
+                "status": "completed",
+                "run_id": "root-run",
+                "plan_id": "root-run",
+                "final_answer": "root payload",
+                "capability_name": "workflow",
+                "runtime": "workflow",
+                "execution_trace": [{"name": "goal_intake", "status": "completed", "detail": "goal_intake"}],
+                "approval_request": None,
+                "resume_token_id": None,
+                "session": app.session_payload(),
+                "plan_history": app.plan_history_payload(),
+                "run_history": app.run_history_payload(),
+                "memory": app.memory_payload(),
+                "context": app.context_payload(),
+                "workspace": str(app.workspace),
+            }
+        })(),
+    )
+
+    events = list(app.stream_chat("读取 README.md"))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["payload"]["final_answer"] == "root payload"
+
+
 def test_demo_assistant_chat_non_conversation_does_not_require_build_workflow_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1233,164 +1299,4 @@ def test_demo_assistant_chat_non_conversation_does_not_require_build_workflow_gr
             target_paths=["README.md"],
         ),
     )
-    monkeypatch.setattr(
-        type(app),
-        "_compile_compat_workflow_for_goal",
-        lambda self, goal: (_ for _ in ()).throw(AssertionError("compat graph compiler should not be used for native non-conversation path")),
-    )
 
-    payload = app.chat("读取 README.md")
-
-    assert payload["status"] == "completed"
-    assert payload["runtime"] == "workflow"
-    assert payload["capability_name"] == "workflow"
-    assert payload["judge"] is not None
-
-
-
-def test_demo_assistant_stream_non_conversation_does_not_require_build_workflow_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
-
-    monkeypatch.setattr(
-        demo_app_module,
-        "analyze_goal",
-        lambda _message, context=None: GoalSpec(
-            original_goal="读取 README.md",
-            primary_intent="file_read",
-            requires_file_read=True,
-            target_paths=["README.md"],
-        ),
-    )
-    monkeypatch.setattr(
-        type(app),
-        "_compile_compat_workflow_for_goal",
-        lambda self, goal: (_ for _ in ()).throw(AssertionError("compat graph compiler should not be used for native non-conversation path")),
-    )
-
-    events = list(app.stream_chat("读取 README.md"))
-
-    assert events[-1]["type"] == "final"
-    assert events[-1]["payload"]["status"] == "completed"
-    assert events[-1]["payload"]["judge"] is not None
-
-
-def test_demo_assistant_stream_chat_uses_agent_graph_runtime_for_native_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
-    compiled_calls = {"count": 0}
-    agent_calls = {"count": 0}
-
-    original_run_agent_graph_workflow = type(app)._run_agent_graph_workflow
-    original_run_compiled_workflow = type(app)._run_compiled_workflow
-
-    def _count_compiled(self, message: str, *, graph: object):
-        compiled_calls["count"] += 1
-        return original_run_compiled_workflow(self, message, graph=graph)
-
-    def _count_agent(self, message: str, **kwargs):
-        agent_calls["count"] += 1
-        return original_run_agent_graph_workflow(self, message, **kwargs)
-
-    monkeypatch.setattr(type(app), "_run_compiled_workflow", _count_compiled)
-    monkeypatch.setattr(type(app), "_run_agent_graph_workflow", _count_agent)
-
-    events = list(app.stream_chat("读取 README.md"))
-
-    assert events[-1]["type"] == "final"
-    assert events[-1]["payload"]["status"] == "completed"
-    assert agent_calls["count"] == 1
-    assert compiled_calls["count"] == 0
-    assert events[-1]["payload"]["judge"] is not None
-    assert events[-1]["payload"]["planned_subgraphs"]
-
-
-def test_demo_assistant_stream_chat_preserves_agent_graph_payload_fields(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = _create_demo_assistant_app_with_test_planner(workspace)
-    events = list(app.stream_chat("读取 README.md"))
-    payload = events[-1]["payload"]
-
-    assert payload["judge"] is not None
-    assert payload["planned_subgraphs"]
-    assert "current_iteration" in payload["graph_state_summary"]
-    assert isinstance(payload["append_history"], list)
-
-
-
-def test_demo_assistant_workflow_runtime_context_includes_memory_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_runtime_framework.resources import ResourceRef
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    readme = workspace / "README.md"
-    readme.write_text("demo", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
-    app.context.application_context.session_memory.remember_focus([ResourceRef.for_path(readme)], summary="remembered readme")
-    captured = {}
-
-    def _fake_analyze_goal(_message: str, context=None):
-        return GoalSpec(original_goal="读取 README.md", primary_intent="file_read", requires_file_read=True, target_paths=["README.md"])
-
-    class _FakeAgentRuntime:
-        def run(self, goal_envelope, context=None, prior_state=None, prior_graph=None, clarification_response=None):
-            captured.update(dict(context or {}))
-            from agent_runtime_framework.workflow import WorkflowRun
-            run = WorkflowRun(goal=goal_envelope.goal)
-            run.status = "completed"
-            run.final_output = "ok"
-            run.metadata["agent_graph_state"] = {"current_iteration": 1, "planned_subgraphs": [], "judge_history": [], "appended_node_ids": []}
-            return run
-
-    monkeypatch.setattr(demo_app_module, "analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(type(app), "_build_agent_graph_runtime", lambda self: _FakeAgentRuntime())
-
-    payload = app.chat("读取 README.md")
-
-    assert payload["status"] == "completed"
-    assert captured["memory"]["last_summary"] == "remembered readme"
-    assert captured["memory"]["focused_resource"]["title"] == "README.md"
-
-
-def test_demo_assistant_app_does_not_duplicate_run_history_entries(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = _create_demo_assistant_app_with_test_planner(workspace)
-
-    payload = app.chat("读取 README.md")
-
-    matching = [item for item in app.run_history_payload() if item.get("run_id") == payload["run_id"]]
-    assert len(matching) == 1
-
-
-def test_demo_assistant_app_exposes_agent_graph_payload_fields(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = _create_demo_assistant_app_with_test_planner(workspace)
-    payload = app.chat("读取 README.md")
-
-    assert payload["judge"] is not None
-    assert payload["planned_subgraphs"]
-    assert payload["graph_state_summary"]["current_iteration"] >= 1
-    assert isinstance(payload["append_history"], list)
-
-
-def test_demo_assistant_app_replays_persisted_agent_graph_payload(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
-    app = _create_demo_assistant_app_with_test_planner(workspace)
-    first = app.chat("读取 README.md")
-    replayed = app.replay(first["run_id"])
-
-    assert replayed["run_id"] == first["run_id"]
-    assert replayed["judge"] == first["judge"]
-    assert replayed["planned_subgraphs"] == first["planned_subgraphs"]

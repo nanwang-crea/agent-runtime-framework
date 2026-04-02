@@ -1,5 +1,7 @@
 # 当前 Agent 设计框架
 
+> 最终架构说明见 `docs/architecture/final-agent-graph-runtime.md`。
+
 > 状态说明：当前代码库的顶层主运行时已经切换为统一入口：conversation 请求走轻量 conversation graph，非 conversation 请求走 `AgentGraphRuntime`。`WorkflowRuntime` 仍是底层节点执行壳；`CodexAgentLoop` / `WorkspaceAgentLoop` 仅保留为兼容子任务后端。
 
 ## 1. 当前目标
@@ -29,8 +31,9 @@
 
 其中：
 
-- 闲聊请求走 conversation graph：`conversation_response -> final_response`
+- 闲聊请求走 conversation graph：`final_response`
 - 非闲聊 workspace 请求统一走 `AgentGraphRuntime`
+- 所有请求先进入 `RootGraphRuntime`，显式经过 `goal_intake -> route_by_goal`，再分叉到 conversation 或 agent 分支
 - 审批不再是顶层旁路；高风险子任务在 Agent Graph 执行过程中动态触发 `waiting_approval`，审批后继续回到图内执行
 - 仅兼容场景才走 `build_workflow_graph()` / compiled workflow
 

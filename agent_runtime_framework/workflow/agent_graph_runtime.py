@@ -44,9 +44,10 @@ class AgentGraphRuntime:
     def run(self, goal_envelope: GoalEnvelope, *, run_id: str | None = None, context: Any | None = None, prior_state: dict[str, Any] | None = None, prior_graph: WorkflowGraph | None = None, clarification_response: str | None = None) -> WorkflowRun:
         runtime_context = context if context is not None else self.context
         state = self._restore_state(goal_envelope, run_id=run_id, prior_state=prior_state)
-        graph = prior_graph or WorkflowGraph(nodes=[WorkflowNode(node_id=f"plan_{state.current_iteration + 1}", node_type="plan")], edges=[], metadata={"agent_graph": True})
+        graph = prior_graph or self._initial_graph(state)
         run = WorkflowRun(goal=goal_envelope.goal, run_id=state.run_id, graph=graph)
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
+        self._seed_system_nodes(run, goal_envelope, runtime_context)
         if clarification_response:
             run.shared_state["clarification_response"] = clarification_response
             state.aggregated_payload["open_questions"] = []
@@ -115,15 +116,13 @@ class AgentGraphRuntime:
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
             run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
-        node_results = list((executed.shared_state.get("node_results") or {}).values())
-        aggregated_result = aggregate_node_results(node_results)
-        run.shared_state["aggregated_result"] = aggregated_result
         if "evidence_synthesis" in executed.shared_state:
             run.shared_state["evidence_synthesis"] = executed.shared_state["evidence_synthesis"]
-        state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(aggregated_result, "output", {}) or {})
         state.current_iteration = subgraph.iteration
         state.planned_subgraphs.append(subgraph)
         state.appended_node_ids.extend(node.node_id for node in subgraph.nodes)
+        aggregated_result, evidence_result = self._materialize_iteration_system_nodes(run, executed, subgraph, JudgeDecision(status="accepted", reason="pending"))
+        state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(evidence_result, "output", {}) or getattr(aggregated_result, "output", {}) or {})
 
         if run.shared_state.get("clarification_request"):
             request = dict(run.shared_state.get("clarification_request") or {})
@@ -136,7 +135,10 @@ class AgentGraphRuntime:
             last_decision = self._judge(goal_envelope, state)
         state.judge_history.append(last_decision)
         run.shared_state["judge_decision"] = last_decision.as_payload()
-        run.graph.nodes.append(WorkflowNode(node_id=f"judge_{state.current_iteration}", node_type="judge"))
+        judge_node_id = f"judge_{state.current_iteration}"
+        judge_result = NodeResult(status="completed", output=last_decision.as_payload())
+        run.node_states[judge_node_id] = NodeState(node_id=judge_node_id, status=judge_result.status, result=judge_result, error=judge_result.error)
+        run.shared_state.setdefault("node_results", {})[judge_node_id] = judge_result
 
         if last_decision.status == "accepted":
             run.status = RUN_STATUS_COMPLETED
@@ -166,6 +168,13 @@ class AgentGraphRuntime:
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
             run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
+        next_plan_node_id = f"plan_{state.current_iteration + 1}"
+        if next_plan_node_id not in {node.node_id for node in run.graph.nodes} and state.current_iteration < self.max_iterations:
+            run.graph.nodes.append(WorkflowNode(node_id=next_plan_node_id, node_type="plan", dependencies=[f"judge_{state.current_iteration}"]))
+            run.graph.edges.append(WorkflowEdge(source=f"judge_{state.current_iteration}", target=next_plan_node_id))
+            plan_result = NodeResult(status="completed", output={"summary": f"prepared {next_plan_node_id}"})
+            run.node_states[next_plan_node_id] = NodeState(node_id=next_plan_node_id, status="completed", result=plan_result)
+            run.shared_state.setdefault("node_results", {})[next_plan_node_id] = plan_result
         run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
         run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
         return None
@@ -210,6 +219,69 @@ class AgentGraphRuntime:
                 metadata=dict(state_payload.get("metadata", {})),
             )
         return run
+
+    def _initial_graph(self, state: AgentGraphState) -> WorkflowGraph:
+        next_iteration = state.current_iteration + 1
+        return WorkflowGraph(
+            nodes=[
+                WorkflowNode(node_id="goal_intake", node_type="goal_intake"),
+                WorkflowNode(node_id="context_assembly", node_type="context_assembly", dependencies=["goal_intake"]),
+                WorkflowNode(node_id=f"plan_{next_iteration}", node_type="plan", dependencies=["context_assembly"]),
+            ],
+            edges=[
+                WorkflowEdge(source="goal_intake", target="context_assembly"),
+                WorkflowEdge(source="context_assembly", target=f"plan_{next_iteration}"),
+            ],
+            metadata={"agent_graph": True},
+        )
+
+    def _seed_system_nodes(self, run: WorkflowRun, goal_envelope: GoalEnvelope, runtime_context: Any | None) -> None:
+        if "goal_intake" not in run.node_states:
+            goal_result = NodeResult(status="completed", output={"goal": goal_envelope.goal, "intent": goal_envelope.intent, "target_hints": list(goal_envelope.target_hints)})
+            run.node_states["goal_intake"] = NodeState(node_id="goal_intake", status="completed", result=goal_result)
+            run.shared_state.setdefault("node_results", {})["goal_intake"] = goal_result
+        if "context_assembly" not in run.node_states:
+            context_result = NodeResult(status="completed", output={"memory": dict((runtime_context or {}).get("memory") or {}), "policy_context": dict((runtime_context or {}).get("policy_context") or {}), "workspace_root": (runtime_context or {}).get("workspace_root")})
+            run.node_states["context_assembly"] = NodeState(node_id="context_assembly", status="completed", result=context_result)
+            run.shared_state.setdefault("node_results", {})["context_assembly"] = context_result
+        plan_node_id = next((node.node_id for node in run.graph.nodes if node.node_type == "plan" and node.node_id not in run.node_states), None)
+        if plan_node_id:
+            plan_result = NodeResult(status="completed", output={"summary": f"prepared {plan_node_id}"})
+            run.node_states[plan_node_id] = NodeState(node_id=plan_node_id, status="completed", result=plan_result)
+            run.shared_state.setdefault("node_results", {})[plan_node_id] = plan_result
+
+    def _materialize_iteration_system_nodes(self, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph, last_decision: JudgeDecision) -> tuple[NodeResult, NodeResult]:
+        iteration = subgraph.iteration
+        aggregate_node_id = f"aggregate_results_{iteration}"
+        evidence_node_id = f"evidence_synthesis_{iteration}"
+        judge_node_id = f"judge_{iteration}"
+        appended_ids = {node.node_id for node in run.graph.nodes}
+        last_subgraph_node_id = subgraph.nodes[-1].node_id if subgraph.nodes else f"plan_{iteration}"
+        if aggregate_node_id not in appended_ids:
+            run.graph.nodes.append(WorkflowNode(node_id=aggregate_node_id, node_type="aggregate_results", dependencies=[node.node_id for node in subgraph.nodes]))
+            if subgraph.nodes:
+                run.graph.edges.append(WorkflowEdge(source=last_subgraph_node_id, target=aggregate_node_id))
+        node_results = list((executed.shared_state.get("node_results") or {}).values())
+        aggregated_result = aggregate_node_results(node_results)
+        run.shared_state["aggregated_result"] = aggregated_result
+        run.node_states[aggregate_node_id] = NodeState(node_id=aggregate_node_id, status=aggregated_result.status, result=aggregated_result, error=aggregated_result.error)
+        run.shared_state.setdefault("node_results", {})[aggregate_node_id] = aggregated_result
+        if evidence_node_id not in {node.node_id for node in run.graph.nodes}:
+            run.graph.nodes.append(WorkflowNode(node_id=evidence_node_id, node_type="evidence_synthesis", dependencies=[aggregate_node_id]))
+            run.graph.edges.append(WorkflowEdge(source=aggregate_node_id, target=evidence_node_id))
+        evidence_payload = dict(getattr(aggregated_result, "output", {}) or {})
+        synthesized_payload = dict(run.shared_state.get("evidence_synthesis") or {})
+        if synthesized_payload:
+            evidence_payload.update(synthesized_payload)
+        evidence_payload.setdefault("summary", "")
+        evidence_result = NodeResult(status="completed", output=evidence_payload, references=list(getattr(aggregated_result, "references", []) or []))
+        run.node_states[evidence_node_id] = NodeState(node_id=evidence_node_id, status=evidence_result.status, result=evidence_result, error=evidence_result.error)
+        run.shared_state.setdefault("node_results", {})[evidence_node_id] = evidence_result
+        run.shared_state["evidence_synthesis"] = evidence_payload
+        if judge_node_id not in {node.node_id for node in run.graph.nodes}:
+            run.graph.nodes.append(WorkflowNode(node_id=judge_node_id, node_type="judge", dependencies=[evidence_node_id]))
+            run.graph.edges.append(WorkflowEdge(source=evidence_node_id, target=judge_node_id))
+        return aggregated_result, evidence_result
 
     def _judge(self, goal_envelope: GoalEnvelope, state: AgentGraphState) -> JudgeDecision:
         if self.judge is None:

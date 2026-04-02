@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 import logging
 from pathlib import Path
 from typing import Any
@@ -10,11 +9,10 @@ from uuid import uuid4
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
 from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceContext, build_default_workspace_tools
 from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.workspace_backend.models import EvidenceItem, TaskState, WorkspaceTask
+from agent_runtime_framework.agents.workspace_backend.models import TaskState, WorkspaceTask
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemorySessionMemory
-from agent_runtime_framework.memory.index import MemoryRecord
 from agent_runtime_framework.runtime import AgentRuntime
 from agent_runtime_framework.models import (
     CodexCliDriver,
@@ -24,25 +22,20 @@ from agent_runtime_framework.models import (
     OpenAICompatibleDriver,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
-from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
+from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
+from agent_runtime_framework.demo.workflow_payload_builder import WorkflowPayloadBuilder
+from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleService
+from agent_runtime_framework.demo.compat_workflow_runner import CompatWorkflowRunner
+from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
-from agent_runtime_framework.workflow import AgentGraphRuntime, WorkflowRuntime, analyze_goal
+from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime
 from agent_runtime_framework.workflow.context_assembly import build_runtime_context
-from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
-from agent_runtime_framework.workflow.conversation import build_conversation_messages
-from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
-from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
-from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
-from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, ConversationResponseExecutor, FinalResponseExecutor, VerificationExecutor
-from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
-from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
-from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
+from agent_runtime_framework.workflow.conversation import build_conversation_messages
+from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime, analyze_goal
 
 logger = logging.getLogger(__name__)
 
@@ -95,159 +88,21 @@ class DemoAssistantApp:
         self._last_route_decision = {"route": "workflow", "source": route_source}
         return analyze_goal(message, context=self.context)
 
-    def _compile_workflow(self, message: str) -> tuple[Any, Any]:
-        goal = self._analyze_workflow_goal(message)
-        from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
-        graph = compile_compat_workflow_graph(goal, context=self.context)
-        return goal, graph
-
-    def _is_conversation_goal(self, goal: Any) -> bool:
-        if self._pending_workflow_clarification is not None:
-            return False
-        return str(getattr(goal, "primary_intent", "") or "").strip() in {"generic", "chat", "conversation"}
-
-    def _build_conversation_graph(self, goal: Any) -> Any:
-        from agent_runtime_framework.workflow.models import WorkflowGraph, WorkflowNode
-
-        return WorkflowGraph(
-            nodes=[
-                WorkflowNode(node_id="final_response", node_type="final_response", metadata={"conversation_mode": True}),
-            ],
-            edges=[],
-            metadata={"goal": getattr(goal, "original_goal", ""), "source": "conversation_graph", "execution_mode": "native", "conversation_mode": True},
-        )
-
-    def _compile_compat_workflow_for_goal(self, goal: Any) -> Any:
-        from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
-        return compile_compat_workflow_graph(goal, context=self.context)
-
     def _run_workflow(self, message: str) -> dict[str, Any]:
-        goal = self._analyze_workflow_goal(message)
-        if self._is_conversation_goal(goal):
-            return self._run_compiled_workflow(message, graph=self._build_conversation_graph(goal))
-        return self._run_agent_graph_workflow(message, goal_spec=goal)
+        runtime = self._build_root_graph_runtime()
+        return runtime.run(message)
 
-    def _run_precompiled_workflow(self, message: str, *, goal: Any, graph: Any) -> dict[str, Any]:
-        native_agent_graph_types = {
-            "workspace_discovery",
-            "content_search",
-            "chunked_file_read",
-            "evidence_synthesis",
-            "aggregate_results",
-            "verification",
-            "approval_gate",
-            "final_response",
-            "target_resolution",
-            "workspace_subtask",
-            "conversation_response",
-        }
-        graph_types = {node.node_type for node in graph.nodes}
-        if len(graph.nodes) == 1 and graph.nodes[0].node_type == "conversation_response":
-            return self._run_compiled_workflow(message, graph=graph)
-        if bool(getattr(goal, "metadata", {}).get("requires_approval")):
-            return self._run_compiled_workflow(message, graph=graph)
-        if not graph_types <= native_agent_graph_types or graph_types == {"final_response"}:
-            return self._run_compiled_workflow(message, graph=graph)
-        return self._run_agent_graph_workflow(message, goal_spec=goal)
+    def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None, root_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._build_runtime_factory().build_agent_branch_runner().run(message, goal_spec=goal_spec, root_graph=root_graph)
 
-    def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None) -> dict[str, Any]:
-        runtime = self._build_agent_graph_runtime()
-        goal_spec = goal_spec or self._analyze_workflow_goal(message)
-        goal_envelope = build_goal_envelope(message, application_context=self.context.application_context, workspace_root=self.workspace, context=self.context, goal_spec=goal_spec)
-        prior_bundle = dict(self._pending_workflow_clarification or {}) if self._pending_workflow_clarification else None
-        prior_run = None
-        prior_state = None
-        prior_graph = None
-        if prior_bundle and prior_bundle.get("run_id"):
-            try:
-                prior_run = self._workflow_store.load(str(prior_bundle.get("run_id")))
-            except Exception:
-                prior_run = None
-        if prior_run is not None:
-            prior_state = dict(prior_run.metadata.get("agent_graph_state") or {})
-            prior_graph = prior_run.graph
-        run = runtime.run(goal_envelope, context=self._workflow_runtime_context(), prior_state=prior_state, prior_graph=prior_graph, clarification_response=(message if prior_run is not None else None))
-        self._workflow_store.save(run)
-        self._remember_workflow_run(message, run)
-        self._capture_workflow_codex_history(run)
-        payload = self._workflow_payload(run)
-        self._record_run(payload, prompt=message)
-        payload["run_history"] = self.run_history_payload()
-        return payload
-
-    def _run_compiled_workflow(self, message: str, *, graph: Any) -> dict[str, Any]:
-        runtime = self._build_workflow_runtime()
-        from agent_runtime_framework.workflow import WorkflowRun
-
-        run = WorkflowRun(goal=message, graph=graph)
-        run.shared_state["goal_envelope"] = build_goal_envelope(
-            message,
-            application_context=self.context.application_context,
-            workspace_root=self.workspace,
-            context=self.context,
-        ).as_payload()
-        run.shared_state["memory"] = self.memory_payload()
-        run.shared_state["session_memory_snapshot"] = self.context.application_context.session_memory.snapshot()
-        run = runtime.run(run)
-        self._remember_workflow_run(message, run)
-        self._capture_workflow_codex_history(run)
-        execution_trace = [
-            {"name": node.node_id, "status": run.node_states[node.node_id].status, "detail": node.node_type}
-            for node in graph.nodes
-            if node.node_id in run.node_states
-        ]
-        approval_request = None
-        resume_token_id = None
-        if run.status == "waiting_approval":
-            resume_token = run.shared_state.get("resume_token")
-            if resume_token is not None:
-                self._pending_tokens[resume_token.token_id] = {"kind": "workflow", "runtime": runtime, "run": run, "token": resume_token}
-                resume_token_id = resume_token.token_id
-            approval_request = self._workflow_approval_request(run)
-        clarification_request = run.shared_state.get("clarification_request")
-        payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
-        self._pending_workflow_clarification = dict(clarification_request or {}) if payload_status == "needs_clarification" else None
-        final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
-        evidence = self._workflow_evidence_payload(run)
-        graph_state = dict(run.metadata.get("agent_graph_state") or {})
-        judge_history = list(graph_state.get("judge_history") or [])
-        payload = {
-            "status": payload_status,
-            "run_id": run.run_id,
-            "plan_id": run.run_id,
-            "final_answer": final_answer,
-            "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in graph.nodes) or graph.metadata.get("conversation_mode") else "workflow"),
-            "runtime": "workflow",
-            "execution_trace": self._with_router_trace(execution_trace),
-            "evidence": evidence,
-            "approval_request": approval_request,
-            "resume_token_id": resume_token_id,
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "context": self.context_payload(),
-            "workspace": str(self.workspace),
-            "judge": judge_history[-1] if judge_history else None,
-            "planned_subgraphs": list(graph_state.get("planned_subgraphs") or []),
-            "graph_state_summary": {"current_iteration": graph_state.get("current_iteration", 0), "appended_node_ids": list(graph_state.get("appended_node_ids") or [])},
-            "append_history": list(run.graph.metadata.get("append_history") or run.metadata.get("append_history") or []),
-        }
-        self._record_run(payload, prompt=message)
-        payload["run_history"] = self.run_history_payload()
-        return payload
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
         self._ensure_session()
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        goal = self._analyze_workflow_goal(message)
         yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
         try:
-            if self._is_conversation_goal(goal):
-                payload = self._run_compiled_workflow(message, graph=self._build_conversation_graph(goal))
-            else:
-                payload = self._run_agent_graph_workflow(message, goal_spec=goal)
+            payload = self._build_root_graph_runtime().run(message)
         except Exception as exc:
             payload = self._error_payload(exc)
             yield {"type": "error", "error": dict(payload.get("error") or {})}
@@ -266,70 +121,11 @@ class DemoAssistantApp:
         yield {"type": "final", "payload": payload}
 
     def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
-        token = self._pending_tokens.pop(token_id, None)
-        if token is None:
-            return {
-                "status": "missing_token",
-                "final_answer": "未找到可恢复的审批请求。",
-                "capability_name": "",
-                "execution_trace": [],
-                "session": self.session_payload(),
-                "plan_history": self.plan_history_payload(),
-                "run_history": self.run_history_payload(),
-                "memory": self.memory_payload(),
-                "approval_request": None,
-                "resume_token_id": None,
-                "workspace": str(self.workspace),
-            }
-        if isinstance(token, dict) and token.get("kind") in {"workflow", "agent_graph"}:
-            runtime = token["runtime"]
-            run = token["run"]
-            resume_token = token["token"]
-            resumed = runtime.resume(run, resume_token=resume_token, approved=approved)
-            self._remember_workflow_run(f"approval:{'approve' if approved else 'reject'}", resumed)
-            self._capture_workflow_codex_history(resumed)
-            payload = self._workflow_payload(resumed)
-            self._record_run(payload, prompt=f"approval:{'approve' if approved else 'reject'}")
-            return payload
-        return {
-            "status": "missing_token",
-            "final_answer": "未找到可恢复的审批请求。",
-            "capability_name": "",
-            "execution_trace": [],
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "approval_request": None,
-            "resume_token_id": None,
-            "workspace": str(self.workspace),
-        }
+        return self._build_run_lifecycle_service().approve(token_id, approved)
 
     def replay(self, run_id: str) -> dict[str, Any]:
-        try:
-            restored = self._workflow_store.load(run_id)
-        except Exception:
-            prompt = self._run_inputs.get(run_id)
-            if not prompt:
-                return {
-                "status": "missing_run",
-                "final_answer": "未找到可重放的运行记录。",
-                "capability_name": "",
-                "execution_trace": [],
-                "session": self.session_payload(),
-                "plan_history": self.plan_history_payload(),
-                "run_history": self.run_history_payload(),
-                "memory": self.memory_payload(),
-                "approval_request": None,
-                "resume_token_id": None,
-                "workspace": str(self.workspace),
-            }
-            payload = self.chat(prompt)
-            self._record_run(payload, prompt=f"replay:{run_id}")
-            return payload
-        payload = self._workflow_payload(restored)
-        self._record_run(payload, prompt=f"replay:{run_id}")
-        return payload
+        return self._build_run_lifecycle_service().replay(run_id)
+
 
     def context_payload(self) -> dict[str, Any]:
         return {
@@ -346,7 +142,6 @@ class DemoAssistantApp:
             if self.agent_registry.get(agent_profile) is None:
                 raise ValueError(f"unknown agent profile: {agent_profile}")
             self._active_agent = agent_profile
-            self.context.services["active_agent"] = agent_profile
         if workspace:
             next_workspace = Path(workspace).expanduser().resolve()
             if not next_workspace.exists():
@@ -388,86 +183,27 @@ class DemoAssistantApp:
         }
 
     def _workflow_payload(self, run: Any) -> dict[str, Any]:
-        execution_trace = [
-            {"name": node.node_type, "status": run.node_states[node.node_id].status, "detail": node.node_type}
-            for node in run.graph.nodes
-            if node.node_id in run.node_states
-        ]
-        approval_request = None
-        resume_token_id = None
-        if run.status == "waiting_approval":
-            resume_token = run.shared_state.get("resume_token")
-            if resume_token is not None:
-                token_kind = "agent_graph" if run.metadata.get("pending_subrun") is not None else "workflow"
-                runtime = self._build_agent_graph_runtime() if token_kind == "agent_graph" else self._build_workflow_runtime()
-                self._pending_tokens[resume_token.token_id] = {"kind": token_kind, "runtime": runtime, "run": run, "token": resume_token}
-                resume_token_id = resume_token.token_id
-            approval_request = self._workflow_approval_request(run)
-        clarification_request = run.shared_state.get("clarification_request")
-        payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
-        self._pending_workflow_clarification = ({**dict(clarification_request or {}), "run_id": run.run_id} if payload_status == "needs_clarification" else None)
-        final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
-        evidence = self._workflow_evidence_payload(run)
-        graph_state = dict(run.metadata.get("agent_graph_state") or {})
-        judge_history = list(graph_state.get("judge_history") or [])
-        return {
-            "status": payload_status,
-            "run_id": run.run_id,
-            "plan_id": run.run_id,
-            "final_answer": final_answer,
-            "capability_name": ("conversation" if any(node.node_type == "conversation_response" for node in run.graph.nodes) or run.graph.metadata.get("conversation_mode") else "workflow"),
-            "runtime": "workflow",
-            "execution_trace": self._with_router_trace(execution_trace),
-            "evidence": evidence,
-            "approval_request": approval_request,
-            "resume_token_id": resume_token_id,
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "context": self.context_payload(),
-            "workspace": str(self.workspace),
-            "judge": judge_history[-1] if judge_history else None,
-            "planned_subgraphs": list(graph_state.get("planned_subgraphs") or []),
-            "graph_state_summary": {"current_iteration": graph_state.get("current_iteration", 0), "appended_node_ids": list(graph_state.get("appended_node_ids") or [])},
-            "append_history": list(run.graph.metadata.get("append_history") or run.metadata.get("append_history") or []),
-        }
+        builder = WorkflowPayloadBuilder(
+            build_agent_graph_runtime=lambda _kind: self._build_agent_graph_runtime(),
+            build_workflow_runtime=lambda _kind: self._build_workflow_runtime(),
+            session_payload=self.session_payload,
+            plan_history_payload=self.plan_history_payload,
+            run_history_payload=self.run_history_payload,
+            memory_payload=self.memory_payload,
+            context_payload=self.context_payload,
+            with_router_trace=self._with_router_trace,
+            workspace=str(self.workspace),
+            pending_tokens=self._pending_tokens,
+            pending_workflow_clarification=self._pending_workflow_clarification,
+        )
+        payload, pending_clarification = builder.build(run)
+        self._pending_workflow_clarification = pending_clarification
+        return payload
 
 
-    def _workflow_evidence_payload(self, run: Any) -> dict[str, Any]:
-        node_results = run.shared_state.get("node_results", {})
-        aggregated = run.shared_state.get("aggregated_result")
-        aggregated_output = aggregated.output if isinstance(getattr(aggregated, "output", None), dict) else {}
-        synthesized = dict(run.shared_state.get("evidence_synthesis") or {})
-        candidates: list[dict[str, Any]] = []
-        chunks: list[dict[str, Any]] = []
-        verification = dict(synthesized.get("verification") or aggregated_output.get("verification") or {})
-        if not verification:
-            verification = {"status": "not_run", "success": False, "summary": "No explicit verification result was produced."}
-        for result in node_results.values():
-            if not isinstance(getattr(result, "output", None), dict):
-                continue
-            output = result.output
-            for item in output.get("candidates", output.get("matches", [])) or []:
-                if isinstance(item, dict) and item not in candidates:
-                    candidates.append(item)
-            for chunk in output.get("chunks", []) or []:
-                if isinstance(chunk, dict) and chunk not in chunks:
-                    chunks.append(chunk)
-            if not verification and isinstance(output.get("verification"), dict):
-                verification = dict(output.get("verification") or {})
-        if not chunks:
-            for chunk in synthesized.get("chunks", []) or aggregated_output.get("chunks", []) or []:
-                if isinstance(chunk, dict) and chunk not in chunks:
-                    chunks.append(chunk)
-        return {
-            "candidates": candidates,
-            "evidence_items": list(synthesized.get("evidence_items") or aggregated_output.get("evidence_items") or []),
-            "chunks": chunks,
-            "facts": list(synthesized.get("facts") or aggregated_output.get("facts") or []),
-            "open_questions": list(synthesized.get("open_questions") or aggregated_output.get("open_questions") or []),
-            "verification": verification,
-        }
+
+    def _build_runtime_factory(self) -> DemoRuntimeFactory:
+        return DemoRuntimeFactory(self)
 
     def _workflow_runtime_context(self) -> dict[str, Any]:
         runtime_context = build_runtime_context(
@@ -478,31 +214,20 @@ class DemoAssistantApp:
         return runtime_context
 
 
+    def _build_run_lifecycle_service(self) -> RunLifecycleService:
+        return self._build_runtime_factory().build_run_lifecycle_service()
+
+    def _build_compat_workflow_runner(self) -> CompatWorkflowRunner:
+        return self._build_runtime_factory().build_compat_workflow_runner()
+
+    def _build_root_graph_runtime(self) -> RootGraphRuntime:
+        return self._build_runtime_factory().build_root_graph_runtime()
+
     def _build_agent_graph_runtime(self) -> AgentGraphRuntime:
-        return AgentGraphRuntime(
-            workflow_runtime=self._build_workflow_runtime(),
-            context=self._workflow_runtime_context(),
-        )
+        return self._build_runtime_factory().build_agent_graph_runtime()
 
     def _build_workflow_runtime(self) -> WorkflowRuntime:
-        return WorkflowRuntime(
-            executors={
-                "conversation_response": ConversationResponseExecutor(),
-                "workspace_discovery": WorkspaceDiscoveryExecutor(),
-                "content_search": ContentSearchExecutor(),
-                "chunked_file_read": ChunkedFileReadExecutor(),
-                "evidence_synthesis": EvidenceSynthesisExecutor(),
-                "aggregate_results": AggregationExecutor(),
-                "verification": VerificationExecutor(),
-                "approval_gate": ApprovalGateExecutor(),
-                "final_response": FinalResponseExecutor(),
-                "tool_call": ToolCallExecutor(),
-                "clarification": ClarificationExecutor(),
-                "target_resolution": TargetResolutionExecutor(),
-                "workspace_subtask": WorkspaceSubtaskExecutor(run_subtask=self._run_workspace_subtask),
-            },
-            context=self._workflow_runtime_context(),
-        )
+        return self._build_runtime_factory().build_workflow_runtime()
 
     def _run_workspace_subtask(self, goal: str, *, task_profile: str, metadata: dict[str, Any]):
         summary = str(metadata.get("summary") or goal)
@@ -517,75 +242,6 @@ class DemoAssistantApp:
         from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
 
         return WorkspaceSubtaskResult(status="completed", final_output=summary, task=task, action_kind="workspace_subtask", run_id=str(uuid4()))
-
-    def _workflow_approval_request(self, run: Any) -> dict[str, Any] | None:
-        resume_token = run.shared_state.get("resume_token")
-        if resume_token is None:
-            return None
-        state = run.node_states.get(resume_token.node_id)
-        if state is None or state.result is None:
-            return {"capability_name": "approval_gate", "instruction": "Review workflow step", "reason": "需要审批后继续执行工作流。", "risk_class": "medium"}
-        approval_data = dict(state.result.approval_data or {})
-        request = approval_data.get("approval_request")
-        if request is not None:
-            return {
-                "capability_name": request.capability_name,
-                "instruction": request.instruction,
-                "reason": request.reason,
-                "risk_class": request.risk_class,
-            }
-        return {
-            "capability_name": state.node_id if hasattr(state, "node_id") else "approval_gate",
-            "instruction": str(state.result.output.get("summary") if isinstance(state.result.output, dict) else "Review workflow step"),
-            "reason": "需要审批后继续执行工作流。",
-            "risk_class": "medium",
-        }
-
-    def _capture_workflow_codex_history(self, run: Any) -> None:
-        results = run.shared_state.get("workspace_subtask_results", {})
-        for result in results.values():
-            task = getattr(result, "task", None)
-            if task is None:
-                continue
-            self._task_history.insert(0, task)
-        self._task_history = self._task_history[:40]
-
-    def _remember_workflow_run(self, message: str, run: Any) -> None:
-        session = self.context.session
-        if session is not None:
-            session.add_turn("user", message)
-            if run.final_output:
-                session.add_turn("assistant", str(run.final_output))
-            session.focused_capability = "workflow"
-        pseudo_actions = []
-        references: list[str] = []
-        node_results = run.shared_state.get("node_results", {})
-        for node in run.graph.nodes:
-            state = run.node_states.get(node.node_id)
-            if state is None:
-                continue
-            result = node_results.get(node.node_id)
-            observation = ""
-            if result is not None:
-                if isinstance(result.output, dict):
-                    observation = str(result.output.get("summary") or result.output.get("final_response") or result.output.get("content") or "")
-                elif result.output is not None:
-                    observation = str(result.output)
-                for reference in getattr(result, "references", []):
-                    if reference and reference not in references:
-                        references.append(reference)
-            pseudo_actions.append(SimpleNamespace(kind=node.node_type, instruction=message, status=getattr(state, "status", "pending"), observation=observation, metadata={}))
-        workflow_task = SimpleNamespace(task_id=run.run_id, goal=message, actions=pseudo_actions)
-        self._task_history.insert(0, workflow_task)
-        self._task_history = self._task_history[:40]
-        if references:
-            ref = ResourceRef.for_path(references[0])
-            summary = str(run.final_output or f"Workflow completed for {ref.title}")
-            self.context.application_context.session_memory.remember_focus([ref], summary=summary)
-            remember = getattr(self.context.application_context.index_memory, "remember", None)
-            if callable(remember):
-                path = str(Path(ref.location).resolve().relative_to(self.workspace)) if Path(ref.location).resolve().is_relative_to(self.workspace) else ref.location
-                remember(MemoryRecord(key=f"focus:{path}", text=f"{path} {summary}".strip(), kind="workspace_focus", metadata={"path": path, "summary": summary}))
 
     def memory_payload(self) -> dict[str, Any]:
         snapshot = self.context.application_context.session_memory.snapshot()
@@ -874,7 +530,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
     agent_registry.register_many(builtin_agent_definitions())
     context = WorkspaceContext(
         application_context=app_context,
-        services={"active_agent": "workspace", "model_first_task_intent": True, "model_first_task_plan": True, "agent_registry": agent_registry},
+        services={},
         session=AssistantSession(session_id=str(uuid4())),
     )
     app = DemoAssistantApp(
