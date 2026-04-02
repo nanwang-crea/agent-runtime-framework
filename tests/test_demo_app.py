@@ -1136,7 +1136,7 @@ def test_demo_workflow_runtime_registers_only_new_native_executors(tmp_path: Pat
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    runtime = app._build_workflow_runtime()
+    runtime = app._build_graph_execution_runtime()
 
     assert {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis"} <= set(runtime.executors)
     assert "repository_explainer" not in runtime.executors

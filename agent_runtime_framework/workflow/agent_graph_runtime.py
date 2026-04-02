@@ -25,7 +25,7 @@ from agent_runtime_framework.workflow.models import (
     serialize_agent_graph_state,
 )
 from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
-from agent_runtime_framework.workflow.runtime import WorkflowRuntime
+from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.judge import judge_progress
 
 
@@ -35,7 +35,7 @@ PlannerFn = Callable[[GoalEnvelope, AgentGraphState, Any | None], PlannedSubgrap
 
 @dataclass(slots=True)
 class AgentGraphRuntime:
-    workflow_runtime: WorkflowRuntime
+    workflow_runtime: GraphExecutionRuntime
     planner: PlannerFn = plan_next_subgraph
     judge: JudgeFn | None = None
     context: dict[str, Any] = field(default_factory=dict)

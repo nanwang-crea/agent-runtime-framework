@@ -17,7 +17,7 @@ from agent_runtime_framework.workflow import (
     normalize_aggregated_workflow_payload,
 )
 import pytest
-from agent_runtime_framework.workflow.runtime import WorkflowRuntime
+from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
@@ -79,7 +79,7 @@ def test_runtime_executes_ready_nodes_in_dependency_order():
     )
     run = WorkflowRun(goal="demo", graph=graph)
 
-    result = WorkflowRuntime(executors={"noop": NoopExecutor()}).run(run)
+    result = GraphExecutionRuntime(executors={"noop": NoopExecutor()}).run(run)
 
     assert result.status == RUN_STATUS_COMPLETED
     assert result.node_states["start"].status == NODE_STATUS_COMPLETED
@@ -97,7 +97,7 @@ def test_failed_node_stops_downstream_execution():
     )
     run = WorkflowRun(goal="demo", graph=graph)
 
-    result = WorkflowRuntime(
+    result = GraphExecutionRuntime(
         executors={"fail": FailExecutor(), "noop": NoopExecutor()}
     ).run(run)
 
@@ -126,7 +126,7 @@ def test_runtime_resumes_executor_managed_approval_node():
         edges=[WorkflowEdge(source="change", target="finish")],
     )
     run = WorkflowRun(goal="demo", graph=graph)
-    runtime = WorkflowRuntime(executors={"approval_executor": ApprovalExecutor(), "noop": NoopExecutor()})
+    runtime = GraphExecutionRuntime(executors={"approval_executor": ApprovalExecutor(), "noop": NoopExecutor()})
 
     first = runtime.run(run)
 
@@ -145,7 +145,7 @@ def test_single_node_workflow_run_initializes_and_completes_state_tracking():
     graph = WorkflowGraph(nodes=[WorkflowNode(node_id="only", node_type="noop")], edges=[])
     run = WorkflowRun(goal="demo", graph=graph)
 
-    result = WorkflowRuntime(executors={"noop": NoopExecutor()}).run(run)
+    result = GraphExecutionRuntime(executors={"noop": NoopExecutor()}).run(run)
 
     assert result.status == RUN_STATUS_COMPLETED
     assert result.node_states["only"].status == NODE_STATUS_COMPLETED
@@ -176,7 +176,7 @@ def test_runtime_executes_tool_call_node_with_registered_tool():
     )
     run = WorkflowRun(goal="echo", graph=graph)
 
-    result = WorkflowRuntime(
+    result = GraphExecutionRuntime(
         executors={"tool_call": ToolCallExecutor(), "final_response": FinalResponseExecutor()},
         context={"application_context": app_context, "workspace_context": workflow_context},
     ).run(run)
@@ -197,7 +197,7 @@ def test_runtime_executes_clarification_node_inside_workflow():
     )
     run = WorkflowRun(goal="clarify", graph=graph)
 
-    result = WorkflowRuntime(
+    result = GraphExecutionRuntime(
         executors={"clarification": ClarificationExecutor(), "final_response": FinalResponseExecutor()}
     ).run(run)
 
@@ -238,7 +238,7 @@ def test_runtime_executes_target_explainer_node_chain_with_workspace_tools(tmp_p
     )
     run = WorkflowRun(goal="请讲解 service 这个模块在做什么", graph=graph)
 
-    result = WorkflowRuntime(
+    result = GraphExecutionRuntime(
         executors={
             "target_resolution": TargetResolutionExecutor(),
             "content_search": ContentSearchExecutor(),
@@ -930,7 +930,7 @@ def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
         metadata={"parent_judge_id": "plan_1"},
     )
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(executors={"content_search": NoopExecutor()}),
+        workflow_runtime=GraphExecutionRuntime(executors={"content_search": NoopExecutor()}),
         planner=lambda goal_envelope, state, context: planned,
         judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "enough"},
     )
@@ -976,7 +976,7 @@ def test_agent_graph_runtime_appends_second_iteration_when_more_evidence_is_need
         return {"status": "accepted", "reason": "done"}
 
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
         planner=_planner,
         judge=_judge,
         max_iterations=3,
@@ -1001,7 +1001,7 @@ def test_agent_graph_runtime_returns_limited_answer_when_iteration_budget_is_exh
         success_criteria=["finish within budget"],
     )
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=state.current_iteration + 1,
             planner_summary="still working",
@@ -1109,7 +1109,7 @@ def test_agent_graph_runtime_limited_answer_contains_stop_reason_and_missing_ite
 
     goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound")
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor(), "final_response": FinalResponseExecutor()}),
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor(), "final_response": FinalResponseExecutor()}),
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=state.current_iteration + 1,
             planner_summary="still working",
@@ -1138,7 +1138,7 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor(), "clarification": ClarificationExecutor()}),
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor(), "clarification": ClarificationExecutor()}),
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=state.current_iteration + 1,
             planner_summary="need clarification",
@@ -1175,7 +1175,7 @@ def test_agent_graph_runtime_survives_model_planner_failure(monkeypatch):
         success_criteria=["read file"],
     )
     runtime = AgentGraphRuntime(
-        workflow_runtime=WorkflowRuntime(
+        workflow_runtime=GraphExecutionRuntime(
             executors={
                 "content_search": NoopExecutor(),
                 "chunked_file_read": NoopExecutor(),

@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from agent_runtime_framework.demo.agent_branch_runner import AgentBranchRunner
+from agent_runtime_framework.demo.agent_branch_orchestrator import AgentBranchOrchestrator
 from agent_runtime_framework.demo.compat_workflow_runner import CompatWorkflowRunner
 from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleService
 from agent_runtime_framework.demo.workflow_run_observer import WorkflowRunObserver
-from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime, analyze_goal
+from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, analyze_goal
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
 from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
 from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
@@ -42,10 +42,10 @@ class DemoRuntimeFactory:
         return self.build_compat_workflow_runner().run(message, graph=graph, root_graph=root_graph)
 
     def _run_agent_branch(self, message: str, goal: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
-        return self.build_agent_branch_runner().run(message, goal_spec=goal, root_graph=root_graph)
+        return self.build_agent_branch_orchestrator().run(message, goal_spec=goal, root_graph=root_graph)
 
-    def build_workflow_runtime(self) -> WorkflowRuntime:
-        return WorkflowRuntime(
+    def build_graph_execution_runtime(self) -> GraphExecutionRuntime:
+        return GraphExecutionRuntime(
             executors={
                 "workspace_discovery": WorkspaceDiscoveryExecutor(),
                 "content_search": ContentSearchExecutor(),
@@ -65,16 +65,16 @@ class DemoRuntimeFactory:
 
     def build_agent_graph_runtime(self) -> AgentGraphRuntime:
         return AgentGraphRuntime(
-            workflow_runtime=self.build_workflow_runtime(),
+            workflow_runtime=self.build_graph_execution_runtime(),
             context=self.app._workflow_runtime_context(),
         )
 
     def build_observer(self) -> WorkflowRunObserver:
         return WorkflowRunObserver(context=self.app.context, workspace=self.app.workspace, task_history=self.app._task_history)
 
-    def build_agent_branch_runner(self) -> AgentBranchRunner:
+    def build_agent_branch_orchestrator(self) -> AgentBranchOrchestrator:
         observer = self.build_observer()
-        return AgentBranchRunner(
+        return AgentBranchOrchestrator(
             build_agent_graph_runtime=self.build_agent_graph_runtime,
             build_runtime_context=self.app._workflow_runtime_context,
             workflow_store=self.app._workflow_store,
@@ -92,7 +92,7 @@ class DemoRuntimeFactory:
     def build_compat_workflow_runner(self) -> CompatWorkflowRunner:
         observer = self.build_observer()
         return CompatWorkflowRunner(
-            build_workflow_runtime=self.build_workflow_runtime,
+            build_graph_execution_runtime=self.build_graph_execution_runtime,
             workflow_payload=self.app._workflow_payload,
             memory_payload=self.app.memory_payload,
             remember_workflow_run=observer.remember_workflow_run,

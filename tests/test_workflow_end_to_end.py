@@ -21,8 +21,8 @@ def test_demo_app_routes_compound_goal_through_workflow_runtime(tmp_path: Path):
     assert any(step["detail"] == "chunked_file_read" for step in payload["execution_trace"])
 
 
-def test_public_surface_marks_workflow_runtime_as_primary():
+def test_public_surface_marks_graph_execution_runtime_as_primary():
     import agent_runtime_framework as arf
 
-    assert hasattr(arf, "WorkflowRuntime")
+    assert hasattr(arf, "GraphExecutionRuntime")
     assert hasattr(arf, "WorkflowRun")

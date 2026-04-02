@@ -18,7 +18,7 @@ CaptureFn = Callable[[Any], None]
 
 @dataclass(slots=True)
 class CompatWorkflowRunner:
-    build_workflow_runtime: BuildRuntimeFn
+    build_graph_execution_runtime: BuildRuntimeFn
     workflow_payload: PayloadFn
     memory_payload: MemoryFn
     remember_workflow_run: RememberFn
@@ -31,7 +31,7 @@ class CompatWorkflowRunner:
         return compile_compat_workflow_graph(goal, context=self.context)
 
     def run(self, message: str, *, graph: Any, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
-        runtime = self.build_workflow_runtime()
+        runtime = self.build_graph_execution_runtime()
         run = WorkflowRun(goal=message, graph=graph)
         if root_graph is not None:
             run.metadata["root_graph"] = dict(root_graph)

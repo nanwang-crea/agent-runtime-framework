@@ -14,7 +14,7 @@ TraceFn = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
 @dataclass(slots=True)
 class WorkflowPayloadBuilder:
     build_agent_graph_runtime: BuildRuntimeFn
-    build_workflow_runtime: BuildRuntimeFn
+    build_graph_execution_runtime: BuildRuntimeFn
     session_payload: PayloadFn
     plan_history_payload: PayloadFn
     run_history_payload: PayloadFn
@@ -37,7 +37,7 @@ class WorkflowPayloadBuilder:
             resume_token = run.shared_state.get("resume_token")
             if resume_token is not None:
                 token_kind = "agent_graph" if run.metadata.get("pending_subrun") is not None else "workflow"
-                runtime = self.build_agent_graph_runtime("agent_graph") if token_kind == "agent_graph" else self.build_workflow_runtime("workflow")
+                runtime = self.build_agent_graph_runtime("agent_graph") if token_kind == "agent_graph" else self.build_graph_execution_runtime("workflow")
                 self.pending_tokens[resume_token.token_id] = {"kind": token_kind, "runtime": runtime, "run": run, "token": resume_token}
                 resume_token_id = resume_token.token_id
             approval_request = self._workflow_approval_request(run)

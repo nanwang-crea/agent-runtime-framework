@@ -5,6 +5,7 @@ from agent_runtime_framework.workflow.goal_analysis import analyze_goal
 from agent_runtime_framework.workflow.graph_builder import build_workspace_subtask_graph
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.root_graph_runtime import RootGraphRuntime
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
@@ -38,7 +39,6 @@ from agent_runtime_framework.workflow.models import (
     normalize_aggregated_workflow_payload,
     serialize_agent_graph_state,
 )
-from agent_runtime_framework.workflow.runtime import WorkflowRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
@@ -77,13 +77,13 @@ __all__ = [
     "WorkflowRun",
     "WorkflowPersistenceStore",
     "AgentGraphRuntime",
+    "GraphExecutionRuntime",
     "RootGraphRuntime",
     "build_goal_envelope",
     "plan_next_subgraph",
     "append_subgraph",
     "judge_progress",
     "WorkflowResumeToken",
-    "WorkflowRuntime",
     "WorkflowScheduler",
     "ToolCallExecutor",
     "ClarificationExecutor",

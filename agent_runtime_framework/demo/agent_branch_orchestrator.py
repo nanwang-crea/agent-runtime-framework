@@ -8,7 +8,7 @@ from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload
 
 
 @dataclass(slots=True)
-class AgentBranchRunner:
+class AgentBranchOrchestrator:
     build_agent_graph_runtime: Callable[[], Any]
     build_runtime_context: Callable[[], dict[str, Any]]
     workflow_store: Any

@@ -31,12 +31,11 @@ from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleServi
 from agent_runtime_framework.demo.compat_workflow_runner import CompatWorkflowRunner
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
-from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime
+from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, analyze_goal
 from agent_runtime_framework.workflow.root_graph_runtime import RuntimePayload, RootGraphPayload
 from agent_runtime_framework.workflow.context_assembly import build_runtime_context
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
-from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime, analyze_goal
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +91,7 @@ class DemoAssistantApp:
         return runtime.run(message)
 
     def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
-        return self._build_runtime_factory().build_agent_branch_runner().run(message, goal_spec=goal_spec, root_graph=root_graph)
+        return self._build_runtime_factory().build_agent_branch_orchestrator().run(message, goal_spec=goal_spec, root_graph=root_graph)
 
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
@@ -184,7 +183,7 @@ class DemoAssistantApp:
     def _workflow_payload(self, run: Any) -> dict[str, Any]:
         builder = WorkflowPayloadBuilder(
             build_agent_graph_runtime=lambda _kind: self._build_agent_graph_runtime(),
-            build_workflow_runtime=lambda _kind: self._build_workflow_runtime(),
+            build_graph_execution_runtime=lambda _kind: self._build_graph_execution_runtime(),
             session_payload=self.session_payload,
             plan_history_payload=self.plan_history_payload,
             run_history_payload=self.run_history_payload,
@@ -225,8 +224,8 @@ class DemoAssistantApp:
     def _build_agent_graph_runtime(self) -> AgentGraphRuntime:
         return self._build_runtime_factory().build_agent_graph_runtime()
 
-    def _build_workflow_runtime(self) -> WorkflowRuntime:
-        return self._build_runtime_factory().build_workflow_runtime()
+    def _build_graph_execution_runtime(self) -> GraphExecutionRuntime:
+        return self._build_runtime_factory().build_graph_execution_runtime()
 
     def _run_workspace_subtask(self, goal: str, *, task_profile: str, metadata: dict[str, Any]):
         summary = str(metadata.get("summary") or goal)

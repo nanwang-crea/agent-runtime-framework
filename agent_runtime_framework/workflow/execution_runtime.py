@@ -20,7 +20,7 @@ from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 
 
 @dataclass(slots=True)
-class WorkflowRuntime:
+class GraphExecutionRuntime:
     executors: dict[str, Any]
     scheduler: WorkflowScheduler = field(default_factory=WorkflowScheduler)
     context: dict[str, Any] = field(default_factory=dict)

@@ -7,7 +7,7 @@ from agent_runtime_framework.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
-from agent_runtime_framework.workflow.runtime import WorkflowRuntime
+from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 
 
 class NoopExecutor:
@@ -28,7 +28,7 @@ def test_workflow_runtime_resumes_only_waiting_approval_node():
         ],
     )
     run = WorkflowRun(goal="demo", graph=graph)
-    runtime = WorkflowRuntime(executors={"noop": NoopExecutor()})
+    runtime = GraphExecutionRuntime(executors={"noop": NoopExecutor()})
 
     first = runtime.run(run)
 
@@ -58,7 +58,7 @@ def test_workflow_runtime_resumes_graph_built_approval_gate_for_workspace_subtas
     )
     graph = compile_compat_workflow_graph(goal)
     run = WorkflowRun(goal=goal.original_goal, graph=graph)
-    runtime = WorkflowRuntime(executors={"noop": NoopExecutor(), "workspace_subtask": NoopExecutor(), "approval_gate": NoopExecutor(), "final_response": NoopExecutor()})
+    runtime = GraphExecutionRuntime(executors={"noop": NoopExecutor(), "workspace_subtask": NoopExecutor(), "approval_gate": NoopExecutor(), "final_response": NoopExecutor()})
 
     first = runtime.run(run)
 
