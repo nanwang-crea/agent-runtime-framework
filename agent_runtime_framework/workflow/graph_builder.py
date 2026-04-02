@@ -6,6 +6,7 @@ from typing import Any
 from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.decomposition import decompose_goal
+from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
 
@@ -22,11 +23,13 @@ def build_first_iteration_subgraph(goal_envelope, graph_state, context: Any | No
 
 
 def compile_compat_workflow_graph(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
-    llm_graph = _build_graph_with_model(goal, context=context)
+    llm_graph, fallback_reason = _build_graph_with_model(goal, context=context)
     if llm_graph is not None:
         graph = _normalize_graph(llm_graph, goal)
         graph.metadata = {
             **dict(graph.metadata or {}),
+            "strategy": "model",
+            "model_role": "planner",
             "compatibility_mode": True,
             "compatibility_entrypoint": "compile_compat_workflow_graph",
         }
@@ -36,20 +39,24 @@ def compile_compat_workflow_graph(goal: GoalSpec, context: Any | None = None) ->
     graph = _build_graph_deterministically(goal, context=context)
     graph.metadata = {
         **dict(graph.metadata or {}),
+        "strategy": ("fallback" if fallback_reason else "deterministic"),
+        "model_role": "planner",
+        **({"fallback_reason": fallback_reason} if fallback_reason else {}),
         "compatibility_mode": True,
         "compatibility_entrypoint": "compile_compat_workflow_graph",
     }
     return graph
 
 
-def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowGraph | None:
-    if context is None:
-        return None
-    runtime = resolve_model_runtime(context.application_context, "planner")
-    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
-    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[WorkflowGraph | None, str | None]:
+    application_context = get_application_context(context)
+    if application_context is None:
+        return None, None
+    runtime = resolve_model_runtime(application_context, "planner")
+    llm_client = runtime.client if runtime is not None else application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
-        return None
+        return None, "model unavailable"
 
     try:
         response = chat_once(
@@ -87,22 +94,22 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
                 max_tokens=800,
             ),
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, str(exc) or "model call failed"
 
     try:
         parsed = json.loads(extract_json_block(str(response.content or "")))
     except Exception:
-        return None
+        return None, "invalid model response"
 
     nodes: list[WorkflowNode] = []
     for item in parsed.get("nodes") or []:
         if not isinstance(item, dict):
-            return None
+            return None, "invalid model response"
         node_id = str(item.get("node_id") or "").strip()
         node_type = str(item.get("node_type") or "").strip()
         if not node_id or not node_type:
-            return None
+            return None, "invalid model response"
         nodes.append(
             WorkflowNode(
                 node_id=node_id,
@@ -118,11 +125,11 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
     edges: list[WorkflowEdge] = []
     for item in parsed.get("edges") or []:
         if not isinstance(item, dict):
-            return None
+            return None, "invalid model response"
         source = str(item.get("source") or "").strip()
         target = str(item.get("target") or "").strip()
         if not source or not target:
-            return None
+            return None, "invalid model response"
         edges.append(
             WorkflowEdge(
                 source=source,
@@ -133,8 +140,8 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
         )
 
     if not nodes:
-        return None
-    return WorkflowGraph(nodes=nodes, edges=edges, metadata={"goal": goal.original_goal, "source": "model"})
+        return None, "invalid model response"
+    return WorkflowGraph(nodes=nodes, edges=edges, metadata={"goal": goal.original_goal, "source": "model"}), None
 
 
 def _build_graph_deterministically(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:

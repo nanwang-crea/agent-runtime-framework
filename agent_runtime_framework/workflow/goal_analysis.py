@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec
 
 
@@ -25,22 +26,35 @@ def _extract_target_hint(user_input: str) -> str:
 def analyze_goal(user_input: str, context: Any | None = None) -> GoalSpec:
     text = user_input.strip()
     if not text:
-        return GoalSpec(original_goal=text, primary_intent="generic")
+        return GoalSpec(original_goal=text, primary_intent="generic", metadata={"strategy": "deterministic"})
 
-    llm_goal = _analyze_goal_with_model(text, context=context)
+    llm_goal, fallback_reason = _analyze_goal_with_model(text, context=context)
     if llm_goal is not None:
+        llm_goal.metadata = {
+            **dict(llm_goal.metadata or {}),
+            "strategy": "model",
+            "model_role": "planner",
+        }
         return llm_goal
-    return _analyze_goal_with_keywords(text)
+    keyword_goal = _analyze_goal_with_keywords(text)
+    keyword_goal.metadata = {
+        **dict(keyword_goal.metadata or {}),
+        "strategy": ("fallback" if fallback_reason else "deterministic"),
+        "model_role": "planner",
+        **({"fallback_reason": fallback_reason} if fallback_reason else {}),
+    }
+    return keyword_goal
 
 
-def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> GoalSpec | None:
-    if context is None:
-        return None
-    runtime = resolve_model_runtime(context.application_context, "planner")
-    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
-    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[GoalSpec | None, str | None]:
+    application_context = get_application_context(context)
+    if application_context is None:
+        return None, None
+    runtime = resolve_model_runtime(application_context, "planner")
+    llm_client = runtime.client if runtime is not None else application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
-        return None
+        return None, "model unavailable"
 
     try:
         response = chat_once(
@@ -62,17 +76,17 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> GoalSpe
                 max_tokens=300,
             ),
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, str(exc) or "model call failed"
 
     try:
         parsed = json.loads(extract_json_block(str(response.content or "")))
     except Exception:
-        return None
+        return None, "invalid model response"
 
     primary_intent = str(parsed.get("primary_intent") or "").strip()
     if not primary_intent:
-        return None
+        return None, "invalid model response"
     target_paths = [str(item).strip() for item in parsed.get("target_paths") or [] if str(item).strip()]
     return GoalSpec(
         original_goal=user_input,
@@ -82,7 +96,7 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> GoalSpe
         requires_final_synthesis=bool(parsed.get("requires_final_synthesis")),
         target_paths=target_paths,
         metadata=dict(parsed.get("metadata") or {}),
-    )
+    ), None
 
 
 def _analyze_goal_with_keywords(user_input: str) -> GoalSpec:

@@ -6,6 +6,7 @@ from typing import Any, Callable
 from agent_runtime_framework.workflow import WorkflowRun
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
+from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload, RuntimePayload
 
 
 BuildRuntimeFn = Callable[[], Any]
@@ -29,7 +30,7 @@ class CompatWorkflowRunner:
     def compile_for_goal(self, goal: Any):
         return compile_compat_workflow_graph(goal, context=self.context)
 
-    def run(self, message: str, *, graph: Any, root_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(self, message: str, *, graph: Any, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
         runtime = self.build_workflow_runtime()
         run = WorkflowRun(goal=message, graph=graph)
         if root_graph is not None:

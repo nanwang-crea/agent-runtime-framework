@@ -43,8 +43,8 @@
 - metadata: {"claim_kind": "role", "path": ".", "task_profile": "repository_explainer"}
 
 ## workspace_focus | focus:README.md
-- text: "README.md # Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："
-- metadata: {"path": "README.md", "summary": "# Agent Runtime Framework\n`agent-runtime-framework` 当前的主产品路径已经从“单个 `CodexAgentLoop` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如："}
+- text: "README.md - `agent_runtime_framework.demo.server`\n- `agent_runtime_framework.demo.app`\n- `agent_runtime_framework.workflow.*`\n- `agent_runtime_framework.agents.*`（agent definitions / registry / workspace backend）\n\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如：\n\n- 列目录并总结仓库结构\n- 读取 README / 代码文件并汇总\n- 把多个子任务结果聚合成最终回答\n- 为高风险节点提供审批 / 恢复\n- 为长链执行保留运行状态与恢复点\n\n## Current Architecture\n\n当前生效的运行时可以分成五层："
+- metadata: {"path": "README.md", "summary": "- `agent_runtime_framework.demo.server`\n- `agent_runtime_framework.demo.app`\n- `agent_runtime_framework.workflow.*`\n- `agent_runtime_framework.agents.*`（agent definitions / registry / workspace backend）\n\n这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如：\n\n- 列目录并总结仓库结构\n- 读取 README / 代码文件并汇总\n- 把多个子任务结果聚合成最终回答\n- 为高风险节点提供审批 / 恢复\n- 为长链执行保留运行状态与恢复点\n\n## Current Architecture\n\n当前生效的运行时可以分成五层："}
 
 ## task_conclusion | task:874c11ae-fc4d-4017-8e63-c6c8233e6240:conclusion
 - text: "agent_runtime_framework这个目录下面主要都有什么呢？给我简单讲解一下 根据已收集的目录结构和 README.md 信息，给用户一个综合性的讲解，说明 agent_runtime_framework 目录的主要内容和各部分作用"
@@ -607,5 +607,5 @@
 - metadata: {"confidence": 0.9, "created_at": "2026-03-31T14:02:47.295150+00:00", "entity_type": "file", "goal": "现在我需要你给我看一下README的文档，然后给我总结一下README里面讲了什么东西，要中文", "layer": "entity", "path": "README.md", "record_kind": "observation", "retrievable_for_resolution": true, "scope": "path", "source_task_profile": "file_reader", "task_profile": "file_reader"}
 
 ## workspace_focus | focus:.DS_Store
-- text: ".DS_Store Workflow completed for .DS_Store"
-- metadata: {"path": ".DS_Store", "summary": "Workflow completed for .DS_Store"}
+- text: ".DS_Store 当前目录看起来是一个前后端结合的项目：根目录有项目总览与入口配置文件 `README.md` 和 `pyproject.toml`，核心后端源码主要在 `agent_runtime_framework/`，前端相关代码在 `frontend-shell/`，其中 `frontend-shell/src/` 是前端源码目录，`frontend-shell/package.json` 和 `frontend-shell/README.md` 分别是前端依赖/脚本配置与说明文档；测试代码集中在 `tests/`；此外还有 `docs/` 文档目录，以及一些运行或调试痕迹目录/文件，如 `.arf/`、`.arf_demo_config.json`、`.api_demo_config.json`、`tmp_debug_ws/`、`tmp_trace_ws/`，说明这个仓库可能还包含代理运行时或调试演示相关配置。"
+- metadata: {"path": ".DS_Store", "summary": "当前目录看起来是一个前后端结合的项目：根目录有项目总览与入口配置文件 `README.md` 和 `pyproject.toml`，核心后端源码主要在 `agent_runtime_framework/`，前端相关代码在 `frontend-shell/`，其中 `frontend-shell/src/` 是前端源码目录，`frontend-shell/package.json` 和 `frontend-shell/README.md` 分别是前端依赖/脚本配置与说明文档；测试代码集中在 `tests/`；此外还有 `docs/` 文档目录，以及一些运行或调试痕迹目录/文件，如 `.arf/`、`.arf_demo_config.json`、`.api_demo_config.json`、`tmp_debug_ws/`、`tmp_trace_ws/`，说明这个仓库可能还包含代理运行时或调试演示相关配置。"}

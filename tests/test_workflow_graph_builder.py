@@ -11,6 +11,8 @@ from agent_runtime_framework.models import DriverCapabilities, InMemoryCredentia
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
+from agent_runtime_framework.workflow.decomposition import decompose_goal
+from agent_runtime_framework.workflow.goal_analysis import analyze_goal
 from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
 from agent_runtime_framework.workflow.models import GoalEnvelope, GoalSpec, new_agent_graph_state
 
@@ -260,6 +262,151 @@ def test_graph_builder_accepts_model_defined_content_search_node():
     assert [(edge.source, edge.target) for edge in graph.edges] == [("search", "final_response")]
 
 
+def test_analyze_goal_accepts_dict_context_with_application_context():
+    context = _workflow_context(
+        '{"primary_intent":"file_read","requires_repository_overview":false,'
+        '"requires_file_read":true,"requires_final_synthesis":false,'
+        '"target_paths":["README.md"],"metadata":{}}'
+    )
+
+    goal = analyze_goal(
+        "读取 README.md",
+        context={"application_context": context.application_context, "services": context.services},
+    )
+
+    assert goal.primary_intent == "file_read"
+    assert goal.target_paths == ["README.md"]
+
+
+def test_decompose_goal_accepts_dict_context_with_application_context():
+    context = _workflow_context(
+        '{"subtasks":[{"task_id":"content_search","task_profile":"content_search","target":"README.md","depends_on":[],"metadata":{}},'
+        '{"task_id":"chunked_file_read","task_profile":"chunked_file_read","target":"README.md","depends_on":["content_search"],"metadata":{}}]}'
+    )
+    goal = GoalSpec(
+        original_goal="读取 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    subtasks = decompose_goal(
+        goal,
+        context={"application_context": context.application_context, "services": context.services},
+    )
+
+    assert [subtask.task_profile for subtask in subtasks] == ["content_search", "chunked_file_read"]
+
+
+def test_compile_compat_workflow_graph_accepts_dict_context_with_application_context():
+    context = _workflow_context(
+        '{"nodes":[{"node_id":"read","node_type":"chunked_file_read","task_profile":"chunked_file_read","dependencies":[],"metadata":{"target_path":"README.md"}},'
+        '{"node_id":"final_response","node_type":"final_response","dependencies":["read"]}],'
+        '"edges":[{"source":"read","target":"final_response"}]}'
+    )
+    goal = GoalSpec(
+        original_goal="读取 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    graph = compile_compat_workflow_graph(
+        goal,
+        context={"application_context": context.application_context, "services": context.services},
+    )
+
+    assert [node.node_type for node in graph.nodes] == ["chunked_file_read", "final_response"]
+
+
+def test_goal_analysis_records_strategy_and_fallback_reason():
+    app_context = SimpleNamespace(services={}, llm_client=None, llm_model="")
+
+    goal = analyze_goal("读取 README.md", context={"application_context": app_context, "services": {}})
+
+    assert goal.primary_intent == "file_read"
+    assert goal.metadata["strategy"] == "fallback"
+    assert goal.metadata["model_role"] == "planner"
+    assert goal.metadata["fallback_reason"] == "model unavailable"
+
+
+def test_graph_builder_records_strategy_and_fallback_reason():
+    goal = GoalSpec(
+        original_goal="读取 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+    app_context = SimpleNamespace(services={}, llm_client=None, llm_model="")
+
+    graph = compile_compat_workflow_graph(goal, context={"application_context": app_context, "services": {}})
+
+    assert graph.metadata["strategy"] == "fallback"
+    assert graph.metadata["model_role"] == "planner"
+    assert graph.metadata["fallback_reason"] == "model unavailable"
+
+
+def test_planner_records_model_strategy_on_success_and_fallback_on_failure(monkeypatch):
+    from agent_runtime_framework.workflow import planner_v2
+
+    goal = GoalEnvelope(
+        goal="解释 README.md",
+        normalized_goal="解释 README.md",
+        intent="target_explainer",
+        target_hints=["README.md"],
+        success_criteria=["produce a grounded response"],
+    )
+    state = new_agent_graph_state(run_id="run-strategy-1", goal_envelope=goal)
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_call_model_planner",
+        lambda *args, **kwargs: {
+            "nodes": [
+                {
+                    "node_id": "resolve",
+                    "node_type": "target_resolution",
+                    "reason": "Resolve target",
+                    "inputs": {"query": "解释 README.md"},
+                    "depends_on": [],
+                    "success_criteria": ["resolve target"],
+                }
+            ],
+            "planner_summary": "Model plan",
+        },
+    )
+
+    modeled = planner_v2.plan_next_subgraph(goal, state, context=None)
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_plan_next_subgraph_with_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("planner offline")),
+    )
+    fallback = planner_v2.plan_next_subgraph(goal, state, context=None)
+
+    assert modeled.metadata["strategy"] == "model"
+    assert modeled.metadata["model_role"] == "planner"
+    assert fallback.metadata["strategy"] == "fallback"
+    assert fallback.metadata["fallback_reason"] == "planner offline"
+
+
+def test_workflow_llm_access_resolves_application_context_from_dict():
+    from agent_runtime_framework.workflow.llm_access import get_application_context
+
+    application_context = SimpleNamespace(name="app")
+
+    assert get_application_context({"application_context": application_context}) is application_context
+
+
+def test_workflow_llm_access_returns_none_when_model_is_unavailable():
+    from agent_runtime_framework.workflow.llm_access import resolve_workflow_model_runtime
+
+    application_context = SimpleNamespace(services={}, llm_client=None, llm_model="")
+
+    assert resolve_workflow_model_runtime({"application_context": application_context}, "planner") is None
+
+
 def test_planner_v2_emits_whitelisted_nodes_with_reason_and_success_criteria():
     from agent_runtime_framework.workflow.planner_v2 import ALLOWED_DYNAMIC_NODE_TYPES, plan_next_subgraph
 
@@ -297,6 +444,187 @@ def test_planner_v2_respects_max_dynamic_nodes_constraint():
     subgraph = plan_next_subgraph(goal, state, context=None)
 
     assert len(subgraph.nodes) <= 2
+
+
+def test_deterministic_planner_builds_file_read_subgraph():
+    from agent_runtime_framework.workflow.planner_v2 import _plan_next_subgraph_deterministically
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["collect README evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-det-1", goal_envelope=goal)
+
+    subgraph = _plan_next_subgraph_deterministically(goal, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes] == [
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
+    ]
+    assert subgraph.metadata["planner"] == "deterministic_v2"
+
+
+def test_model_planner_uses_valid_json_draft(monkeypatch):
+    from agent_runtime_framework.workflow import planner_v2
+
+    goal = GoalEnvelope(
+        goal="解释 README.md",
+        normalized_goal="解释 README.md",
+        intent="target_explainer",
+        target_hints=["README.md"],
+        success_criteria=["produce a grounded response"],
+    )
+    state = new_agent_graph_state(run_id="run-model-1", goal_envelope=goal)
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_call_model_planner",
+        lambda *args, **kwargs: {
+            "nodes": [
+                {
+                    "node_id": "resolve",
+                    "node_type": "target_resolution",
+                    "reason": "Resolve target",
+                    "inputs": {"query": "解释 README.md"},
+                    "depends_on": [],
+                    "success_criteria": ["resolve target"],
+                },
+                {
+                    "node_id": "read",
+                    "node_type": "chunked_file_read",
+                    "reason": "Read target",
+                    "inputs": {"target_path": "README.md"},
+                    "depends_on": ["resolve"],
+                    "success_criteria": ["read target"],
+                },
+            ],
+            "planner_summary": "Model plan for target_explainer",
+        },
+    )
+
+    subgraph = planner_v2._plan_next_subgraph_with_model(goal, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes] == ["target_resolution", "chunked_file_read"]
+    assert subgraph.metadata["planner"] == "model_v1"
+
+
+def test_model_planner_accepts_dict_context_with_application_context(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_runtime_framework.workflow import planner_v2
+
+    goal = GoalEnvelope(
+        goal="解释 README.md",
+        normalized_goal="解释 README.md",
+        intent="target_explainer",
+        target_hints=["README.md"],
+        success_criteria=["produce a grounded response"],
+    )
+    state = new_agent_graph_state(run_id="run-model-ctx-1", goal_envelope=goal)
+    application_context = SimpleNamespace(llm_client=object(), llm_model="demo-model")
+
+    monkeypatch.setattr(
+        planner_v2,
+        "resolve_model_runtime",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        planner_v2,
+        "chat_once",
+        lambda *args, **kwargs: SimpleNamespace(
+            content='{"planner_summary":"dict context plan","nodes":[{"node_id":"resolve","node_type":"target_resolution","reason":"Resolve target","inputs":{"query":"解释 README.md"},"depends_on":[],"success_criteria":["resolve target"]}]}'
+        ),
+    )
+
+    subgraph = planner_v2._plan_next_subgraph_with_model(
+        goal,
+        state,
+        context={"application_context": application_context},
+    )
+
+    assert [node.node_type for node in subgraph.nodes] == ["target_resolution"]
+    assert subgraph.metadata["planner"] == "model_v1"
+
+
+def test_plan_next_subgraph_falls_back_when_model_returns_invalid_node_type(monkeypatch):
+    from agent_runtime_framework.workflow import planner_v2
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["collect README evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-fallback-1", goal_envelope=goal)
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_plan_next_subgraph_with_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad node")),
+    )
+
+    subgraph = planner_v2.plan_next_subgraph(goal, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes] == [
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
+    ]
+    assert subgraph.metadata["planner"] == "deterministic_v2"
+    assert subgraph.metadata["fallback_reason"] == "bad node"
+
+
+def test_plan_next_subgraph_falls_back_when_model_is_unavailable(monkeypatch):
+    from agent_runtime_framework.workflow import planner_v2
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["collect README evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-fallback-2", goal_envelope=goal)
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_plan_next_subgraph_with_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("model planner unavailable")),
+    )
+
+    subgraph = planner_v2.plan_next_subgraph(goal, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes] == [
+        "content_search",
+        "chunked_file_read",
+        "evidence_synthesis",
+    ]
+    assert subgraph.metadata["planner"] == "deterministic_v2"
+    assert subgraph.metadata["fallback_reason"] == "model planner unavailable"
+
+
+def test_plan_next_subgraph_skips_model_when_config_disables_it():
+    from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        constraints={"planner_mode": "deterministic"},
+        success_criteria=["collect README evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-gated-1", goal_envelope=goal)
+
+    subgraph = plan_next_subgraph(goal, state, context=None)
+
+    assert subgraph.metadata["planner"] == "deterministic_v2"
+    assert "fallback_reason" not in subgraph.metadata
 
 
 def test_graph_builder_accepts_model_defined_chunked_file_read_node():

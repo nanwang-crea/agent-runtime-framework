@@ -4,17 +4,10 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.llm_access import get_application_context
 
 
 DEFAULT_TEMPERATURE = 0.2
-
-
-def get_application_context(context: Any) -> Any | None:
-    if isinstance(context, dict):
-        return context.get("application_context")
-    return getattr(context, "application_context", None)
-
-
 def synthesize_text(
     context: Any,
     *,

@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 from agent_runtime_framework.workflow.models import WorkflowGraph, WorkflowNode
+
+
+class RootGraphPayload(TypedDict):
+    route: str
+    intent: str
+
+
+class RuntimePayload(TypedDict, total=False):
+    status: str
+    final_answer: str
+    execution_trace: list[dict[str, Any]]
+    root_graph: RootGraphPayload
 
 
 AnalyzeGoalFn = Callable[[str, Any], Any]
 MarkRouteFn = Callable[[str, str], None]
 HasPendingClarificationFn = Callable[[], bool]
-RunConversationFn = Callable[[str, WorkflowGraph, dict[str, Any]], dict[str, Any]]
-RunAgentFn = Callable[[str, Any, dict[str, Any]], dict[str, Any]]
+RunConversationFn = Callable[[str, WorkflowGraph, RootGraphPayload], RuntimePayload]
+RunAgentFn = Callable[[str, Any, RootGraphPayload], RuntimePayload]
 
 
 @dataclass(slots=True)
@@ -22,10 +34,10 @@ class RootGraphRuntime:
     run_conversation: RunConversationFn
     run_agent: RunAgentFn
 
-    def run(self, message: str) -> dict[str, Any]:
+    def run(self, message: str) -> RuntimePayload:
         goal = self._analyze_goal(message)
         route = "conversation" if self._is_conversation_goal(goal) else "agent"
-        root_graph = {"route": route, "intent": str(getattr(goal, "primary_intent", "") or "")}
+        root_graph: RootGraphPayload = {"route": route, "intent": str(getattr(goal, "primary_intent", "") or "")}
         if route == "conversation":
             payload = self.run_conversation(message, self._build_conversation_graph(goal), root_graph)
         else:
@@ -54,8 +66,8 @@ class RootGraphRuntime:
             },
         )
 
-    def _with_root_trace(self, payload: dict[str, Any], goal: Any, route: str) -> dict[str, Any]:
-        updated = dict(payload)
+    def _with_root_trace(self, payload: RuntimePayload, goal: Any, route: str) -> RuntimePayload:
+        updated: RuntimePayload = dict(payload)
         trace = list(updated.get("execution_trace") or [])
         root_steps = [
             {"name": "goal_intake", "status": "completed", "detail": "goal_intake"},

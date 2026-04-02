@@ -23,6 +23,27 @@ from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedF
 class DemoRuntimeFactory:
     app: Any
 
+    def _record_run(self, payload: dict[str, Any], prompt: str) -> None:
+        self.app._record_run(payload, prompt=prompt)
+
+    def _get_pending_clarification(self) -> dict[str, Any] | None:
+        return self.app._pending_workflow_clarification
+
+    def _mark_route_decision(self, route: str, source: str) -> None:
+        setattr(self.app, "_last_route_decision", {"route": route, "source": source})
+
+    def _has_pending_clarification(self) -> bool:
+        return self.app._pending_workflow_clarification is not None
+
+    def _analyze_goal(self, message: str, runtime_context: Any) -> Any:
+        return self.app._analyze_workflow_goal(message, context=runtime_context)
+
+    def _run_conversation_branch(self, message: str, graph: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
+        return self.build_compat_workflow_runner().run(message, graph=graph, root_graph=root_graph)
+
+    def _run_agent_branch(self, message: str, goal: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
+        return self.build_agent_branch_runner().run(message, goal_spec=goal, root_graph=root_graph)
+
     def build_workflow_runtime(self) -> WorkflowRuntime:
         return WorkflowRuntime(
             executors={
@@ -63,8 +84,8 @@ class DemoRuntimeFactory:
             application_context=self.app.context.application_context,
             workspace=self.app.workspace,
             context=self.app.context,
-            get_pending_clarification=lambda: self.app._pending_workflow_clarification,
-            record_run=lambda payload, prompt: self.app._record_run(payload, prompt=prompt),
+            get_pending_clarification=self._get_pending_clarification,
+            record_run=self._record_run,
             run_history_payload=self.app.run_history_payload,
         )
 
@@ -87,7 +108,7 @@ class DemoRuntimeFactory:
             pending_tokens=self.app._pending_tokens,
             run_inputs=self.app._run_inputs,
             workflow_payload=self.app._workflow_payload,
-            record_run=lambda payload, prompt: self.app._record_run(payload, prompt=prompt),
+            record_run=self._record_run,
             remember_workflow_run=observer.remember_workflow_run,
             capture_workflow_codex_history=observer.capture_workflow_codex_history,
             load_workflow_run=self.app._workflow_store.load,
@@ -101,10 +122,10 @@ class DemoRuntimeFactory:
 
     def build_root_graph_runtime(self) -> RootGraphRuntime:
         return RootGraphRuntime(
-            analyze_goal_fn=lambda message, _context: self.app._analyze_workflow_goal(message),
+            analyze_goal_fn=self._analyze_goal,
             context=self.app.context,
-            mark_route_decision=lambda route, source: setattr(self.app, "_last_route_decision", {"route": route, "source": source}),
-            has_pending_clarification=lambda: self.app._pending_workflow_clarification is not None,
-            run_conversation=lambda message, graph, root_graph: self.build_compat_workflow_runner().run(message, graph=graph, root_graph=root_graph),
-            run_agent=lambda message, goal, root_graph: self.build_agent_branch_runner().run(message, goal_spec=goal, root_graph=root_graph),
+            mark_route_decision=self._mark_route_decision,
+            has_pending_clarification=self._has_pending_clarification,
+            run_conversation=self._run_conversation_branch,
+            run_agent=self._run_agent_branch,
         )

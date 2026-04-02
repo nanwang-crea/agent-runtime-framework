@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
+from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload, RuntimePayload
 
 
 @dataclass(slots=True)
@@ -21,7 +22,7 @@ class AgentBranchRunner:
     record_run: Callable[[dict[str, Any], str], None]
     run_history_payload: Callable[[], list[dict[str, Any]]]
 
-    def run(self, message: str, *, goal_spec: Any | None = None, root_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run(self, message: str, *, goal_spec: Any | None = None, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
         runtime = self.build_agent_graph_runtime()
         goal_envelope = build_goal_envelope(message, application_context=self.application_context, workspace_root=self.workspace, context=self.context, goal_spec=goal_spec)
         prior_bundle = dict(self.get_pending_clarification() or {}) if self.get_pending_clarification() else None

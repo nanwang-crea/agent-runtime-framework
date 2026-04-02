@@ -32,6 +32,7 @@ from agent_runtime_framework.demo.compat_workflow_runner import CompatWorkflowRu
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import AgentGraphRuntime, RootGraphRuntime, WorkflowRuntime
+from agent_runtime_framework.workflow.root_graph_runtime import RuntimePayload, RootGraphPayload
 from agent_runtime_framework.workflow.context_assembly import build_runtime_context
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
@@ -83,16 +84,14 @@ class DemoAssistantApp:
             self.context.session = session
         return session
 
-    def _analyze_workflow_goal(self, message: str) -> Any:
-        route_source = "clarification" if self._pending_workflow_clarification is not None else "goal_analysis"
-        self._last_route_decision = {"route": "workflow", "source": route_source}
-        return analyze_goal(message, context=self.context)
+    def _analyze_workflow_goal(self, message: str, *, context: Any | None = None) -> Any:
+        return analyze_goal(message, context=context or self.context)
 
-    def _run_workflow(self, message: str) -> dict[str, Any]:
+    def _run_workflow(self, message: str) -> RuntimePayload:
         runtime = self._build_root_graph_runtime()
         return runtime.run(message)
 
-    def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None, root_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
         return self._build_runtime_factory().build_agent_branch_runner().run(message, goal_spec=goal_spec, root_graph=root_graph)
 
 

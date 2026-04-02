@@ -1247,6 +1247,68 @@ def test_demo_assistant_app_routes_chat_through_root_runtime(tmp_path: Path, mon
     assert payload["final_answer"] == "root payload"
 
 
+def test_root_graph_runtime_passes_injected_context_to_goal_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+    runtime = app._build_runtime_factory().build_root_graph_runtime()
+    captured: dict[str, object] = {}
+    injected_context = {"application_context": app.context.application_context, "services": {"source": "runtime"}}
+    runtime.context = injected_context
+    runtime.run_conversation = lambda message, graph, root_graph: {"status": "completed", "execution_trace": [], "final_answer": "ok"}
+    runtime.run_agent = lambda message, goal, root_graph: {"status": "completed", "execution_trace": [], "final_answer": "ok"}
+
+    def _capture(message: str, context=None):
+        captured["context"] = context
+        return GoalSpec(original_goal=message, primary_intent="generic")
+
+    monkeypatch.setattr(demo_app_module, "analyze_goal", _capture)
+
+    runtime.run("你是谁？")
+
+    assert captured["context"] is injected_context
+
+
+def test_demo_runtime_factory_analyze_goal_fn_uses_runtime_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+    runtime = app._build_runtime_factory().build_root_graph_runtime()
+    captured: dict[str, object] = {}
+    injected_context = {"application_context": app.context.application_context, "services": {"source": "runtime"}}
+
+    def _capture(message: str, context=None):
+        captured["context"] = context
+        return GoalSpec(original_goal=message, primary_intent="generic")
+
+    monkeypatch.setattr(demo_app_module, "analyze_goal", _capture)
+
+    runtime.analyze_goal_fn("你是谁？", injected_context)
+
+    assert captured["context"] is injected_context
+
+
+def test_runtime_factory_builds_root_runtime_with_named_services(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+    runtime = app._build_runtime_factory().build_root_graph_runtime()
+
+    assert runtime.analyze_goal_fn.__name__ == "_analyze_goal"
+    assert runtime.mark_route_decision.__name__ == "_mark_route_decision"
+    assert runtime.has_pending_clarification.__name__ == "_has_pending_clarification"
+    assert runtime.run_conversation.__name__ == "_run_conversation_branch"
+    assert runtime.run_agent.__name__ == "_run_agent_branch"
+
+
+def test_root_graph_runtime_exports_typed_payload_contracts():
+    from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload, RuntimePayload
+
+    assert set(RootGraphPayload.__annotations__) == {"route", "intent"}
+    assert "execution_trace" in RuntimePayload.__annotations__
+    assert "root_graph" in RuntimePayload.__annotations__
+
+
 
 def test_demo_assistant_app_routes_stream_chat_through_root_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
@@ -1299,4 +1361,3 @@ def test_demo_assistant_chat_non_conversation_does_not_require_build_workflow_gr
             target_paths=["README.md"],
         ),
     )
-

@@ -492,3 +492,11 @@ git commit -m "chore: finalize five-layer agent architecture public surface"
 - **Phase 6:** We can declare future skill attachments and MCP capability slots without hard-coding them into the app layer.
 - **Phase 7:** We can visualize and trace multiple agents coherently.
 - **Phase 8:** Demo app becomes a consumer of the new stack, not the place where the stack is defined.
+# Architecture Ownership Update (2026-04-02)
+
+- `App` layer owns external interaction, session coordination, and top-level payload shaping.
+- `Factory` layer owns dependency wiring and should prefer named helper methods over inline lambdas for business-significant callbacks.
+- `Runner` layer owns single-run lifecycle concerns such as payload persistence, prior clarification resume, and handoff into runtimes.
+- `Runtime` layer owns route orchestration (`RootGraphRuntime`) and iterative graph execution (`AgentGraphRuntime`, `WorkflowRuntime`).
+- `Compatibility` paths remain explicit and should continue to advertise compatibility metadata rather than appearing as the default long-term execution architecture.
+- Model-backed workflow paths now share a common application-context extraction rule and common fallback diagnostic vocabulary.

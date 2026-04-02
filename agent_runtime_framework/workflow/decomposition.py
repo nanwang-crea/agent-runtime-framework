@@ -5,24 +5,41 @@ from typing import Any
 
 from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec
 
 
 def decompose_goal(goal: GoalSpec, context: Any | None = None) -> list[SubTaskSpec]:
-    llm_subtasks = _decompose_goal_with_model(goal, context=context)
+    llm_subtasks, fallback_reason = _decompose_goal_with_model(goal, context=context)
     if llm_subtasks is not None:
+        for subtask in llm_subtasks:
+            subtask.metadata = {
+                **dict(subtask.metadata or {}),
+                "strategy": "model",
+                "model_role": "planner",
+            }
         return llm_subtasks
-    return _decompose_goal_deterministically(goal)
+    deterministic = _decompose_goal_deterministically(goal)
+    strategy = "fallback" if fallback_reason else "deterministic"
+    for subtask in deterministic:
+        subtask.metadata = {
+            **dict(subtask.metadata or {}),
+            "strategy": strategy,
+            "model_role": "planner",
+            **({"fallback_reason": fallback_reason} if fallback_reason else {}),
+        }
+    return deterministic
 
 
-def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> list[SubTaskSpec] | None:
-    if context is None:
-        return None
-    runtime = resolve_model_runtime(context.application_context, "planner")
-    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
-    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
+def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[list[SubTaskSpec] | None, str | None]:
+    application_context = get_application_context(context)
+    if application_context is None:
+        return None, None
+    runtime = resolve_model_runtime(application_context, "planner")
+    llm_client = runtime.client if runtime is not None else application_context.llm_client
+    model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
-        return None
+        return None, "model unavailable"
 
     try:
         response = chat_once(
@@ -51,23 +68,23 @@ def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> list[S
                 max_tokens=400,
             ),
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, str(exc) or "model call failed"
 
     try:
         parsed = json.loads(extract_json_block(str(response.content or "")))
     except Exception:
-        return None
+        return None, "invalid model response"
 
     subtasks_payload = parsed.get("subtasks") or []
     subtasks: list[SubTaskSpec] = []
     for item in subtasks_payload:
         if not isinstance(item, dict):
-            return None
+            return None, "invalid model response"
         task_id = str(item.get("task_id") or "").strip()
         task_profile = str(item.get("task_profile") or "").strip()
         if not task_id or not task_profile:
-            return None
+            return None, "invalid model response"
         subtasks.append(
             SubTaskSpec(
                 task_id=task_id,
@@ -77,7 +94,9 @@ def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> list[S
                 metadata=dict(item.get("metadata") or {}),
             )
         )
-    return subtasks or None
+    if not subtasks:
+        return None, "invalid model response"
+    return subtasks, None
 
 
 def _decompose_goal_deterministically(goal: GoalSpec) -> list[SubTaskSpec]:

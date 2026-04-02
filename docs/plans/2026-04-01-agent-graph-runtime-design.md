@@ -12,6 +12,23 @@
 
 ---
 
+## 当前职责边界（2026-04-02 更新）
+
+- `DemoAssistantApp`：负责 session、外部交互入口、payload 汇总与 composition root，不再承担 root-level goal analysis 的隐藏副作用。
+- `DemoRuntimeFactory`：负责 wiring 与具名服务装配，不再使用关键业务 lambda 作为长期架构边界。
+- `RootGraphRuntime`：负责 root route orchestration、route trace、conversation/agent 分流。
+- `AgentGraphRuntime`：负责 planner/judge 回环、子图 append 与 agent graph 状态推进。
+- `CompatWorkflowRunner`：属于兼容层，用于 legacy workflow graph 执行路径；不是长期唯一执行入口。
+- `WorkflowRuntime`：负责节点级图执行，是 runtime kernel，不直接感知 demo app 细节。
+
+## 兼容层说明（2026-04-02 更新）
+
+- `compile_compat_workflow_graph(...)` 与 `CompatWorkflowRunner` 仍然保留，用于 legacy/compatibility mode。
+- 新的长期方向是：root route -> agent/conversation branch -> typed runtime context -> standardized diagnostics。
+- model-backed workflow 路径现在统一支持 object/dict 两种 `context` 取法，但后续仍建议继续收敛到单一协议。
+
+---
+
 ## 1. 目标与非目标
 
 ### 目标

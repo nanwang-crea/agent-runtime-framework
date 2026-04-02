@@ -1155,3 +1155,39 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
     assert result.status == RUN_STATUS_COMPLETED
     assert result.shared_state["clarification_request"]["clarification_required"] is True
     assert "多个可能目标" in result.final_output
+
+
+def test_agent_graph_runtime_survives_model_planner_failure(monkeypatch):
+    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    monkeypatch.setattr(
+        planner_v2,
+        "_plan_next_subgraph_with_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("planner offline")),
+    )
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read file"],
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(
+            executors={
+                "content_search": NoopExecutor(),
+                "chunked_file_read": NoopExecutor(),
+                "evidence_synthesis": NoopExecutor(),
+            }
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal, context={})
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.metadata["agent_graph_state"]
+    assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["planner"] == "deterministic_v2"
+    assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["fallback_reason"] == "planner offline"
