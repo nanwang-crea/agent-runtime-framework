@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from agent_runtime_framework.workflow.approval import WorkflowResumeToken, create_resume_token
+from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext
 from agent_runtime_framework.workflow.models import (
     NODE_STATUS_FAILED,
     NODE_STATUS_PENDING,
@@ -16,14 +16,15 @@ from agent_runtime_framework.workflow.models import (
     NodeResult,
     WorkflowRun,
 )
+from agent_runtime_framework.workflow.runtime_protocols import ResumableWorkflowNodeExecutor, WorkflowNodeExecutor
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 
 
 @dataclass(slots=True)
 class GraphExecutionRuntime:
-    executors: dict[str, Any]
+    executors: dict[str, WorkflowNodeExecutor]
     scheduler: WorkflowScheduler = field(default_factory=WorkflowScheduler)
-    context: dict[str, Any] = field(default_factory=dict)
+    context: WorkflowRuntimeContext = field(default_factory=WorkflowRuntimeContext)
 
     def run(self, run: WorkflowRun) -> WorkflowRun:
         run.shared_state.setdefault("node_results", {})
@@ -93,7 +94,7 @@ class GraphExecutionRuntime:
                 run.status = RUN_STATUS_FAILED
                 return run
             node = next(node for node in run.graph.nodes if node.node_id == resume_token.node_id)
-            result = executor.resume(node, run, state.result, approved=approved, context=self.context)
+            result = executor.resume(node, run, state.result, approved=approved, context=self.context)  # type: ignore[union-attr]
             state.approval_granted = approved
             state.result = result
             state.error = result.error
@@ -117,11 +118,8 @@ class GraphExecutionRuntime:
         run.status = RUN_STATUS_RUNNING
         return self.run(run)
 
-    def _execute(self, executor: Any, node: Any, run: WorkflowRun) -> NodeResult:
-        try:
-            return executor.execute(node, run, self.context)
-        except TypeError:
-            return executor.execute(node, run)
+    def _execute(self, executor: WorkflowNodeExecutor, node, run: WorkflowRun) -> NodeResult:
+        return executor.execute(node, run, self.context)
 
     def _make_state(self, node_id: str):
         from agent_runtime_framework.workflow.models import NodeState

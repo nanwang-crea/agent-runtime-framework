@@ -35,12 +35,12 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 
 
 class NoopExecutor:
-    def execute(self, node, run):
+    def execute(self, node, run, context=None):
         return NodeResult(status=NODE_STATUS_COMPLETED, output={"node": node.node_id})
 
 
 class FailExecutor:
-    def execute(self, node, run):
+    def execute(self, node, run, context=None):
         return NodeResult(status=NODE_STATUS_FAILED, error="boom")
 
 

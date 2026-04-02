@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from agent_runtime_framework.workflow.llm_access import get_workspace_root
 from typing import Any
+
+from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
 
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
@@ -16,9 +20,9 @@ class WorkspaceDiscoveryExecutor:
     max_root_entries: int = 200
     max_children_per_directory: int = 20
 
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         runtime_context = dict(context or {})
-        workspace_root = Path(str(runtime_context.get("workspace_root", "."))).resolve()
+        workspace_root = Path(get_workspace_root(runtime_context, ".")).resolve()
         tree_sample: list[str] = []
         evidence_items: list[dict[str, Any]] = []
         facts: list[dict[str, Any]] = []

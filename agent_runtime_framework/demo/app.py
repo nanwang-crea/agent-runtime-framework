@@ -26,14 +26,13 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
-from agent_runtime_framework.demo.workflow_payload_builder import WorkflowPayloadBuilder
 from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleService
-from agent_runtime_framework.demo.compat_workflow_runner import CompatWorkflowRunner
+from agent_runtime_framework.demo.compat_workflow_orchestrator import CompatWorkflowOrchestrator
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, analyze_goal
 from agent_runtime_framework.workflow.root_graph_runtime import RuntimePayload, RootGraphPayload
-from agent_runtime_framework.workflow.context_assembly import build_runtime_context
+from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext, build_runtime_context
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
 
@@ -83,15 +82,24 @@ class DemoAssistantApp:
             self.context.session = session
         return session
 
-    def _analyze_workflow_goal(self, message: str, *, context: Any | None = None) -> Any:
-        return analyze_goal(message, context=context or self.context)
+    def _analyze_workflow_goal(self, message: str, context: WorkflowRuntimeContext) -> Any:
+        return analyze_goal(message, context=context)
+
+    def _mark_route_decision(self, route: str, source: str) -> None:
+        self._last_route_decision = {"route": route, "source": source}
+
+    def _has_pending_clarification(self) -> bool:
+        return self._pending_workflow_clarification is not None
+
+    def _get_pending_workflow_clarification(self) -> dict[str, Any] | None:
+        return self._pending_workflow_clarification
+
+    def _set_pending_workflow_clarification(self, payload: dict[str, Any] | None) -> None:
+        self._pending_workflow_clarification = payload
 
     def _run_workflow(self, message: str) -> RuntimePayload:
         runtime = self._build_root_graph_runtime()
         return runtime.run(message)
-
-    def _run_agent_graph_workflow(self, message: str, *, goal_spec: Any | None = None, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
-        return self._build_runtime_factory().build_agent_branch_orchestrator().run(message, goal_spec=goal_spec, root_graph=root_graph)
 
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
@@ -180,43 +188,23 @@ class DemoAssistantApp:
             ],
         }
 
-    def _workflow_payload(self, run: Any) -> dict[str, Any]:
-        builder = WorkflowPayloadBuilder(
-            build_agent_graph_runtime=lambda _kind: self._build_agent_graph_runtime(),
-            build_graph_execution_runtime=lambda _kind: self._build_graph_execution_runtime(),
-            session_payload=self.session_payload,
-            plan_history_payload=self.plan_history_payload,
-            run_history_payload=self.run_history_payload,
-            memory_payload=self.memory_payload,
-            context_payload=self.context_payload,
-            with_router_trace=self._with_router_trace,
-            workspace=str(self.workspace),
-            pending_tokens=self._pending_tokens,
-            pending_workflow_clarification=self._pending_workflow_clarification,
-        )
-        payload, pending_clarification = builder.build(run)
-        self._pending_workflow_clarification = pending_clarification
-        return payload
-
-
 
     def _build_runtime_factory(self) -> DemoRuntimeFactory:
         return DemoRuntimeFactory(self)
 
-    def _workflow_runtime_context(self) -> dict[str, Any]:
-        runtime_context = build_runtime_context(
+    def _workflow_runtime_context(self) -> WorkflowRuntimeContext:
+        return build_runtime_context(
             application_context=self.context.application_context,
             workspace_context=self.context,
+            workspace_root=str(self.workspace),
         )
-        runtime_context["workspace_root"] = str(self.workspace)
-        return runtime_context
 
 
     def _build_run_lifecycle_service(self) -> RunLifecycleService:
         return self._build_runtime_factory().build_run_lifecycle_service()
 
-    def _build_compat_workflow_runner(self) -> CompatWorkflowRunner:
-        return self._build_runtime_factory().build_compat_workflow_runner()
+    def _build_compat_workflow_orchestrator(self) -> CompatWorkflowOrchestrator:
+        return self._build_runtime_factory().build_compat_workflow_orchestrator()
 
     def _build_root_graph_runtime(self) -> RootGraphRuntime:
         return self._build_runtime_factory().build_root_graph_runtime()
@@ -331,7 +319,7 @@ class DemoAssistantApp:
             return text
         return f"{text[:limit].rstrip()}...[已截断]"
 
-    def _record_run(self, payload: dict[str, Any], *, prompt: str) -> None:
+    def _record_run(self, payload: dict[str, Any], prompt: str) -> None:
         run_id = str(payload.get("run_id") or "").strip()
         if not run_id:
             return

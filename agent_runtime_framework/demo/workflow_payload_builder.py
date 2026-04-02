@@ -6,15 +6,12 @@ from typing import Any, Callable
 from agent_runtime_framework.workflow import WorkflowRun
 
 
-BuildRuntimeFn = Callable[[str], Any]
 PayloadFn = Callable[[], Any]
 TraceFn = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
 
 
 @dataclass(slots=True)
 class WorkflowPayloadBuilder:
-    build_agent_graph_runtime: BuildRuntimeFn
-    build_graph_execution_runtime: BuildRuntimeFn
     session_payload: PayloadFn
     plan_history_payload: PayloadFn
     run_history_payload: PayloadFn
@@ -22,25 +19,14 @@ class WorkflowPayloadBuilder:
     context_payload: PayloadFn
     with_router_trace: TraceFn
     workspace: str
-    pending_tokens: dict[str, Any]
-    pending_workflow_clarification: dict[str, Any] | None = None
 
-    def build(self, run: WorkflowRun) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def build(self, run: WorkflowRun, *, resume_token_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
         execution_trace = [
             {"name": node.node_type, "status": run.node_states[node.node_id].status, "detail": node.node_type}
             for node in run.graph.nodes
             if node.node_id in run.node_states
         ]
-        approval_request = None
-        resume_token_id = None
-        if run.status == "waiting_approval":
-            resume_token = run.shared_state.get("resume_token")
-            if resume_token is not None:
-                token_kind = "agent_graph" if run.metadata.get("pending_subrun") is not None else "workflow"
-                runtime = self.build_agent_graph_runtime("agent_graph") if token_kind == "agent_graph" else self.build_graph_execution_runtime("workflow")
-                self.pending_tokens[resume_token.token_id] = {"kind": token_kind, "runtime": runtime, "run": run, "token": resume_token}
-                resume_token_id = resume_token.token_id
-            approval_request = self._workflow_approval_request(run)
+        approval_request = self._workflow_approval_request(run) if run.status == "waiting_approval" else None
         clarification_request = run.shared_state.get("clarification_request")
         payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
         pending_clarification = ({**dict(clarification_request or {}), "run_id": run.run_id} if payload_status == "needs_clarification" else None)
@@ -107,26 +93,11 @@ class WorkflowPayloadBuilder:
         if not verification:
             verification = {"status": "not_run", "success": False, "summary": "No explicit verification result was produced."}
         for result in node_results.values():
-            if not isinstance(getattr(result, "output", None), dict):
-                continue
-            output = result.output
-            for item in output.get("candidates", output.get("matches", [])) or []:
-                if isinstance(item, dict) and item not in candidates:
-                    candidates.append(item)
-            for chunk in output.get("chunks", []) or []:
-                if isinstance(chunk, dict) and chunk not in chunks:
-                    chunks.append(chunk)
-            if not verification and isinstance(output.get("verification"), dict):
-                verification = dict(output.get("verification") or {})
-        if not chunks:
-            for chunk in synthesized.get("chunks", []) or aggregated_output.get("chunks", []) or []:
-                if isinstance(chunk, dict) and chunk not in chunks:
-                    chunks.append(chunk)
-        return {
-            "candidates": candidates,
-            "evidence_items": list(synthesized.get("evidence_items") or aggregated_output.get("evidence_items") or []),
-            "chunks": chunks,
-            "facts": list(synthesized.get("facts") or aggregated_output.get("facts") or []),
-            "open_questions": list(synthesized.get("open_questions") or aggregated_output.get("open_questions") or []),
-            "verification": verification,
-        }
+            output = result.output if isinstance(getattr(result, "output", None), dict) else {}
+            candidates.extend(item for item in output.get("evidence_items", []) if isinstance(item, dict))
+            chunks.extend(item for item in output.get("chunks", []) if isinstance(item, dict))
+        if isinstance(aggregated_output.get("evidence_items"), list):
+            candidates = [item for item in aggregated_output.get("evidence_items", []) if isinstance(item, dict)]
+        if isinstance(aggregated_output.get("chunks"), list):
+            chunks = [item for item in aggregated_output.get("chunks", []) if isinstance(item, dict)]
+        return {"candidates": candidates, "chunks": chunks, "verification": verification}

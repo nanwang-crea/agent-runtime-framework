@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
+
+from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context
 from typing import Any
+
+from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
 
 from agent_runtime_framework.agents.workspace_backend.models import TaskState
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
@@ -11,10 +15,10 @@ from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_
 
 @dataclass(slots=True)
 class ToolCallExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         runtime_context = dict(context or {})
-        application_context = runtime_context.get("application_context")
-        workflow_context = runtime_context.get("workspace_context")
+        application_context = get_application_context(runtime_context)
+        workflow_context = get_workspace_context(runtime_context)
         if application_context is None:
             return NodeResult(status=NODE_STATUS_FAILED, error="Missing application_context for tool_call executor")
 

@@ -1055,7 +1055,7 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_sub
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
     monkeypatch.setattr(
         type(app),
-        "_build_compat_workflow_runner",
+        "_build_compat_workflow_orchestrator",
         lambda self: type("_CompatRunner", (), {"compile_for_goal": lambda _self, goal: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler")), "run": lambda _self, message, graph, root_graph=None: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler"))})(),
     )
     monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
@@ -1149,7 +1149,7 @@ def test_demo_assistant_app_rejects_legacy_file_reader_graph(tmp_path: Path):
     (workspace / "README.md").write_text("legacy reader content", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
-    payload = app._build_compat_workflow_runner().run(
+    payload = app._build_compat_workflow_orchestrator().run(
         "读取 README.md",
         graph=WorkflowGraph(
             nodes=[
@@ -1181,8 +1181,8 @@ def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_p
     monkeypatch.setattr(type(app), "chat", lambda self, message: (_ for _ in ()).throw(AssertionError("stream_chat should not call chat")))
     monkeypatch.setattr(
         type(app),
-        "_run_agent_graph_workflow",
-        lambda self, message, **kwargs: {
+        "_build_root_graph_runtime",
+        lambda self: type("_Runtime", (), {"run": lambda _self, _message: (demo_app_module.analyze_goal(_message, context=self._workflow_runtime_context()), {
             "status": "completed",
             "run_id": "run-1",
             "plan_id": "run-1",
@@ -1202,7 +1202,7 @@ def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_p
             "planned_subgraphs": [{"iteration": 1}],
             "graph_state_summary": {"current_iteration": 1, "appended_node_ids": []},
             "append_history": [],
-        },
+        })[1]})(),
     )
 
     events = list(app.stream_chat("列一下当前工作区"))
@@ -1253,7 +1253,7 @@ def test_root_graph_runtime_passes_injected_context_to_goal_analysis(tmp_path: P
     app = create_demo_assistant_app(workspace)
     runtime = app._build_runtime_factory().build_root_graph_runtime()
     captured: dict[str, object] = {}
-    injected_context = {"application_context": app.context.application_context, "services": {"source": "runtime"}}
+    injected_context = app._workflow_runtime_context()
     runtime.context = injected_context
     runtime.run_conversation = lambda message, graph, root_graph: {"status": "completed", "execution_trace": [], "final_answer": "ok"}
     runtime.run_agent = lambda message, goal, root_graph: {"status": "completed", "execution_trace": [], "final_answer": "ok"}
@@ -1275,7 +1275,7 @@ def test_demo_runtime_factory_analyze_goal_fn_uses_runtime_context(tmp_path: Pat
     app = create_demo_assistant_app(workspace)
     runtime = app._build_runtime_factory().build_root_graph_runtime()
     captured: dict[str, object] = {}
-    injected_context = {"application_context": app.context.application_context, "services": {"source": "runtime"}}
+    injected_context = app._workflow_runtime_context()
 
     def _capture(message: str, context=None):
         captured["context"] = context
@@ -1294,7 +1294,7 @@ def test_runtime_factory_builds_root_runtime_with_named_services(tmp_path: Path)
     app = create_demo_assistant_app(workspace)
     runtime = app._build_runtime_factory().build_root_graph_runtime()
 
-    assert runtime.analyze_goal_fn.__name__ == "_analyze_goal"
+    assert runtime.analyze_goal_fn.__name__ == "_analyze_workflow_goal"
     assert runtime.mark_route_decision.__name__ == "_mark_route_decision"
     assert runtime.has_pending_clarification.__name__ == "_has_pending_clarification"
     assert runtime.run_conversation.__name__ == "_run_conversation_branch"

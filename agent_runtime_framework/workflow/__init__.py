@@ -5,6 +5,7 @@ from agent_runtime_framework.workflow.goal_analysis import analyze_goal
 from agent_runtime_framework.workflow.graph_builder import build_workspace_subtask_graph
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext
 from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.root_graph_runtime import RootGraphRuntime
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
@@ -77,6 +78,7 @@ __all__ = [
     "WorkflowRun",
     "WorkflowPersistenceStore",
     "AgentGraphRuntime",
+    "WorkflowRuntimeContext",
     "GraphExecutionRuntime",
     "RootGraphRuntime",
     "build_goal_envelope",

@@ -23,7 +23,7 @@ class WorkspaceSubtaskResult:
 class WorkspaceSubtaskExecutor:
     run_subtask: Callable[..., WorkspaceSubtaskResult] | None = None
 
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         goal = str(node.metadata.get("goal") or node.task_profile or run.goal)
         runner = self.run_subtask or self._default_run_subtask
         result = runner(goal, task_profile=str(node.task_profile or node.node_type), metadata=dict(node.metadata or {}))
@@ -37,7 +37,7 @@ class WorkspaceSubtaskExecutor:
         prior_result: NodeResult | None,
         *,
         approved: bool,
-        context: dict[str, Any] | None = None,
+        context: RuntimeContextLike = None,
     ) -> NodeResult:
         approval_data = dict((prior_result.approval_data if prior_result is not None else {}) or {})
         resume_token = approval_data.get("resume_token")

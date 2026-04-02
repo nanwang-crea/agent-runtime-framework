@@ -1,26 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from agent_runtime_framework.models import ChatRequest, chat_once, resolve_model_runtime
 
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
+from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
-
-
-class NodeExecutor(Protocol):
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult: ...
+from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike, WorkflowNodeExecutor
 
 
 @dataclass(slots=True)
 class ConversationResponseExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
-        runtime_context = dict(context or {})
-        application_context = runtime_context.get("application_context")
-        workspace_context = runtime_context.get("workspace_context")
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
+        application_context = get_application_context(context)
+        workspace_context = get_workspace_context(context)
         session = getattr(workspace_context, "session", None) if workspace_context is not None else None
         reply = _generate_conversation_reply(run.goal, application_context, session=session, context=workspace_context)
         run.final_output = reply
@@ -55,7 +52,7 @@ def _generate_conversation_reply(user_input: str, application_context: Any, *, s
 
 @dataclass(slots=True)
 class AggregationExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         node_results = run.shared_state.get("node_results", {})
         ordered_results = [
             result
@@ -69,7 +66,7 @@ class AggregationExecutor:
 
 @dataclass(slots=True)
 class VerificationExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         node_results = run.shared_state.get("node_results", {})
         verification_events: list[dict[str, Any]] = []
         references: list[str] = []
@@ -135,7 +132,7 @@ class VerificationExecutor:
 
 @dataclass(slots=True)
 class ApprovalGateExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         summary = str(node.metadata.get("approval_summary") or "Approval gate passed.")
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
@@ -146,7 +143,7 @@ class ApprovalGateExecutor:
 
 @dataclass(slots=True)
 class FinalResponseExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         judge_decision = dict(run.shared_state.get("judge_decision") or {})
         judge_status = str(judge_decision.get("status") or "").strip()
         if judge_status and judge_status not in {"accepted", "stop_due_to_cost"}:
@@ -165,8 +162,8 @@ class FinalResponseExecutor:
         synthesized = dict(run.shared_state.get("evidence_synthesis") or {})
         final_response = str(synthesized.get("final_response") or synthesized.get("summary") or "").strip()
         if conversation_mode and not final_response:
-            application_context = (context or {}).get("application_context") if isinstance(context, dict) else None
-            workspace_context = (context or {}).get("workspace_context") if isinstance(context, dict) else None
+            application_context = get_application_context(context)
+            workspace_context = get_workspace_context(context)
             session = getattr(workspace_context, "session", None) if workspace_context is not None else None
             final_response = _generate_conversation_reply(run.goal, application_context, session=session, context=workspace_context)
         if judge_status == "stop_due_to_cost" and not final_response:

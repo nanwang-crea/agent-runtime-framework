@@ -17,7 +17,7 @@ CaptureFn = Callable[[Any], None]
 
 
 @dataclass(slots=True)
-class CompatWorkflowRunner:
+class CompatWorkflowOrchestrator:
     build_graph_execution_runtime: BuildRuntimeFn
     workflow_payload: PayloadFn
     memory_payload: MemoryFn

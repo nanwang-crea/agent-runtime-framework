@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
+
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun, normalize_aggregated_workflow_payload
 
 
 @dataclass(slots=True)
 class EvidenceSynthesisExecutor:
-    def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+    def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         aggregated = run.shared_state.get("aggregated_result")
         if aggregated is None:
             node_results = run.shared_state.get("node_results", {})

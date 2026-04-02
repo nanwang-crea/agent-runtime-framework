@@ -13,6 +13,18 @@ def get_application_context(context: Any) -> Any | None:
     return getattr(context, "application_context", None)
 
 
+def get_workspace_context(context: Any) -> Any | None:
+    if isinstance(context, dict):
+        return context.get("workspace_context")
+    return getattr(context, "workspace_context", None)
+
+
+def get_workspace_root(context: Any, default: str = ".") -> str:
+    if isinstance(context, dict):
+        return str(context.get("workspace_root", default))
+    return str(getattr(context, "workspace_root", default))
+
+
 def resolve_workflow_model_runtime(context: Any, role: str):
     application_context = get_application_context(context)
     if application_context is None:

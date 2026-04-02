@@ -1,8 +1,40 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent_runtime_framework.policy import SimpleDesktopPolicy
+
+
+@dataclass(slots=True)
+class WorkflowRuntimeContext:
+    application_context: Any = None
+    workspace_context: Any = None
+    workspace_root: str = "."
+    memory: dict[str, Any] = field(default_factory=dict)
+    session_memory_snapshot: Any = None
+    policy_context: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and hasattr(self, key)
+
+    def keys(self):
+        return ("application_context", "workspace_context", "workspace_root", "memory", "session_memory_snapshot", "policy_context")
+
+    def items(self):
+        return [(key, getattr(self, key)) for key in self.keys()]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(tuple(self.keys()))
 
 
 def _resource_payload(resource: Any) -> dict[str, Any]:
@@ -41,12 +73,14 @@ def _policy_context(application_context: Any | None) -> dict[str, Any]:
     }
 
 
-def build_runtime_context(*, application_context: Any, workspace_context: Any) -> dict[str, Any]:
-    session_snapshot = application_context.session_memory.snapshot() if hasattr(application_context.session_memory, "snapshot") else None
-    return {
-        "application_context": application_context,
-        "workspace_context": workspace_context,
-        "memory": _memory_payload(application_context),
-        "session_memory_snapshot": session_snapshot,
-        "policy_context": _policy_context(application_context),
-    }
+def build_runtime_context(*, application_context: Any, workspace_context: Any, workspace_root: str | None = None) -> WorkflowRuntimeContext:
+    session_memory = getattr(application_context, "session_memory", None)
+    session_snapshot = session_memory.snapshot() if session_memory is not None and hasattr(session_memory, "snapshot") else None
+    return WorkflowRuntimeContext(
+        application_context=application_context,
+        workspace_context=workspace_context,
+        workspace_root=str(workspace_root or "."),
+        memory=_memory_payload(application_context),
+        session_memory_snapshot=session_snapshot,
+        policy_context=_policy_context(application_context),
+    )
