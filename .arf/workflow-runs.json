@@ -1,0 +1,1066 @@
+{
+  "ed3b63aa-4eac-420c-8f52-51cf0c0113aa": {
+    "goal": "你好",
+    "run_id": "ed3b63aa-4eac-420c-8f52-51cf0c0113aa",
+    "graph": {
+      "nodes": [
+        {
+          "node_id": "plan_1",
+          "node_type": "plan",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        },
+        {
+          "node_id": "workspace_subtask_1",
+          "node_type": "workspace_subtask",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {
+            "planned": true,
+            "goal": "你好",
+            "intent": "casual_greeting"
+          }
+        },
+        {
+          "node_id": "evidence_synthesis_1",
+          "node_type": "evidence_synthesis",
+          "dependencies": [
+            "workspace_subtask_1"
+          ],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {
+            "planned": true
+          }
+        },
+        {
+          "node_id": "judge_1",
+          "node_type": "judge",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        },
+        {
+          "node_id": "final_response",
+          "node_type": "final_response",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        }
+      ],
+      "edges": [
+        {
+          "source": "plan_1",
+          "target": "workspace_subtask_1",
+          "condition": null,
+          "metadata": {}
+        },
+        {
+          "source": "workspace_subtask_1",
+          "target": "evidence_synthesis_1",
+          "condition": null,
+          "metadata": {}
+        }
+      ],
+      "metadata": {
+        "agent_graph": true,
+        "append_history": [
+          {
+            "iteration": 1,
+            "parent_judge_id": "plan_1",
+            "planner_summary": "Plan iteration 1 for casual_greeting",
+            "appended_node_ids": [
+              "workspace_subtask_1",
+              "evidence_synthesis_1"
+            ]
+          }
+        ]
+      }
+    },
+    "node_states": {
+      "workspace_subtask_1": {
+        "node_id": "workspace_subtask_1",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "summary": "你好",
+            "task_profile": "workspace_subtask",
+            "evidence_items": [],
+            "workspace_status": "completed"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      },
+      "evidence_synthesis_1": {
+        "node_id": "evidence_synthesis_1",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "summary": "你好！有什么我可以帮助您的吗？",
+            "facts": [],
+            "chunks": [],
+            "evidence_items": [],
+            "open_questions": [],
+            "references": []
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      },
+      "final_response": {
+        "node_id": "final_response",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "final_response": "你好！有什么我可以帮助您的吗？"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      }
+    },
+    "shared_state": {
+      "node_results": {
+        "workspace_subtask_1": {
+          "status": "completed",
+          "output": {
+            "summary": "你好",
+            "task_profile": "workspace_subtask",
+            "evidence_items": [],
+            "workspace_status": "completed"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "evidence_synthesis_1": {
+          "status": "completed",
+          "output": {
+            "summary": "你好！有什么我可以帮助您的吗？",
+            "facts": [],
+            "chunks": [],
+            "evidence_items": [],
+            "open_questions": [],
+            "references": []
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "final_response": {
+          "status": "completed",
+          "output": {
+            "final_response": "你好！有什么我可以帮助您的吗？"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        }
+      },
+      "evidence_synthesis": {
+        "summary": "你好！有什么我可以帮助您的吗？",
+        "facts": [],
+        "chunks": [],
+        "evidence_items": [],
+        "open_questions": [],
+        "references": []
+      },
+      "workspace_subtask_results": {
+        "workspace_subtask_1": {
+          "status": "completed",
+          "final_output": "你好",
+          "task": {
+            "goal": "你好",
+            "actions": [
+              {
+                "kind": "workspace_subtask",
+                "instruction": "你好",
+                "subgoal": "execute_step",
+                "risk_class": "low",
+                "status": "completed",
+                "metadata": {
+                  "direct_output": true
+                },
+                "observation": "你好"
+              }
+            ],
+            "task_profile": "workspace_subtask",
+            "runtime_persona": "general",
+            "intent": {
+              "task_kind": "chat",
+              "user_intent": "general_chat",
+              "goal_mode": "direct_answer",
+              "scope_kind": "unknown",
+              "target_ref": "",
+              "target_hint": "",
+              "target_type": "unknown",
+              "target_confidence": 0.0,
+              "confidence": 0.0,
+              "needs_clarification": false,
+              "needs_grounding": false,
+              "expected_output": "direct_answer",
+              "allowed_strategy_family": [],
+              "suggested_tool_chain": []
+            },
+            "state": {
+              "task_intent": {
+                "task_kind": "chat",
+                "user_intent": "general_chat",
+                "goal_mode": "direct_answer",
+                "scope_kind": "unknown",
+                "target_ref": "",
+                "target_hint": "",
+                "target_type": "unknown",
+                "target_confidence": 0.0,
+                "confidence": 0.0,
+                "needs_clarification": false,
+                "needs_grounding": false,
+                "expected_output": "direct_answer",
+                "allowed_strategy_family": [],
+                "suggested_tool_chain": []
+              },
+              "resolved_target": "",
+              "resource_semantics": {},
+              "evidence_items": [],
+              "known_facts": [],
+              "open_questions": [],
+              "read_paths": [],
+              "modified_paths": [],
+              "pending_verifications": [],
+              "claims": [],
+              "typed_claims": [],
+              "pending_actions": [],
+              "plan_state": {},
+              "confidence_state": {
+                "intent_confidence": 0.0,
+                "target_confidence": 0.0,
+                "evidence_confidence": 0.0,
+                "answer_confidence": 0.0
+              },
+              "answer_mode": "direct_answer"
+            },
+            "task_id": "b7bc8e07-6a4b-4c2f-b9d7-0c7f99e87a2a",
+            "status": "pending",
+            "summary": "你好",
+            "artifact_ids": [],
+            "verification": null,
+            "memory": {
+              "task_intent": {
+                "task_kind": "chat",
+                "user_intent": "general_chat",
+                "goal_mode": "direct_answer",
+                "scope_kind": "unknown",
+                "target_ref": "",
+                "target_hint": "",
+                "target_type": "unknown",
+                "target_confidence": 0.0,
+                "confidence": 0.0,
+                "needs_clarification": false,
+                "needs_grounding": false,
+                "expected_output": "direct_answer",
+                "allowed_strategy_family": [],
+                "suggested_tool_chain": []
+              },
+              "resolved_target": "",
+              "resource_semantics": {},
+              "evidence_items": [],
+              "known_facts": [],
+              "open_questions": [],
+              "read_paths": [],
+              "modified_paths": [],
+              "pending_verifications": [],
+              "claims": [],
+              "typed_claims": [],
+              "pending_actions": [],
+              "plan_state": {},
+              "confidence_state": {
+                "intent_confidence": 0.0,
+                "target_confidence": 0.0,
+                "evidence_confidence": 0.0,
+                "answer_confidence": 0.0
+              },
+              "answer_mode": "direct_answer"
+            },
+            "plan": null
+          },
+          "action_kind": "workspace_subtask",
+          "approval_request": null,
+          "resume_token": null,
+          "run_id": "3a4b5fb6-a751-4142-a1d3-df2e093c0ffe"
+        }
+      },
+      "aggregated_result": {
+        "status": "completed",
+        "output": {
+          "summaries": [
+            "你好",
+            "你好！有什么我可以帮助您的吗？"
+          ],
+          "facts": [],
+          "evidence_items": [],
+          "chunks": [],
+          "artifacts": {},
+          "open_questions": [],
+          "verification": null,
+          "verification_events": []
+        },
+        "references": [],
+        "error": null,
+        "approval_data": {}
+      },
+      "judge_decision": {
+        "status": "accepted",
+        "reason": "Collected sufficient evidence",
+        "missing_evidence": [],
+        "coverage_report": {
+          "evidence_count": 0,
+          "verification": {}
+        },
+        "replan_hint": {}
+      }
+    },
+    "status": "completed",
+    "final_output": "你好！有什么我可以帮助您的吗？",
+    "error": null,
+    "metadata": {
+      "goal_envelope": {
+        "goal": "你好",
+        "normalized_goal": "你好",
+        "intent": "casual_greeting",
+        "target_hints": [],
+        "memory_snapshot": {
+          "focused_resources": [],
+          "last_summary": null
+        },
+        "workspace_snapshot": {
+          "workspace_root": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework",
+          "top_level_entries": [
+            ".DS_Store",
+            ".api_demo_config.json",
+            ".arf",
+            ".arf_demo_config.json",
+            ".claude",
+            ".git",
+            ".gitignore",
+            ".pytest_cache",
+            ".vscode",
+            "MEMORY.md",
+            "README.md",
+            "agent_runtime_framework",
+            "docs",
+            "frontend-shell",
+            "pyproject.toml",
+            "tests",
+            "tmp_debug_ws",
+            "tmp_trace_ws"
+          ]
+        },
+        "policy_context": {},
+        "constraints": {
+          "default_directory": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
+        },
+        "success_criteria": [
+          "produce a grounded response"
+        ]
+      },
+      "agent_graph_state": {
+        "run_id": "ed3b63aa-4eac-420c-8f52-51cf0c0113aa",
+        "goal_envelope": {
+          "goal": "你好",
+          "normalized_goal": "你好",
+          "intent": "casual_greeting",
+          "target_hints": [],
+          "memory_snapshot": {
+            "focused_resources": [],
+            "last_summary": null
+          },
+          "workspace_snapshot": {
+            "workspace_root": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework",
+            "top_level_entries": [
+              ".DS_Store",
+              ".api_demo_config.json",
+              ".arf",
+              ".arf_demo_config.json",
+              ".claude",
+              ".git",
+              ".gitignore",
+              ".pytest_cache",
+              ".vscode",
+              "MEMORY.md",
+              "README.md",
+              "agent_runtime_framework",
+              "docs",
+              "frontend-shell",
+              "pyproject.toml",
+              "tests",
+              "tmp_debug_ws",
+              "tmp_trace_ws"
+            ]
+          },
+          "policy_context": {},
+          "constraints": {
+            "default_directory": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
+          },
+          "success_criteria": [
+            "produce a grounded response"
+          ]
+        },
+        "current_iteration": 1,
+        "aggregated_payload": {
+          "summaries": [
+            "你好",
+            "你好！有什么我可以帮助您的吗？"
+          ],
+          "facts": [],
+          "evidence_items": [],
+          "chunks": [],
+          "artifacts": {},
+          "open_questions": [],
+          "verification": null,
+          "verification_events": []
+        },
+        "planned_subgraphs": [
+          {
+            "iteration": 1,
+            "planner_summary": "Plan iteration 1 for casual_greeting",
+            "nodes": [
+              {
+                "node_id": "workspace_subtask_1",
+                "node_type": "workspace_subtask",
+                "reason": "Need a flexible execution step for this goal",
+                "inputs": {
+                  "goal": "你好",
+                  "intent": "casual_greeting"
+                },
+                "depends_on": [],
+                "success_criteria": [
+                  "produce progress toward the goal"
+                ]
+              },
+              {
+                "node_id": "evidence_synthesis_1",
+                "node_type": "evidence_synthesis",
+                "reason": "Need to summarize flexible execution outputs for judging",
+                "inputs": {},
+                "depends_on": [
+                  "workspace_subtask_1"
+                ],
+                "success_criteria": [
+                  "summarize subtask evidence"
+                ]
+              }
+            ],
+            "edges": [
+              {
+                "source": "workspace_subtask_1",
+                "target": "evidence_synthesis_1",
+                "condition": null,
+                "metadata": {}
+              }
+            ],
+            "metadata": {
+              "planner": "deterministic_v2",
+              "max_dynamic_nodes": 3
+            }
+          }
+        ],
+        "judge_history": [
+          {
+            "status": "accepted",
+            "reason": "Collected sufficient evidence",
+            "missing_evidence": [],
+            "coverage_report": {
+              "evidence_count": 0,
+              "verification": {}
+            },
+            "replan_hint": {}
+          }
+        ],
+        "appended_node_ids": [
+          "workspace_subtask_1",
+          "evidence_synthesis_1"
+        ]
+      },
+      "append_history": [
+        {
+          "iteration": 1,
+          "parent_judge_id": "plan_1",
+          "planner_summary": "Plan iteration 1 for casual_greeting",
+          "appended_node_ids": [
+            "workspace_subtask_1",
+            "evidence_synthesis_1"
+          ]
+        }
+      ]
+    }
+  },
+  "78062027-dbae-436a-93bf-7b38caa23f64": {
+    "goal": "你是谁",
+    "run_id": "78062027-dbae-436a-93bf-7b38caa23f64",
+    "graph": {
+      "nodes": [
+        {
+          "node_id": "plan_1",
+          "node_type": "plan",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        },
+        {
+          "node_id": "workspace_subtask_1",
+          "node_type": "workspace_subtask",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {
+            "planned": true,
+            "goal": "你是谁",
+            "intent": "identity_inquiry"
+          }
+        },
+        {
+          "node_id": "evidence_synthesis_1",
+          "node_type": "evidence_synthesis",
+          "dependencies": [
+            "workspace_subtask_1"
+          ],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {
+            "planned": true
+          }
+        },
+        {
+          "node_id": "judge_1",
+          "node_type": "judge",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        },
+        {
+          "node_id": "final_response",
+          "node_type": "final_response",
+          "dependencies": [],
+          "task_profile": null,
+          "status": "pending",
+          "requires_approval": false,
+          "retry_limit": 0,
+          "metadata": {}
+        }
+      ],
+      "edges": [
+        {
+          "source": "plan_1",
+          "target": "workspace_subtask_1",
+          "condition": null,
+          "metadata": {}
+        },
+        {
+          "source": "workspace_subtask_1",
+          "target": "evidence_synthesis_1",
+          "condition": null,
+          "metadata": {}
+        }
+      ],
+      "metadata": {
+        "agent_graph": true,
+        "append_history": [
+          {
+            "iteration": 1,
+            "parent_judge_id": "plan_1",
+            "planner_summary": "Plan iteration 1 for identity_inquiry",
+            "appended_node_ids": [
+              "workspace_subtask_1",
+              "evidence_synthesis_1"
+            ]
+          }
+        ]
+      }
+    },
+    "node_states": {
+      "workspace_subtask_1": {
+        "node_id": "workspace_subtask_1",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "summary": "你是谁",
+            "task_profile": "workspace_subtask",
+            "evidence_items": [],
+            "workspace_status": "completed"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      },
+      "evidence_synthesis_1": {
+        "node_id": "evidence_synthesis_1",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "summary": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？",
+            "facts": [],
+            "chunks": [],
+            "evidence_items": [],
+            "open_questions": [],
+            "references": []
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      },
+      "final_response": {
+        "node_id": "final_response",
+        "status": "completed",
+        "result": {
+          "status": "completed",
+          "output": {
+            "final_response": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "error": null,
+        "approval_requested": false,
+        "approval_granted": null,
+        "attempts": 0,
+        "metadata": {}
+      }
+    },
+    "shared_state": {
+      "node_results": {
+        "workspace_subtask_1": {
+          "status": "completed",
+          "output": {
+            "summary": "你是谁",
+            "task_profile": "workspace_subtask",
+            "evidence_items": [],
+            "workspace_status": "completed"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "evidence_synthesis_1": {
+          "status": "completed",
+          "output": {
+            "summary": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？",
+            "facts": [],
+            "chunks": [],
+            "evidence_items": [],
+            "open_questions": [],
+            "references": []
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        },
+        "final_response": {
+          "status": "completed",
+          "output": {
+            "final_response": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？"
+          },
+          "references": [],
+          "error": null,
+          "approval_data": {}
+        }
+      },
+      "evidence_synthesis": {
+        "summary": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？",
+        "facts": [],
+        "chunks": [],
+        "evidence_items": [],
+        "open_questions": [],
+        "references": []
+      },
+      "workspace_subtask_results": {
+        "workspace_subtask_1": {
+          "status": "completed",
+          "final_output": "你是谁",
+          "task": {
+            "goal": "你是谁",
+            "actions": [
+              {
+                "kind": "workspace_subtask",
+                "instruction": "你是谁",
+                "subgoal": "execute_step",
+                "risk_class": "low",
+                "status": "completed",
+                "metadata": {
+                  "direct_output": true
+                },
+                "observation": "你是谁"
+              }
+            ],
+            "task_profile": "workspace_subtask",
+            "runtime_persona": "general",
+            "intent": {
+              "task_kind": "chat",
+              "user_intent": "general_chat",
+              "goal_mode": "direct_answer",
+              "scope_kind": "unknown",
+              "target_ref": "",
+              "target_hint": "",
+              "target_type": "unknown",
+              "target_confidence": 0.0,
+              "confidence": 0.0,
+              "needs_clarification": false,
+              "needs_grounding": false,
+              "expected_output": "direct_answer",
+              "allowed_strategy_family": [],
+              "suggested_tool_chain": []
+            },
+            "state": {
+              "task_intent": {
+                "task_kind": "chat",
+                "user_intent": "general_chat",
+                "goal_mode": "direct_answer",
+                "scope_kind": "unknown",
+                "target_ref": "",
+                "target_hint": "",
+                "target_type": "unknown",
+                "target_confidence": 0.0,
+                "confidence": 0.0,
+                "needs_clarification": false,
+                "needs_grounding": false,
+                "expected_output": "direct_answer",
+                "allowed_strategy_family": [],
+                "suggested_tool_chain": []
+              },
+              "resolved_target": "",
+              "resource_semantics": {},
+              "evidence_items": [],
+              "known_facts": [],
+              "open_questions": [],
+              "read_paths": [],
+              "modified_paths": [],
+              "pending_verifications": [],
+              "claims": [],
+              "typed_claims": [],
+              "pending_actions": [],
+              "plan_state": {},
+              "confidence_state": {
+                "intent_confidence": 0.0,
+                "target_confidence": 0.0,
+                "evidence_confidence": 0.0,
+                "answer_confidence": 0.0
+              },
+              "answer_mode": "direct_answer"
+            },
+            "task_id": "35f059c3-b41c-4117-a91a-fab26194218c",
+            "status": "pending",
+            "summary": "你是谁",
+            "artifact_ids": [],
+            "verification": null,
+            "memory": {
+              "task_intent": {
+                "task_kind": "chat",
+                "user_intent": "general_chat",
+                "goal_mode": "direct_answer",
+                "scope_kind": "unknown",
+                "target_ref": "",
+                "target_hint": "",
+                "target_type": "unknown",
+                "target_confidence": 0.0,
+                "confidence": 0.0,
+                "needs_clarification": false,
+                "needs_grounding": false,
+                "expected_output": "direct_answer",
+                "allowed_strategy_family": [],
+                "suggested_tool_chain": []
+              },
+              "resolved_target": "",
+              "resource_semantics": {},
+              "evidence_items": [],
+              "known_facts": [],
+              "open_questions": [],
+              "read_paths": [],
+              "modified_paths": [],
+              "pending_verifications": [],
+              "claims": [],
+              "typed_claims": [],
+              "pending_actions": [],
+              "plan_state": {},
+              "confidence_state": {
+                "intent_confidence": 0.0,
+                "target_confidence": 0.0,
+                "evidence_confidence": 0.0,
+                "answer_confidence": 0.0
+              },
+              "answer_mode": "direct_answer"
+            },
+            "plan": null
+          },
+          "action_kind": "workspace_subtask",
+          "approval_request": null,
+          "resume_token": null,
+          "run_id": "c335386b-bd40-4ac2-aa38-95a517217142"
+        }
+      },
+      "aggregated_result": {
+        "status": "completed",
+        "output": {
+          "summaries": [
+            "你是谁",
+            "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？"
+          ],
+          "facts": [],
+          "evidence_items": [],
+          "chunks": [],
+          "artifacts": {},
+          "open_questions": [],
+          "verification": null,
+          "verification_events": []
+        },
+        "references": [],
+        "error": null,
+        "approval_data": {}
+      },
+      "judge_decision": {
+        "status": "accepted",
+        "reason": "Collected sufficient evidence",
+        "missing_evidence": [],
+        "coverage_report": {
+          "evidence_count": 0,
+          "verification": {}
+        },
+        "replan_hint": {}
+      }
+    },
+    "status": "completed",
+    "final_output": "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？",
+    "error": null,
+    "metadata": {
+      "goal_envelope": {
+        "goal": "你是谁",
+        "normalized_goal": "你是谁",
+        "intent": "identity_inquiry",
+        "target_hints": [],
+        "memory_snapshot": {
+          "focused_resources": [],
+          "last_summary": null
+        },
+        "workspace_snapshot": {
+          "workspace_root": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework",
+          "top_level_entries": [
+            ".DS_Store",
+            ".api_demo_config.json",
+            ".arf",
+            ".arf_demo_config.json",
+            ".claude",
+            ".git",
+            ".gitignore",
+            ".pytest_cache",
+            ".vscode",
+            "MEMORY.md",
+            "README.md",
+            "agent_runtime_framework",
+            "docs",
+            "frontend-shell",
+            "pyproject.toml",
+            "tests",
+            "tmp_debug_ws",
+            "tmp_trace_ws"
+          ]
+        },
+        "policy_context": {},
+        "constraints": {
+          "default_directory": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
+        },
+        "success_criteria": [
+          "produce a grounded response"
+        ]
+      },
+      "agent_graph_state": {
+        "run_id": "78062027-dbae-436a-93bf-7b38caa23f64",
+        "goal_envelope": {
+          "goal": "你是谁",
+          "normalized_goal": "你是谁",
+          "intent": "identity_inquiry",
+          "target_hints": [],
+          "memory_snapshot": {
+            "focused_resources": [],
+            "last_summary": null
+          },
+          "workspace_snapshot": {
+            "workspace_root": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework",
+            "top_level_entries": [
+              ".DS_Store",
+              ".api_demo_config.json",
+              ".arf",
+              ".arf_demo_config.json",
+              ".claude",
+              ".git",
+              ".gitignore",
+              ".pytest_cache",
+              ".vscode",
+              "MEMORY.md",
+              "README.md",
+              "agent_runtime_framework",
+              "docs",
+              "frontend-shell",
+              "pyproject.toml",
+              "tests",
+              "tmp_debug_ws",
+              "tmp_trace_ws"
+            ]
+          },
+          "policy_context": {},
+          "constraints": {
+            "default_directory": "/Users/munan/Documents/munan/my_project/ai/Agent_test/agent-runtime-framework"
+          },
+          "success_criteria": [
+            "produce a grounded response"
+          ]
+        },
+        "current_iteration": 1,
+        "aggregated_payload": {
+          "summaries": [
+            "你是谁",
+            "我是 Claude，一个 AI 助手。我可以帮助你完成各种任务，包括回答问题、写作、分析、编程等。有什么我可以帮你的吗？"
+          ],
+          "facts": [],
+          "evidence_items": [],
+          "chunks": [],
+          "artifacts": {},
+          "open_questions": [],
+          "verification": null,
+          "verification_events": []
+        },
+        "planned_subgraphs": [
+          {
+            "iteration": 1,
+            "planner_summary": "Plan iteration 1 for identity_inquiry",
+            "nodes": [
+              {
+                "node_id": "workspace_subtask_1",
+                "node_type": "workspace_subtask",
+                "reason": "Need a flexible execution step for this goal",
+                "inputs": {
+                  "goal": "你是谁",
+                  "intent": "identity_inquiry"
+                },
+                "depends_on": [],
+                "success_criteria": [
+                  "produce progress toward the goal"
+                ]
+              },
+              {
+                "node_id": "evidence_synthesis_1",
+                "node_type": "evidence_synthesis",
+                "reason": "Need to summarize flexible execution outputs for judging",
+                "inputs": {},
+                "depends_on": [
+                  "workspace_subtask_1"
+                ],
+                "success_criteria": [
+                  "summarize subtask evidence"
+                ]
+              }
+            ],
+            "edges": [
+              {
+                "source": "workspace_subtask_1",
+                "target": "evidence_synthesis_1",
+                "condition": null,
+                "metadata": {}
+              }
+            ],
+            "metadata": {
+              "planner": "deterministic_v2",
+              "max_dynamic_nodes": 3
+            }
+          }
+        ],
+        "judge_history": [
+          {
+            "status": "accepted",
+            "reason": "Collected sufficient evidence",
+            "missing_evidence": [],
+            "coverage_report": {
+              "evidence_count": 0,
+              "verification": {}
+            },
+            "replan_hint": {}
+          }
+        ],
+        "appended_node_ids": [
+          "workspace_subtask_1",
+          "evidence_synthesis_1"
+        ]
+      },
+      "append_history": [
+        {
+          "iteration": 1,
+          "parent_judge_id": "plan_1",
+          "planner_summary": "Plan iteration 1 for identity_inquiry",
+          "appended_node_ids": [
+            "workspace_subtask_1",
+            "evidence_synthesis_1"
+          ]
+        }
+      ]
+    }
+  }
+}

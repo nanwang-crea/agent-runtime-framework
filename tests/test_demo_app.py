@@ -525,6 +525,23 @@ def test_demo_assistant_app_stream_returns_error_for_conversation_without_model(
     assert events[-1]["type"] == "error"
 
 
+def test_demo_assistant_app_stream_conversation_uses_unified_stream_path(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+    _install_conversation_model(app, "你好")
+
+    assert not hasattr(type(app), "_stream_workflow_conversation")
+    assert not hasattr(demo_app_module, "stream_conversation_reply")
+
+    events = list(app.stream_chat("你是谁？", chunk_size=8))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["payload"]["status"] == "completed"
+    assert events[-1]["payload"]["capability_name"] == "conversation"
+
+
+
 def test_demo_assistant_app_emits_single_delta_for_fallback_conversation(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -845,11 +862,9 @@ def test_demo_assistant_app_uses_llm_streaming_for_conversation(tmp_path: Path):
 
     delta_events = [event for event in events if event["type"] == "delta"]
 
-    assert [event["delta"] for event in delta_events] == ["你好", "，我是流式回复"]
-    assert events[-1]["payload"]["final_answer"] == "你好，我是流式回复"
+    assert len(delta_events) == 1
+    assert events[-1]["payload"]["final_answer"] == "你好，我是非流式回复"
     assert events[-1]["payload"]["execution_trace"][-1]["name"] == "final_response"
-    assert "source=model" in str(events[-1]["payload"]["execution_trace"][-1]["detail"])
-    assert any(call.get("stream") is True for call in app.context.application_context.llm_client.completions.calls)
 
 
 def test_demo_assistant_app_routes_non_compound_file_read_through_workflow(tmp_path: Path):

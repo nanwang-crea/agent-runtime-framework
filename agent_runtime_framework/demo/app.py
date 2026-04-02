@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 import logging
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
@@ -22,10 +22,6 @@ from agent_runtime_framework.models import (
     ModelRegistry,
     ModelRouter,
     OpenAICompatibleDriver,
-    ChatRequest,
-    chat_once,
-    chat_stream,
-    resolve_model_runtime,
 )
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
@@ -57,42 +53,6 @@ def _format_error_detail(exc: Exception) -> str:
     return detail[:240]
 
 
-
-def stream_conversation_reply(user_input: str, context: Any, session: Any, *, diagnostics: dict[str, str | None] | None = None) -> Iterable[str]:
-    meta = diagnostics if diagnostics is not None else {}
-    meta["source"] = "model"
-    meta["reason"] = "pending"
-    runtime = resolve_model_runtime(context.application_context, "conversation")
-    llm_client = runtime.client if runtime is not None else context.application_context.llm_client
-    model_name = runtime.profile.model_name if runtime is not None else context.application_context.llm_model
-    if llm_client is None or not model_name:
-        raise RuntimeError("llm_unavailable: 未配置可用模型用于 conversation response")
-    messages = build_conversation_messages(user_input, session, context=context)
-    try:
-        response = chat_stream(llm_client, ChatRequest(model=model_name, messages=messages, temperature=0.3, max_tokens=1024))
-        streamed = False
-        for chunk in response:
-            streamed = True
-            if chunk.content:
-                yield chunk.content
-        if streamed:
-            meta["source"] = "model"
-            meta["reason"] = "stream"
-            return
-    except Exception as exc:
-        meta["reason"] = f"stream_error:{_format_error_detail(exc)}"
-    try:
-        response = chat_once(llm_client, ChatRequest(model=model_name, messages=messages, temperature=0.3, max_tokens=1024))
-        content = str(response.content or "").strip()
-        if content:
-            meta["source"] = "model"
-            meta["reason"] = "non_stream_fallback"
-            yield content
-            return
-    except Exception as exc:
-        meta["reason"] = f"model_error:{_format_error_detail(exc)}"
-        raise RuntimeError(meta["reason"]) from exc
-    raise RuntimeError("conversation response returned empty content")
 
 
 @dataclass(slots=True)
@@ -279,19 +239,15 @@ class DemoAssistantApp:
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
-        session = self._ensure_session()
+        self._ensure_session()
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
         goal = self._analyze_workflow_goal(message)
-        if self._is_conversation_goal(goal):
-            try:
-                yield from self._stream_workflow_conversation(message, session)
-            except Exception as exc:
-                payload = self._error_payload(exc)
-                yield {"type": "error", "error": dict(payload.get("error") or {})}
-            return
         yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
         try:
-            payload = self._run_agent_graph_workflow(message, goal_spec=goal)
+            if self._is_conversation_goal(goal):
+                payload = self._run_compiled_workflow(message, graph=self._build_conversation_graph(goal))
+            else:
+                payload = self._run_agent_graph_workflow(message, goal_spec=goal)
         except Exception as exc:
             payload = self._error_payload(exc)
             yield {"type": "error", "error": dict(payload.get("error") or {})}
@@ -307,49 +263,6 @@ class DemoAssistantApp:
             yield {"type": "final", "payload": payload}
             return
         yield {"type": "delta", "delta": final_answer}
-        yield {"type": "final", "payload": payload}
-
-    def _stream_workflow_conversation(self, message: str, session: AssistantSession):
-        session.add_turn("user", message)
-        yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
-        yield {"type": "step", "step": {"name": "final_response", "status": "running", "detail": "final_response"}}
-        chunks: list[str] = []
-        diagnostics: dict[str, str | None] = {"source": "fallback", "reason": "unknown"}
-        for chunk in stream_conversation_reply(message, self.context, session, diagnostics=diagnostics):
-            if not chunk:
-                continue
-            chunks.append(chunk)
-            yield {"type": "delta", "delta": chunk}
-        final_answer = "".join(chunks).strip()
-        session.add_turn("assistant", final_answer)
-        session.focused_capability = "workflow"
-        task = type("WorkflowConversationTask", (), {})()
-        task.task_id = str(uuid4())
-        task.goal = message
-        task.actions = [type("WorkflowConversationAction", (), {"kind": "final_response", "instruction": message, "status": "completed", "observation": final_answer, "metadata": {}})()]
-        self._task_history.insert(0, task)
-        self._task_history = self._task_history[:40]
-        source = str(diagnostics.get("source") or "fallback")
-        reason = str(diagnostics.get("reason") or "")
-        payload = {
-            "status": "completed",
-            "run_id": str(uuid4()),
-            "plan_id": task.task_id,
-            "final_answer": final_answer,
-            "capability_name": "conversation",
-            "runtime": "workflow",
-            "execution_trace": [{"name": "final_response", "status": "completed", "detail": f"source={source}; reason={reason}" if reason else f"source={source}"}],
-            "approval_request": None,
-            "resume_token_id": None,
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "context": self.context_payload(),
-            "workspace": str(self.workspace),
-        }
-        self._record_run(payload, prompt=message)
-        yield {"type": "memory", "memory": payload["memory"]}
         yield {"type": "final", "payload": payload}
 
     def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
