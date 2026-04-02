@@ -155,9 +155,10 @@ def test_analyze_goal_uses_model_without_feature_flag():
 
 def test_decompose_goal_prefers_model_output_when_available():
     context = _workflow_context(
-        '{"subtasks":[{"task_id":"repository_overview","task_profile":"repository_explainer","target":"."},'
-        '{"task_id":"file_read","task_profile":"file_reader","target":"README.md"},'
-        '{"task_id":"final_synthesis","task_profile":"final_synthesis","depends_on":["repository_overview","file_read"]}]}'
+        '{"subtasks":[{"task_id":"workspace_discovery","task_profile":"workspace_discovery","target":"."},'
+        '{"task_id":"content_search","task_profile":"content_search","target":"README.md"},'
+        '{"task_id":"chunked_file_read","task_profile":"chunked_file_read","target":"README.md","depends_on":["content_search"]},'
+        '{"task_id":"evidence_synthesis","task_profile":"evidence_synthesis","depends_on":["workspace_discovery","content_search","chunked_file_read"]}]}'
     )
     goal = GoalSpec(
         original_goal="demo",
@@ -171,14 +172,15 @@ def test_decompose_goal_prefers_model_output_when_available():
     subtasks = decompose_goal(goal, context=context)
 
     assert subtasks == [
-        SubTaskSpec(task_id="repository_overview", task_profile="repository_explainer", target="."),
-        SubTaskSpec(task_id="file_read", task_profile="file_reader", target="README.md"),
-        SubTaskSpec(task_id="final_synthesis", task_profile="final_synthesis", depends_on=["repository_overview", "file_read"]),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
+        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"]),
     ]
 
 
 def test_decompose_goal_uses_model_without_feature_flag():
-    context = _workflow_context('{"subtasks":[{"task_id":"repository_overview","task_profile":"repository_explainer","target":"."}]}')
+    context = _workflow_context('{"subtasks":[{"task_id":"workspace_discovery","task_profile":"workspace_discovery","target":"."}]}')
     goal = GoalSpec(
         original_goal="demo",
         primary_intent="repository_overview",
@@ -188,5 +190,5 @@ def test_decompose_goal_uses_model_without_feature_flag():
     subtasks = decompose_goal(goal, context=context)
 
     assert subtasks == [
-        SubTaskSpec(task_id="repository_overview", task_profile="repository_explainer", target="."),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
     ]

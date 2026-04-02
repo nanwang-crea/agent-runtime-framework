@@ -147,6 +147,12 @@ class ApprovalGateExecutor:
 @dataclass(slots=True)
 class FinalResponseExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: dict[str, Any] | None = None) -> NodeResult:
+        judge_decision = dict(run.shared_state.get("judge_decision") or {})
+        judge_status = str(judge_decision.get("status") or "").strip()
+        if judge_status and judge_status not in {"accepted", "stop_due_to_cost"}:
+            error = f"judge blocked final response: {judge_status}"
+            return NodeResult(status=NODE_STATUS_FAILED, error=error, output={"summary": error}, references=[])
+        conversation_mode = bool(node.metadata.get("conversation_mode") or run.graph.metadata.get("conversation_mode") or run.shared_state.get("conversation_mode"))
         aggregated = run.shared_state.get("aggregated_result")
         if aggregated is None:
             node_results = run.shared_state.get("node_results", {})
@@ -156,8 +162,17 @@ class FinalResponseExecutor:
                 if key != node.node_id and result.status == NODE_STATUS_COMPLETED
             ]
             aggregated = aggregate_node_results(direct_results)
-        synthesized = dict(run.shared_state.get("response_synthesis") or {})
+        synthesized = dict(run.shared_state.get("evidence_synthesis") or {})
         final_response = str(synthesized.get("final_response") or synthesized.get("summary") or "").strip()
+        if conversation_mode and not final_response:
+            application_context = (context or {}).get("application_context") if isinstance(context, dict) else None
+            workspace_context = (context or {}).get("workspace_context") if isinstance(context, dict) else None
+            session = getattr(workspace_context, "session", None) if workspace_context is not None else None
+            final_response = _generate_conversation_reply(run.goal, application_context, session=session, context=workspace_context)
+        if judge_status == "stop_due_to_cost" and not final_response:
+            missing = [str(item) for item in judge_decision.get("missing_evidence", []) or [] if str(item).strip()]
+            missing_text = f" Missing: {', '.join(missing)}." if missing else ""
+            final_response = f"{judge_decision.get('reason') or 'Stopped due to cost.'}{missing_text}".strip()
         if not final_response:
             summaries = aggregated.output.get("summaries", []) if aggregated else []
             facts = aggregated.output.get("facts", []) if aggregated and isinstance(aggregated.output, dict) else []

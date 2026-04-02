@@ -11,8 +11,8 @@ from agent_runtime_framework.models import DriverCapabilities, InMemoryCredentia
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
-from agent_runtime_framework.workflow.graph_builder import build_workflow_graph
-from agent_runtime_framework.workflow.models import GoalSpec
+from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
+from agent_runtime_framework.workflow.models import GoalEnvelope, GoalSpec, new_agent_graph_state
 
 
 @dataclass
@@ -88,7 +88,7 @@ def test_graph_builder_creates_conversation_node_for_generic_goal():
         primary_intent="generic",
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert [node.node_type for node in graph.nodes] == ["conversation_response"]
 
@@ -101,7 +101,7 @@ def test_graph_builder_creates_small_graph_for_simple_file_read_request():
         target_paths=["README.md"],
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert [node.node_type for node in graph.nodes] == [
         "content_search",
@@ -117,14 +117,14 @@ def test_graph_builder_creates_small_graph_for_simple_file_read_request():
 
 
 def test_graph_builder_adds_aggregate_and_final_nodes_for_compound_goal():
-    graph = build_workflow_graph(example_compound_goal())
+    graph = compile_compat_workflow_graph(example_compound_goal())
 
     assert any(node.node_type == "aggregate_results" for node in graph.nodes)
     assert any(node.node_type == "final_response" for node in graph.nodes)
 
 
 def test_graph_builder_builds_multiple_nodes_and_edges_for_compound_read_list_request():
-    graph = build_workflow_graph(example_compound_goal())
+    graph = compile_compat_workflow_graph(example_compound_goal())
 
     assert {node.node_id for node in graph.nodes} >= {
         "workspace_discovery",
@@ -153,7 +153,7 @@ def test_graph_builder_inserts_verification_node_for_change_flows():
         metadata={"requires_verification": True},
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert any(node.node_type == "verification" for node in graph.nodes)
 
@@ -168,7 +168,7 @@ def test_graph_builder_uses_codex_node_for_non_native_request():
         metadata={"requires_verification": True},
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert any(node.node_type == "workspace_subtask" for node in graph.nodes)
     assert any(node.node_type == "verification" for node in graph.nodes)
@@ -184,7 +184,7 @@ def test_graph_builder_can_enforce_model_only_mode():
         metadata={"requires_verification": True},
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert graph.metadata["source"] == "model"
 
@@ -198,12 +198,12 @@ def test_graph_builder_rejects_fallback_when_model_only_and_model_missing():
     context = SimpleNamespace(application_context=SimpleNamespace(llm_client=None, llm_model=None, services={}), services={"workflow_graph_model_only": True})
 
     with pytest.raises(ValueError, match="model-only"):
-        build_workflow_graph(goal, context=context)
+        compile_compat_workflow_graph(goal, context=context)
 
 
 def test_graph_builder_prefers_model_output_when_available():
     context = _workflow_context(
-        '{"nodes":[{"node_id":"file_read","node_type":"file_reader","task_profile":"file_reader",'
+        '{"nodes":[{"node_id":"file_read","node_type":"chunked_file_read","task_profile":"chunked_file_read",'
         '"dependencies":[],"metadata":{"target_path":"README.md"}},'
         '{"node_id":"final_response","node_type":"final_response","dependencies":["file_read"]}],'
         '"edges":[{"source":"file_read","target":"final_response"}]}'
@@ -215,7 +215,7 @@ def test_graph_builder_prefers_model_output_when_available():
         target_paths=["README.md"],
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert [node.node_id for node in graph.nodes] == ["file_read", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("file_read", "final_response")]
@@ -234,7 +234,7 @@ def test_graph_builder_accepts_model_defined_workspace_discovery_node():
         requires_repository_overview=True,
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert [node.node_type for node in graph.nodes] == ["workspace_discovery", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("discover", "final_response")]
@@ -254,10 +254,49 @@ def test_graph_builder_accepts_model_defined_content_search_node():
         target_paths=["README.md"],
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert [node.node_type for node in graph.nodes] == ["content_search", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("search", "final_response")]
+
+
+def test_planner_v2_emits_whitelisted_nodes_with_reason_and_success_criteria():
+    from agent_runtime_framework.workflow.planner_v2 import ALLOWED_DYNAMIC_NODE_TYPES, plan_next_subgraph
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["collect README evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-1", goal_envelope=goal)
+
+    subgraph = plan_next_subgraph(goal, state, context=None)
+
+    assert 1 <= len(subgraph.nodes) <= 3
+    assert all(node.node_type in ALLOWED_DYNAMIC_NODE_TYPES for node in subgraph.nodes)
+    assert all(node.reason for node in subgraph.nodes)
+    assert all(node.success_criteria for node in subgraph.nodes)
+    assert all(node.node_type != "final_response" for node in subgraph.nodes)
+
+
+def test_planner_v2_respects_max_dynamic_nodes_constraint():
+    from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
+
+    goal = GoalEnvelope(
+        goal="总结 docs 并读取 README.md",
+        normalized_goal="总结 docs 并读取 README.md",
+        intent="compound",
+        target_hints=["README.md", "docs"],
+        constraints={"max_dynamic_nodes": 2},
+        success_criteria=["collect workspace and file evidence"],
+    )
+    state = new_agent_graph_state(run_id="run-2", goal_envelope=goal)
+
+    subgraph = plan_next_subgraph(goal, state, context=None)
+
+    assert len(subgraph.nodes) <= 2
 
 
 def test_graph_builder_accepts_model_defined_chunked_file_read_node():
@@ -274,7 +313,7 @@ def test_graph_builder_accepts_model_defined_chunked_file_read_node():
         target_paths=["README.md"],
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert [node.node_type for node in graph.nodes] == ["chunked_file_read", "final_response"]
     assert [(edge.source, edge.target) for edge in graph.edges] == [("read", "final_response")]
@@ -282,7 +321,7 @@ def test_graph_builder_accepts_model_defined_chunked_file_read_node():
 
 def test_graph_builder_uses_model_without_feature_flag():
     context = _workflow_context(
-        '{"nodes":[{"node_id":"file_read","node_type":"file_reader","task_profile":"file_reader",'
+        '{"nodes":[{"node_id":"file_read","node_type":"chunked_file_read","task_profile":"chunked_file_read",'
         '"dependencies":[],"metadata":{"target_path":"README.md"}},'
         '{"node_id":"final_response","node_type":"final_response","dependencies":["file_read"]}],'
         '"edges":[{"source":"file_read","target":"final_response"}]}'
@@ -294,7 +333,7 @@ def test_graph_builder_uses_model_without_feature_flag():
         target_paths=["README.md"],
     )
 
-    graph = build_workflow_graph(goal, context=context)
+    graph = compile_compat_workflow_graph(goal, context=context)
 
     assert [node.node_id for node in graph.nodes] == ["file_read", "final_response"]
 
@@ -305,7 +344,7 @@ def test_graph_builder_falls_back_to_workspace_subtask_for_non_native_goal():
         primary_intent="change_and_verify",
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert [node.node_type for node in graph.nodes] == ["workspace_subtask", "final_response"]
     assert graph.nodes[0].metadata["goal"] == "编辑 README.md 并验证修改结果"
@@ -319,7 +358,7 @@ def test_graph_builder_creates_native_graph_for_repository_overview_request():
         requires_repository_overview=True,
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert [node.node_type for node in graph.nodes] == ["workspace_discovery", "evidence_synthesis", "final_response"]
     assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
@@ -327,7 +366,7 @@ def test_graph_builder_creates_native_graph_for_repository_overview_request():
 
 
 def test_graph_builder_keeps_compound_read_and_summarize_request_native():
-    graph = build_workflow_graph(example_compound_goal())
+    graph = compile_compat_workflow_graph(example_compound_goal())
 
     assert all(node.node_type != "workspace_subtask" for node in graph.nodes)
     assert {node.node_type for node in graph.nodes} >= {
@@ -341,7 +380,7 @@ def test_graph_builder_keeps_compound_read_and_summarize_request_native():
 
 
 def test_graph_builder_no_longer_emits_legacy_native_nodes_by_default():
-    graph = build_workflow_graph(example_compound_goal())
+    graph = compile_compat_workflow_graph(example_compound_goal())
 
     node_types = {node.node_type for node in graph.nodes}
 
@@ -356,11 +395,25 @@ def test_graph_builder_records_fallback_reason_for_non_native_goal():
         primary_intent="change_and_verify",
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert graph.metadata["execution_mode"] == "mixed"
     assert "unsupported_primary_intent" in graph.metadata["fallback_reasons"]
     assert graph.nodes[0].metadata["fallback_reason"] == "unsupported_primary_intent"
+
+
+def test_graph_builder_marks_compatibility_mode_for_legacy_entrypoint():
+    goal = GoalSpec(
+        original_goal="读取 README.md",
+        primary_intent="file_read",
+        requires_file_read=True,
+        target_paths=["README.md"],
+    )
+
+    graph = compile_compat_workflow_graph(goal)
+
+    assert graph.metadata["compatibility_mode"] is True
+    assert graph.metadata["compatibility_entrypoint"] == "compile_compat_workflow_graph"
 
 
 
@@ -371,7 +424,7 @@ def test_graph_builder_inserts_approval_gate_for_high_risk_workspace_subtask_goa
         metadata={"requires_approval": True},
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert any(node.node_type == "workspace_subtask" for node in graph.nodes)
     assert any(node.node_type == "approval_gate" for node in graph.nodes)
@@ -386,7 +439,7 @@ def test_graph_builder_creates_target_explainer_graph_for_module_question():
         metadata={"target_query": "请讲解 service 这个模块在做什么"},
     )
 
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
 
     assert [node.node_type for node in graph.nodes] == [
         "target_resolution",

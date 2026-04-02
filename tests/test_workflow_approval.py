@@ -48,7 +48,7 @@ def test_workflow_runtime_resumes_only_waiting_approval_node():
 
 
 def test_workflow_runtime_resumes_graph_built_approval_gate_for_workspace_subtask():
-    from agent_runtime_framework.workflow.graph_builder import build_workflow_graph
+    from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
     from agent_runtime_framework.workflow.models import GoalSpec
 
     goal = GoalSpec(
@@ -56,7 +56,7 @@ def test_workflow_runtime_resumes_graph_built_approval_gate_for_workspace_subtas
         primary_intent="dangerous_change",
         metadata={"requires_approval": True},
     )
-    graph = build_workflow_graph(goal)
+    graph = compile_compat_workflow_graph(goal)
     run = WorkflowRun(goal=goal.original_goal, graph=graph)
     runtime = WorkflowRuntime(executors={"noop": NoopExecutor(), "workspace_subtask": NoopExecutor(), "approval_gate": NoopExecutor(), "final_response": NoopExecutor()})
 

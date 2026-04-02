@@ -70,9 +70,6 @@ class WorkspaceSubtaskExecutor:
             "task_profile": result.task.task_profile,
             "evidence_items": evidence_items,
             "workspace_status": result.status,
-            "fallback_reason": str(node.metadata.get("fallback_reason") or "workflow_subtask"),
-            "compatibility_mode": str(node.metadata.get("compatibility_mode") or "workflow_subtask"),
-            "source_loop": str(node.metadata.get("source_loop") or "workflow_subtask"),
         }
         if verification_payload is not None:
             output["verification"] = verification_payload

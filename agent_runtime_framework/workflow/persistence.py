@@ -15,6 +15,7 @@ class WorkflowPersistenceStore:
     def save(self, run: WorkflowRun) -> None:
         payload = self._read_all()
         payload[run.run_id] = asdict(run)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load(self, run_id: str) -> WorkflowRun:

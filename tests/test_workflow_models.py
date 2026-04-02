@@ -2,8 +2,13 @@ from agent_runtime_framework.workflow import (
     NODE_STATUS_COMPLETED,
     NODE_STATUS_PENDING,
     RUN_STATUS_PENDING,
+    AgentGraphState,
+    GoalEnvelope,
+    JudgeDecision,
     NodeResult,
     NodeState,
+    PlannedNode,
+    PlannedSubgraph,
     WorkflowEdge,
     WorkflowGraph,
     WorkflowNode,
@@ -106,3 +111,62 @@ def test_workflow_payload_helpers_normalize_aggregated_schema():
     assert payload["chunks"] == []
     assert payload["artifacts"] == {}
     assert payload["open_questions"] == []
+
+
+def test_agent_graph_models_support_defaults_and_serialization_helpers():
+    planned_node = PlannedNode(
+        node_id="search_docs",
+        node_type="content_search",
+        reason="Need primary evidence",
+        inputs={"query": "agent graph runtime"},
+        success_criteria=["find matching files"],
+    )
+    subgraph = PlannedSubgraph(
+        iteration=1,
+        planner_summary="Search relevant docs first",
+        nodes=[planned_node],
+        edges=[WorkflowEdge(source="plan_1", target="search_docs")],
+    )
+    judge = JudgeDecision(status="needs_more_evidence", reason="Need more sources")
+    goal = GoalEnvelope(
+        goal="总结 agent graph runtime 设计",
+        normalized_goal="总结 agent graph runtime 设计",
+        intent="summarize",
+        target_hints=["docs/plans/2026-04-01-agent-graph-runtime-design.md"],
+        success_criteria=["provide a clear summary"],
+    )
+
+    assert planned_node.depends_on == []
+    assert goal.memory_snapshot == {}
+    assert goal.workspace_snapshot == {}
+    assert goal.policy_context == {}
+    assert goal.constraints == {}
+    assert judge.missing_evidence == []
+    assert judge.coverage_report == {}
+    assert judge.replan_hint == {}
+
+    from agent_runtime_framework.workflow.models import (
+        new_agent_graph_state,
+        serialize_agent_graph_state,
+    )
+
+    state = new_agent_graph_state(run_id="run-1", goal_envelope=goal)
+
+    assert state.run_id == "run-1"
+    assert state.current_iteration == 0
+    assert state.aggregated_payload["summaries"] == []
+    assert state.planned_subgraphs == []
+    assert state.judge_history == []
+    assert state.appended_node_ids == []
+
+    payload = serialize_agent_graph_state(state)
+
+    assert payload["run_id"] == "run-1"
+    assert payload["goal_envelope"]["goal"] == "总结 agent graph runtime 设计"
+    assert payload["aggregated_payload"]["summaries"] == []
+
+    serialized_subgraph = subgraph.as_payload()
+    serialized_judge = judge.as_payload()
+
+    assert serialized_subgraph["nodes"][0]["reason"] == "Need primary evidence"
+    assert serialized_judge["status"] == "needs_more_evidence"

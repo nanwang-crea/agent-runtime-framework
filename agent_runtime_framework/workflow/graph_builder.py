@@ -7,22 +7,39 @@ from agent_runtime_framework.agents.workspace_backend.prompting import extract_j
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
+from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
 
 
-_NATIVE_NODE_TYPES = {"repository_explainer", "file_reader", "workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "conversation_response"}
+_NATIVE_NODE_TYPES = {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "conversation_response"}
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
 _SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer", "generic", "chat", "conversation"}
 
 
+def build_first_iteration_subgraph(goal_envelope, graph_state, context: Any | None = None):
+    return plan_next_subgraph(goal_envelope, graph_state, context)
 
-def build_workflow_graph(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
+
+
+def compile_compat_workflow_graph(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
     llm_graph = _build_graph_with_model(goal, context=context)
     if llm_graph is not None:
-        return _normalize_graph(llm_graph, goal)
+        graph = _normalize_graph(llm_graph, goal)
+        graph.metadata = {
+            **dict(graph.metadata or {}),
+            "compatibility_mode": True,
+            "compatibility_entrypoint": "compile_compat_workflow_graph",
+        }
+        return graph
     if _is_model_only(context):
         raise ValueError("workflow graph compilation is model-only in this environment")
-    return _build_graph_deterministically(goal, context=context)
+    graph = _build_graph_deterministically(goal, context=context)
+    graph.metadata = {
+        **dict(graph.metadata or {}),
+        "compatibility_mode": True,
+        "compatibility_entrypoint": "compile_compat_workflow_graph",
+    }
+    return graph
 
 
 def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowGraph | None:
@@ -46,7 +63,7 @@ def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> WorkflowG
                             "You compile a workflow graph. Return JSON only with keys nodes and edges. "
                             "Each node needs: node_id, node_type, task_profile, dependencies, requires_approval, retry_limit, metadata. "
                             "Use node_type to choose the executor path directly. Supported node types include "
-                            "repository_explainer, file_reader, workspace_discovery, target_resolution, content_search, chunked_file_read, evidence_synthesis, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
+                            "workspace_discovery, target_resolution, content_search, chunked_file_read, evidence_synthesis, workspace_subtask, verification, approval_gate, aggregate_results, final_response. "
                             "Each edge needs: source, target, condition, metadata."
                         ),
                     ),

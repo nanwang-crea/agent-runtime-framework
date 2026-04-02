@@ -3,6 +3,7 @@ from agent_runtime_framework.workflow import (
     NODE_STATUS_WAITING_APPROVAL,
     RUN_STATUS_WAITING_APPROVAL,
     NodeState,
+    WorkflowGraph,
     WorkflowRun,
 )
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
@@ -50,7 +51,7 @@ def test_workflow_persistence_store_round_trips_structured_evidence_payloads(tmp
         },
         references=["README.md"],
     )
-    run.shared_state["response_synthesis"] = {
+    run.shared_state["evidence_synthesis"] = {
         "summary": "workspace summary",
         "facts": [{"kind": "source_root", "path": "src"}],
         "evidence_items": [{"kind": "path", "path": "README.md", "summary": "README"}],
@@ -61,4 +62,25 @@ def test_workflow_persistence_store_round_trips_structured_evidence_payloads(tmp
 
     assert restored.shared_state["aggregated_result"].output["facts"] == [{"kind": "source_root", "path": "src"}]
     assert restored.shared_state["aggregated_result"].output["evidence_items"][0]["path"] == "README.md"
-    assert restored.shared_state["response_synthesis"]["summary"] == "workspace summary"
+    assert restored.shared_state["evidence_synthesis"]["summary"] == "workspace summary"
+
+
+def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path):
+    store = WorkflowPersistenceStore(tmp_path / "workflow-runs.json")
+    run = WorkflowRun(goal="demo")
+    run.graph = WorkflowGraph(metadata={"append_history": [{"iteration": 1, "parent_judge_id": "plan_1", "appended_node_ids": ["content_search_1"]}]})
+    run.metadata["agent_graph_state"] = {
+        "run_id": run.run_id,
+        "current_iteration": 1,
+        "goal_envelope": {"goal": "demo", "normalized_goal": "demo", "intent": "file_read", "target_hints": [], "memory_snapshot": {}, "workspace_snapshot": {}, "policy_context": {}, "constraints": {}, "success_criteria": []},
+        "aggregated_payload": {"summaries": ["s"], "facts": [], "evidence_items": [], "chunks": [], "artifacts": {}, "open_questions": [], "verification": None, "verification_events": []},
+        "planned_subgraphs": [{"iteration": 1, "planner_summary": "p", "nodes": [], "edges": [], "metadata": {}}],
+        "judge_history": [{"status": "accepted", "reason": "ok", "missing_evidence": [], "coverage_report": {}, "replan_hint": {}}],
+        "appended_node_ids": ["content_search_1"],
+    }
+
+    store.save(run)
+    restored = store.load(run.run_id)
+
+    assert restored.metadata["agent_graph_state"]["current_iteration"] == 1
+    assert restored.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"

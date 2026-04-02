@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, NotRequired, TypedDict
 from uuid import uuid4
 
@@ -177,3 +177,92 @@ class SubTaskSpec:
     target: str | None = None
     depends_on: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class GoalEnvelope:
+    goal: str
+    normalized_goal: str
+    intent: str
+    target_hints: list[str] = field(default_factory=list)
+    memory_snapshot: dict[str, Any] = field(default_factory=dict)
+    workspace_snapshot: dict[str, Any] = field(default_factory=dict)
+    policy_context: dict[str, Any] = field(default_factory=dict)
+    constraints: dict[str, Any] = field(default_factory=dict)
+    success_criteria: list[str] = field(default_factory=list)
+
+    def as_payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PlannedNode:
+    node_id: str
+    node_type: str
+    reason: str
+    inputs: dict[str, Any] = field(default_factory=dict)
+    depends_on: list[str] = field(default_factory=list)
+    success_criteria: list[str] = field(default_factory=list)
+
+    def as_payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PlannedSubgraph:
+    iteration: int
+    planner_summary: str
+    nodes: list[PlannedNode] = field(default_factory=list)
+    edges: list[WorkflowEdge] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "iteration": self.iteration,
+            "planner_summary": self.planner_summary,
+            "nodes": [node.as_payload() for node in self.nodes],
+            "edges": [asdict(edge) for edge in self.edges],
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class JudgeDecision:
+    status: str
+    reason: str
+    missing_evidence: list[str] = field(default_factory=list)
+    coverage_report: dict[str, Any] = field(default_factory=dict)
+    replan_hint: dict[str, Any] = field(default_factory=dict)
+
+    def as_payload(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class AgentGraphState:
+    run_id: str
+    goal_envelope: GoalEnvelope
+    current_iteration: int = 0
+    aggregated_payload: AggregatedWorkflowPayload = field(default_factory=normalize_aggregated_workflow_payload)
+    planned_subgraphs: list[PlannedSubgraph] = field(default_factory=list)
+    judge_history: list[JudgeDecision] = field(default_factory=list)
+    appended_node_ids: list[str] = field(default_factory=list)
+
+    def as_payload(self) -> dict[str, Any]:
+        return serialize_agent_graph_state(self)
+
+
+def new_agent_graph_state(*, run_id: str, goal_envelope: GoalEnvelope) -> AgentGraphState:
+    return AgentGraphState(run_id=run_id, goal_envelope=goal_envelope)
+
+
+def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
+    return {
+        "run_id": state.run_id,
+        "goal_envelope": state.goal_envelope.as_payload(),
+        "current_iteration": state.current_iteration,
+        "aggregated_payload": normalize_aggregated_workflow_payload(state.aggregated_payload),
+        "planned_subgraphs": [subgraph.as_payload() for subgraph in state.planned_subgraphs],
+        "judge_history": [decision.as_payload() for decision in state.judge_history],
+        "appended_node_ids": list(state.appended_node_ids),
+    }

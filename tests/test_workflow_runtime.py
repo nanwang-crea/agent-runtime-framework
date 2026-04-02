@@ -1,6 +1,9 @@
 from agent_runtime_framework.workflow import (
     NODE_STATUS_COMPLETED,
     NODE_STATUS_FAILED,
+    GoalEnvelope,
+    PlannedNode,
+    PlannedSubgraph,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_WAITING_APPROVAL,
@@ -10,15 +13,16 @@ from agent_runtime_framework.workflow import (
     WorkflowGraph,
     WorkflowNode,
     WorkflowRun,
+    new_agent_graph_state,
+    normalize_aggregated_workflow_payload,
 )
+import pytest
 from agent_runtime_framework.workflow.runtime import WorkflowRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.file_inspection_executor import FileInspectionExecutor
-from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
 from agent_runtime_framework.workflow.node_executors import FinalResponseExecutor, VerificationExecutor
 from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
 from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
@@ -570,7 +574,8 @@ def test_evidence_synthesis_executor_builds_summary_facts_and_open_questions():
     assert result.output["summary"]
     assert result.output["facts"] == [{"kind": "source_root", "path": "src"}]
     assert result.output["open_questions"] == ["missing config file"]
-    assert run.shared_state["response_synthesis"]["summary"] == result.output["summary"]
+    assert run.shared_state["evidence_synthesis"]["summary"] == result.output["summary"]
+    assert "response_synthesis" not in run.shared_state
 
 
 def test_final_response_executor_prefers_evidence_synthesis_output():
@@ -582,7 +587,7 @@ def test_final_response_executor_prefers_evidence_synthesis_output():
                 output={"summaries": ["aggregate summary"]},
                 references=["README.md"],
             ),
-            "response_synthesis": {"summary": "evidence summary", "facts": [{"kind": "source_root", "path": "src"}]},
+            "evidence_synthesis": {"summary": "evidence summary", "facts": [{"kind": "source_root", "path": "src"}]},
         },
     )
 
@@ -825,3 +830,323 @@ def test_verification_executor_groups_events_by_verification_type():
     assert result.output["verification_by_type"]["tool"]["status"] == "passed"
     assert result.output["verification_by_type"]["test"]["status"] == "passed"
     assert result.output["verification_by_type"]["approval"]["status"] == "not_run"
+
+
+def test_append_subgraph_appends_nodes_in_order_after_anchor():
+    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNode(node_id="plan_1", node_type="plan"),
+            WorkflowNode(node_id="judge_1", node_type="judge", dependencies=["plan_1"]),
+        ],
+        edges=[WorkflowEdge(source="plan_1", target="judge_1")],
+    )
+    subgraph = PlannedSubgraph(
+        iteration=1,
+        planner_summary="collect evidence",
+        nodes=[
+            PlannedNode(node_id="content_search_1", node_type="content_search", reason="locate file", success_criteria=["find file"]),
+            PlannedNode(node_id="chunked_file_read_1", node_type="chunked_file_read", reason="read file", depends_on=["content_search_1"], success_criteria=["read file"]),
+        ],
+        edges=[WorkflowEdge(source="content_search_1", target="chunked_file_read_1")],
+        metadata={"parent_judge_id": "judge_1"},
+    )
+
+    appended = append_subgraph(graph, subgraph, after_node_id="judge_1")
+
+    assert [node.node_id for node in appended.nodes] == ["plan_1", "judge_1", "content_search_1", "chunked_file_read_1"]
+
+
+def test_append_subgraph_connects_anchor_and_records_history():
+    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+
+    graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_1", node_type="judge")], edges=[])
+    subgraph = PlannedSubgraph(
+        iteration=2,
+        planner_summary="collect verification",
+        nodes=[PlannedNode(node_id="verification_2", node_type="verification_step", reason="verify answer", success_criteria=["run verification"])],
+        edges=[],
+        metadata={"parent_judge_id": "judge_1"},
+    )
+
+    appended = append_subgraph(graph, subgraph, after_node_id="judge_1")
+
+    assert ("judge_1", "verification_2") in {(edge.source, edge.target) for edge in appended.edges}
+    assert appended.metadata["append_history"][0]["iteration"] == 2
+    assert appended.metadata["append_history"][0]["parent_judge_id"] == "judge_1"
+
+
+def test_append_subgraph_rejects_duplicate_node_id():
+    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+
+    graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_1", node_type="judge")], edges=[])
+    subgraph = PlannedSubgraph(
+        iteration=1,
+        planner_summary="duplicate",
+        nodes=[PlannedNode(node_id="judge_1", node_type="content_search", reason="bad", success_criteria=["n/a"])],
+        edges=[],
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        append_subgraph(graph, subgraph, after_node_id="judge_1")
+
+
+def test_append_subgraph_metadata_contains_iteration_and_parent_judge():
+    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+
+    graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_2", node_type="judge")], edges=[])
+    subgraph = PlannedSubgraph(
+        iteration=3,
+        planner_summary="more evidence",
+        nodes=[PlannedNode(node_id="workspace_discovery_3", node_type="workspace_discovery", reason="inspect workspace", success_criteria=["list files"])],
+        edges=[],
+        metadata={"parent_judge_id": "judge_2"},
+    )
+
+    appended = append_subgraph(graph, subgraph, after_node_id="judge_2")
+    history = appended.metadata["append_history"][0]
+
+    assert history["iteration"] == 3
+    assert history["parent_judge_id"] == "judge_2"
+    assert history["appended_node_ids"] == ["workspace_discovery_3"]
+
+
+def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read file"],
+    )
+    planned = PlannedSubgraph(
+        iteration=1,
+        planner_summary="read file",
+        nodes=[PlannedNode(node_id="content_search_1", node_type="content_search", reason="locate file", success_criteria=["find file"])],
+        edges=[],
+        metadata={"parent_judge_id": "plan_1"},
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(executors={"content_search": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: planned,
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "enough"},
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.final_output == "enough"
+    assert result.metadata["agent_graph_state"]["current_iteration"] == 1
+    assert len(result.metadata["agent_graph_state"]["planned_subgraphs"]) == 1
+
+
+def test_agent_graph_runtime_appends_second_iteration_when_more_evidence_is_needed():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="总结 docs",
+        normalized_goal="总结 docs",
+        intent="compound",
+        success_criteria=["collect evidence"],
+    )
+    planner_calls = []
+
+    def _planner(_goal, state, _context):
+        planner_calls.append(state.current_iteration)
+        iteration = state.current_iteration + 1
+        return PlannedSubgraph(
+            iteration=iteration,
+            planner_summary=f"iteration {iteration}",
+            nodes=[PlannedNode(node_id=f"workspace_subtask_{iteration}", node_type="workspace_subtask", reason="collect more", success_criteria=["progress"])],
+            edges=[],
+            metadata={"parent_judge_id": f"judge_{iteration - 1}" if iteration > 1 else "plan_1"},
+        )
+
+    def _judge(_goal, _aggregated_payload, state):
+        if state.current_iteration < 2:
+            return {"status": "needs_more_evidence", "reason": "keep going"}
+        return {"status": "accepted", "reason": "done"}
+
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=_planner,
+        judge=_judge,
+        max_iterations=3,
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.final_output == "done"
+    assert result.metadata["agent_graph_state"]["current_iteration"] == 2
+    assert len(result.metadata["agent_graph_state"]["planned_subgraphs"]) == 2
+    assert len(result.graph.metadata["append_history"]) == 2
+
+
+def test_agent_graph_runtime_returns_limited_answer_when_iteration_budget_is_exhausted():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="长任务",
+        normalized_goal="长任务",
+        intent="compound",
+        success_criteria=["finish within budget"],
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=state.current_iteration + 1,
+            planner_summary="still working",
+            nodes=[PlannedNode(node_id=f"workspace_subtask_{state.current_iteration + 1}", node_type="workspace_subtask", reason="continue", success_criteria=["progress"])],
+            edges=[],
+            metadata={"parent_judge_id": "plan_1"},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "needs_more_evidence", "reason": "not enough yet", "missing_evidence": ["final verification"]},
+        max_iterations=1,
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert "Iteration limit reached" in result.final_output
+    assert "final verification" in result.final_output
+
+
+def test_judge_progress_accepts_when_evidence_and_verification_are_sufficient():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="读取 README.md", normalized_goal="读取 README.md", intent="file_read", success_criteria=["read file"])
+    decision = judge_progress(
+        goal,
+        {
+            "summaries": ["readme summary"],
+            "facts": [{"kind": "file", "path": "README.md"}],
+            "evidence_items": [{"kind": "path", "path": "README.md"}],
+            "chunks": [{"path": "README.md", "start_line": 1, "end_line": 3}],
+            "artifacts": {},
+            "open_questions": [],
+            "verification": {"status": "passed", "success": True, "summary": "verified"},
+            "verification_events": [{"status": "passed", "success": True, "summary": "verified", "verification_type": "evidence"}],
+        },
+        new_agent_graph_state(run_id="judge-1", goal_envelope=goal),
+    )
+
+    assert decision.status == "accepted"
+
+
+def test_judge_progress_requests_more_evidence_when_payload_is_thin():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="总结 docs", normalized_goal="总结 docs", intent="compound", success_criteria=["collect evidence"])
+    decision = judge_progress(goal, normalize_aggregated_workflow_payload({}), new_agent_graph_state(run_id="judge-2", goal_envelope=goal))
+
+    assert decision.status == "needs_more_evidence"
+
+
+def test_judge_progress_requests_verification_when_evidence_exists_but_verification_is_missing():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="修改 README.md", normalized_goal="修改 README.md", intent="change_and_verify", success_criteria=["verify result"])
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summary": "updated readme",
+                "evidence_items": [{"kind": "path", "path": "README.md"}],
+            }
+        ),
+        new_agent_graph_state(run_id="judge-3", goal_envelope=goal),
+    )
+
+    assert decision.status == "needs_verification"
+
+
+def test_judge_progress_requests_clarification_when_ambiguity_is_present():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload({"open_questions": ["Which service file should be used?"]}),
+        new_agent_graph_state(run_id="judge-4", goal_envelope=goal),
+    )
+
+    assert decision.status == "needs_clarification"
+
+
+def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound", constraints={"max_iterations": 1})
+    state = new_agent_graph_state(run_id="judge-5", goal_envelope=goal)
+    state.current_iteration = 1
+
+    decision = judge_progress(goal, normalize_aggregated_workflow_payload({}), state)
+
+    assert decision.status == "stop_due_to_cost"
+
+
+def test_final_response_executor_rejects_execution_when_judge_has_not_accepted():
+    executor = FinalResponseExecutor()
+    run = WorkflowRun(goal="demo", shared_state={"judge_decision": {"status": "needs_more_evidence", "reason": "need more"}})
+
+    result = executor.execute(WorkflowNode(node_id="final", node_type="final_response"), run)
+
+    assert result.status == NODE_STATUS_FAILED
+    assert "judge" in str(result.error).lower()
+
+
+def test_agent_graph_runtime_limited_answer_contains_stop_reason_and_missing_items():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor(), "final_response": FinalResponseExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=state.current_iteration + 1,
+            planner_summary="still working",
+            nodes=[PlannedNode(node_id=f"workspace_subtask_{state.current_iteration + 1}", node_type="workspace_subtask", reason="continue", success_criteria=["progress"])],
+            edges=[],
+            metadata={"parent_judge_id": "plan_1"},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {
+            "status": "stop_due_to_cost" if state.current_iteration >= 1 else "needs_more_evidence",
+            "reason": "cost budget exhausted",
+            "missing_evidence": ["verification", "more code evidence"],
+        },
+        max_iterations=2,
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert "cost budget exhausted" in result.final_output
+    assert "verification" in result.final_output
+    assert "more code evidence" in result.final_output
+
+
+def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=WorkflowRuntime(executors={"workspace_subtask": NoopExecutor(), "clarification": ClarificationExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=state.current_iteration + 1,
+            planner_summary="need clarification",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="probe", success_criteria=["progress"])],
+            edges=[],
+            metadata={"parent_judge_id": "plan_1"},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "needs_clarification", "reason": "多个可能目标，请先明确路径"},
+        max_iterations=2,
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.shared_state["clarification_request"]["clarification_required"] is True
+    assert "多个可能目标" in result.final_output

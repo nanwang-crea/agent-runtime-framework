@@ -2,7 +2,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_runtime_framework.workflow import WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.response_synthesis_executor import ResponseSynthesisExecutor
+from agent_runtime_framework.workflow.aggregator import aggregate_node_results
+from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
+from agent_runtime_framework.workflow.models import NodeResult
 
 
 class _FakeChatClient:
@@ -20,17 +22,19 @@ def _model_context(client: _FakeChatClient):
     return {"application_context": SimpleNamespace(llm_client=client, llm_model="demo-model", services={})}
 
 
-def test_response_synthesis_executor_prefers_model_summary_when_available():
+def test_evidence_synthesis_executor_prefers_model_summary_when_available():
     run = WorkflowRun(goal="解释 README.md 在讲什么")
-    run.shared_state["node_results"] = {
-        "target_resolution": SimpleNamespace(output={"resolution_status": "resolved", "resolved_path": "README.md", "summary": "定位到 README.md"}, references=["README.md"]),
-        "file_inspection": SimpleNamespace(output={"path": "README.md", "resolved_kind": "file", "summary": "README 提到 workflow runtime。", "text": "README 提到 workflow runtime。"}, references=["README.md"]),
-    }
-    node = WorkflowNode(node_id="response_synthesis", node_type="response_synthesis")
+    run.shared_state["aggregated_result"] = aggregate_node_results(
+        [
+            NodeResult(status="completed", output={"facts": [{"kind": "file", "path": "README.md"}], "evidence_items": [{"kind": "path", "path": "README.md", "summary": "README 提到 workflow runtime。"}]}, references=["README.md"])
+        ]
+    )
+    node = WorkflowNode(node_id="evidence_synthesis", node_type="evidence_synthesis")
     client = _FakeChatClient("README.md 介绍了这个项目的 workflow runtime 能力与用途。")
 
-    result = ResponseSynthesisExecutor().execute(node, run, _model_context(client))
+    result = EvidenceSynthesisExecutor().execute(node, run, _model_context(client))
 
     assert result.output["summary"] == "README.md 介绍了这个项目的 workflow runtime 能力与用途。"
-    assert run.shared_state["response_synthesis"]["summary"] == result.output["summary"]
+    assert run.shared_state["evidence_synthesis"]["summary"] == result.output["summary"]
+    assert "response_synthesis" not in run.shared_state
     assert client.requests

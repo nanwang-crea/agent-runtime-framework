@@ -56,7 +56,7 @@ class EvidenceSynthesisExecutor:
             "open_questions": open_questions,
             "references": references,
         }
-        run.shared_state["response_synthesis"] = output
+        run.shared_state["evidence_synthesis"] = output
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output=output,

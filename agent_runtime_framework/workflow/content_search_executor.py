@@ -36,7 +36,7 @@ class ContentSearchExecutor:
 
         terms = self._search_terms(run.goal, node.metadata)
         symbol_hint = str(node.metadata.get("symbol_hint") or "").strip()
-        candidates = self._candidate_paths(run)
+        candidates = self._candidate_paths(run, node.metadata)
         matches: list[dict[str, Any]] = []
         evidence_items: list[dict[str, Any]] = []
         references: list[str] = []
@@ -123,9 +123,14 @@ class ContentSearchExecutor:
             references=list(dict.fromkeys(references)),
         )
 
-    def _candidate_paths(self, run: WorkflowRun) -> list[str]:
+    def _candidate_paths(self, run: WorkflowRun, metadata: dict[str, Any] | None = None) -> list[str]:
         node_results = run.shared_state.get("node_results", {})
         candidates: list[str] = []
+        metadata = dict(metadata or {})
+        for key in ("target_path", "target_hint"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                candidates.append(value)
         for result in node_results.values():
             if not isinstance(result.output, dict):
                 continue

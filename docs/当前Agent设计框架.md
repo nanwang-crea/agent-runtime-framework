@@ -1,6 +1,6 @@
 # 当前 Agent 设计框架
 
-> 状态说明：当前代码库的顶层主运行时已经切换为 `workflow-first`。实际生效的主链是 `demo/app.py -> WorkflowRuntime -> workflow/*`。当前迁移状态是 **partial migration complete**：`WorkflowRuntime` 已经是 workspace 请求的唯一顶层执行内核，`CodexAgentLoop` / `WorkspaceAgentLoop` 继续保留，但定位为兼容子任务执行后端，而不是顶层唯一运行时。
+> 状态说明：当前代码库的顶层主运行时已经切换为统一入口：conversation 请求走轻量 conversation graph，非 conversation 请求走 `AgentGraphRuntime`。`WorkflowRuntime` 仍是底层节点执行壳；`CodexAgentLoop` / `WorkspaceAgentLoop` 仅保留为兼容子任务后端。
 
 ## 1. 当前目标
 
@@ -25,13 +25,14 @@
 
 当前主链路可以概括为：
 
-`用户输入 -> 路由判断 -> Goal Analysis -> Goal Decomposition -> Graph Build -> Workflow Runtime -> Node Execution -> Aggregation -> Final Response`
+`用户输入 -> Goal Analysis -> (Conversation Graph | Agent Graph) -> Node Execution -> Judge/Final Response`
 
 其中：
 
-- 普通对话请求仍可走 conversation path
-- 复合 workspace 请求优先走 workflow path
-- 单个复杂子任务可下沉到 `CodexSubtaskExecutor -> CodexAgentLoop`
+- 闲聊请求走 conversation graph：`conversation_response -> final_response`
+- 非闲聊 workspace 请求统一走 `AgentGraphRuntime`
+- 审批不再是顶层旁路；高风险子任务在 Agent Graph 执行过程中动态触发 `waiting_approval`，审批后继续回到图内执行
+- 仅兼容场景才走 `build_workflow_graph()` / compiled workflow
 
 ## 2.1 当前迁移状态
 
@@ -155,21 +156,24 @@
 
 已经具备最小可用实现的节点类型包括：
 
-- `repository_explainer`
-- `file_reader`
+- `workspace_discovery`
+- `content_search`
+- `chunked_file_read`
 - `aggregate_results`
+- `evidence_synthesis`
+- `verification`
+- `approval_gate`
 - `final_response`
 - `workspace_subtask`
 - `target_resolution`
-- `file_inspection`
-- `response_synthesis`
+- `clarification`
+- `conversation_response`
 
 其中：
 
-- `repository_explainer` 当前由 `WorkspaceOverviewExecutor` 实现
-- `file_reader` 当前由 `FileReadExecutor` 实现
-- `aggregate_results` 当前由 `AggregationExecutor` 实现
-- `final_response` 当前由 `FinalResponseExecutor` 实现
+- `workspace_discovery` / `content_search` / `chunked_file_read` 组成当前默认的 workspace 证据链
+- `evidence_synthesis` 是当前统一的证据总结节点
+- `final_response` 强制读取 judge 结果，不能绕过 `judge`
 - `workspace_subtask` 当前由 `WorkspaceSubtaskExecutor` 适配旧 `WorkspaceAgentLoop` / `CodexAgentLoop` 兼容能力，并显式暴露 `fallback_reason` / `compatibility_mode` / `source_loop` 元数据
 
 ## 6. 当前已验证的主路径
@@ -192,7 +196,7 @@
 - 非 conversation 的 workspace 请求统一优先进入 workflow path
 - clarification follow-up 优先回到 workflow，而不是 app 层直连旧 loop
 - `tool_call` / `clarification` 已成为首批显式 workflow 节点执行器
-- `target_resolution` / `file_inspection` / `response_synthesis` 已成为第二批 graph-native 节点执行器
+- `target_resolution` / `evidence_synthesis` 已成为稳定的 graph-native 节点执行器
 - `workspace_subtask` 已收缩为 bridge executor，并显式暴露 fallback 元数据
 - approval / resume / aggregation / final response 已稳定挂在 graph 结构上
 
