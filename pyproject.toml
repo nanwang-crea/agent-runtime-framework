@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-runtime-framework"
 version = "0.1.0"
-description = "Reusable Agent runtime framework with an integrated graph execution module."
+description = "Reusable workflow-first agent runtime framework."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

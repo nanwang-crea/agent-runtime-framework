@@ -1158,11 +1158,11 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
 
 
 def test_agent_graph_runtime_survives_model_planner_failure(monkeypatch):
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
     from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_plan_next_subgraph_with_model",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("planner offline")),
     )

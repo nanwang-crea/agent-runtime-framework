@@ -65,7 +65,7 @@ goal_intake
 - context / session / memory / model center 的外部接口
 - 少量 app 状态保存（如 `_pending_tokens`、`_run_history`）
 
-### `agent_runtime_framework/workflow/root_graph_runtime.py`
+### `agent_runtime_framework/workflow/routing_runtime.py`
 角色：统一根图运行器。
 
 负责：
@@ -91,7 +91,7 @@ goal_intake
 - clarification / approval / final response
 - loop 语义与恢复
 
-### `agent_runtime_framework/demo/agent_branch_runner.py`
+### `agent_runtime_framework/demo/agent_branch_orchestrator.py`
 角色：agent 分支 orchestration。
 
 负责：
@@ -102,7 +102,7 @@ goal_intake
 - 组装 payload
 - 写入 run history
 
-### `agent_runtime_framework/demo/compat_workflow_runner.py`
+### `agent_runtime_framework/demo/workflow_branch_orchestrator.py`
 角色：兼容图执行层。
 
 负责：
@@ -112,7 +112,7 @@ goal_intake
 
 说明：这是明确保留的 compat 层，不是主路径。
 
-### `agent_runtime_framework/demo/run_lifecycle_service.py`
+### `agent_runtime_framework/demo/run_lifecycle.py`
 角色：生命周期控制器。
 
 负责：
@@ -190,9 +190,9 @@ Replay 时：
 
 1. `agent_runtime_framework/demo/app.py`
 2. `agent_runtime_framework/demo/runtime_factory.py`
-3. `agent_runtime_framework/workflow/root_graph_runtime.py`
-4. `agent_runtime_framework/demo/agent_branch_runner.py`
+3. `agent_runtime_framework/workflow/routing_runtime.py`
+4. `agent_runtime_framework/demo/agent_branch_orchestrator.py`
 5. `agent_runtime_framework/workflow/agent_graph_runtime.py`
 6. `agent_runtime_framework/demo/workflow_payload_builder.py`
-7. `agent_runtime_framework/demo/run_lifecycle_service.py`
-8. `agent_runtime_framework/demo/compat_workflow_runner.py`
+7. `agent_runtime_framework/demo/run_lifecycle.py`
+8. `agent_runtime_framework/demo/workflow_branch_orchestrator.py`

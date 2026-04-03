@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
-from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload, RuntimePayload
+from agent_runtime_framework.workflow.routing_runtime import RootGraphPayload, RuntimePayload
 
 
 @dataclass(slots=True)

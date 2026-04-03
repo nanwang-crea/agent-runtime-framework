@@ -24,9 +24,9 @@ from agent_runtime_framework.workflow.models import (
     normalize_aggregated_workflow_payload,
     serialize_agent_graph_state,
 )
-from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
 from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.judge import judge_progress
+from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
 
 JudgeFn = Callable[[GoalEnvelope, dict[str, Any], AgentGraphState], JudgeDecision | dict[str, Any]]

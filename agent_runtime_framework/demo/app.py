@@ -26,12 +26,12 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
-from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleService
-from agent_runtime_framework.demo.compat_workflow_orchestrator import CompatWorkflowOrchestrator
+from agent_runtime_framework.demo.run_lifecycle import RunLifecycleService
+from agent_runtime_framework.demo.workflow_branch_orchestrator import WorkflowBranchOrchestrator
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, analyze_goal
-from agent_runtime_framework.workflow.root_graph_runtime import RuntimePayload, RootGraphPayload
+from agent_runtime_framework.workflow.routing_runtime import RuntimePayload, RootGraphPayload
 from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext, build_runtime_context
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
@@ -98,7 +98,7 @@ class DemoAssistantApp:
         self._pending_workflow_clarification = payload
 
     def _run_workflow(self, message: str) -> RuntimePayload:
-        runtime = self._build_root_graph_runtime()
+        runtime = self._build_routing_runtime()
         return runtime.run(message)
 
 
@@ -108,7 +108,7 @@ class DemoAssistantApp:
         yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
         yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
         try:
-            payload = self._build_root_graph_runtime().run(message)
+            payload = self._build_routing_runtime().run(message)
         except Exception as exc:
             payload = self._error_payload(exc)
             yield {"type": "error", "error": dict(payload.get("error") or {})}
@@ -127,10 +127,10 @@ class DemoAssistantApp:
         yield {"type": "final", "payload": payload}
 
     def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
-        return self._build_run_lifecycle_service().approve(token_id, approved)
+        return self._build_run_lifecycle().approve(token_id, approved)
 
     def replay(self, run_id: str) -> dict[str, Any]:
-        return self._build_run_lifecycle_service().replay(run_id)
+        return self._build_run_lifecycle().replay(run_id)
 
 
     def context_payload(self) -> dict[str, Any]:
@@ -200,14 +200,14 @@ class DemoAssistantApp:
         )
 
 
-    def _build_run_lifecycle_service(self) -> RunLifecycleService:
-        return self._build_runtime_factory().build_run_lifecycle_service()
+    def _build_run_lifecycle(self) -> RunLifecycleService:
+        return self._build_runtime_factory().build_run_lifecycle()
 
-    def _build_compat_workflow_orchestrator(self) -> CompatWorkflowOrchestrator:
-        return self._build_runtime_factory().build_compat_workflow_orchestrator()
+    def _build_workflow_branch_orchestrator(self) -> WorkflowBranchOrchestrator:
+        return self._build_runtime_factory().build_workflow_branch_orchestrator()
 
-    def _build_root_graph_runtime(self) -> RootGraphRuntime:
-        return self._build_runtime_factory().build_root_graph_runtime()
+    def _build_routing_runtime(self) -> RootGraphRuntime:
+        return self._build_runtime_factory().build_routing_runtime()
 
     def _build_agent_graph_runtime(self) -> AgentGraphRuntime:
         return self._build_runtime_factory().build_agent_graph_runtime()

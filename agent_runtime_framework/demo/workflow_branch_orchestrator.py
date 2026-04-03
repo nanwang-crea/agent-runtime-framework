@@ -6,7 +6,7 @@ from typing import Any, Callable
 from agent_runtime_framework.workflow import WorkflowRun
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 from agent_runtime_framework.workflow.graph_builder import compile_compat_workflow_graph
-from agent_runtime_framework.workflow.root_graph_runtime import RootGraphPayload, RuntimePayload
+from agent_runtime_framework.workflow.routing_runtime import RootGraphPayload, RuntimePayload
 
 
 BuildRuntimeFn = Callable[[], Any]
@@ -17,7 +17,7 @@ CaptureFn = Callable[[Any], None]
 
 
 @dataclass(slots=True)
-class CompatWorkflowOrchestrator:
+class WorkflowBranchOrchestrator:
     build_graph_execution_runtime: BuildRuntimeFn
     workflow_payload: PayloadFn
     memory_payload: MemoryFn

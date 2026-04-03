@@ -347,7 +347,7 @@ def test_graph_builder_records_strategy_and_fallback_reason():
 
 
 def test_planner_records_model_strategy_on_success_and_fallback_on_failure(monkeypatch):
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
 
     goal = GoalEnvelope(
         goal="解释 README.md",
@@ -359,7 +359,7 @@ def test_planner_records_model_strategy_on_success_and_fallback_on_failure(monke
     state = new_agent_graph_state(run_id="run-strategy-1", goal_envelope=goal)
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_call_model_planner",
         lambda *args, **kwargs: {
             "nodes": [
@@ -376,14 +376,14 @@ def test_planner_records_model_strategy_on_success_and_fallback_on_failure(monke
         },
     )
 
-    modeled = planner_v2.plan_next_subgraph(goal, state, context=None)
+    modeled = subgraph_planner.plan_next_subgraph(goal, state, context=None)
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_plan_next_subgraph_with_model",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("planner offline")),
     )
-    fallback = planner_v2.plan_next_subgraph(goal, state, context=None)
+    fallback = subgraph_planner.plan_next_subgraph(goal, state, context=None)
 
     assert modeled.metadata["strategy"] == "model"
     assert modeled.metadata["model_role"] == "planner"
@@ -407,8 +407,8 @@ def test_workflow_llm_access_returns_none_when_model_is_unavailable():
     assert resolve_workflow_model_runtime({"application_context": application_context}, "planner") is None
 
 
-def test_planner_v2_emits_whitelisted_nodes_with_reason_and_success_criteria():
-    from agent_runtime_framework.workflow.planner_v2 import ALLOWED_DYNAMIC_NODE_TYPES, plan_next_subgraph
+def test_subgraph_planner_emits_whitelisted_nodes_with_reason_and_success_criteria():
+    from agent_runtime_framework.workflow.subgraph_planner import ALLOWED_DYNAMIC_NODE_TYPES, plan_next_subgraph
 
     goal = GoalEnvelope(
         goal="读取 README.md",
@@ -428,8 +428,8 @@ def test_planner_v2_emits_whitelisted_nodes_with_reason_and_success_criteria():
     assert all(node.node_type != "final_response" for node in subgraph.nodes)
 
 
-def test_planner_v2_respects_max_dynamic_nodes_constraint():
-    from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
+def test_subgraph_planner_respects_max_dynamic_nodes_constraint():
+    from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
     goal = GoalEnvelope(
         goal="总结 docs 并读取 README.md",
@@ -447,7 +447,7 @@ def test_planner_v2_respects_max_dynamic_nodes_constraint():
 
 
 def test_deterministic_planner_builds_file_read_subgraph():
-    from agent_runtime_framework.workflow.planner_v2 import _plan_next_subgraph_deterministically
+    from agent_runtime_framework.workflow.subgraph_planner import _plan_next_subgraph_deterministically
 
     goal = GoalEnvelope(
         goal="读取 README.md",
@@ -469,7 +469,7 @@ def test_deterministic_planner_builds_file_read_subgraph():
 
 
 def test_model_planner_uses_valid_json_draft(monkeypatch):
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
 
     goal = GoalEnvelope(
         goal="解释 README.md",
@@ -481,7 +481,7 @@ def test_model_planner_uses_valid_json_draft(monkeypatch):
     state = new_agent_graph_state(run_id="run-model-1", goal_envelope=goal)
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_call_model_planner",
         lambda *args, **kwargs: {
             "nodes": [
@@ -506,7 +506,7 @@ def test_model_planner_uses_valid_json_draft(monkeypatch):
         },
     )
 
-    subgraph = planner_v2._plan_next_subgraph_with_model(goal, state, context=None)
+    subgraph = subgraph_planner._plan_next_subgraph_with_model(goal, state, context=None)
 
     assert [node.node_type for node in subgraph.nodes] == ["target_resolution", "chunked_file_read"]
     assert subgraph.metadata["planner"] == "model_v1"
@@ -515,7 +515,7 @@ def test_model_planner_uses_valid_json_draft(monkeypatch):
 def test_model_planner_accepts_dict_context_with_application_context(monkeypatch):
     from types import SimpleNamespace
 
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
 
     goal = GoalEnvelope(
         goal="解释 README.md",
@@ -528,19 +528,19 @@ def test_model_planner_accepts_dict_context_with_application_context(monkeypatch
     application_context = SimpleNamespace(llm_client=object(), llm_model="demo-model")
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "resolve_model_runtime",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "chat_once",
         lambda *args, **kwargs: SimpleNamespace(
             content='{"planner_summary":"dict context plan","nodes":[{"node_id":"resolve","node_type":"target_resolution","reason":"Resolve target","inputs":{"query":"解释 README.md"},"depends_on":[],"success_criteria":["resolve target"]}]}'
         ),
     )
 
-    subgraph = planner_v2._plan_next_subgraph_with_model(
+    subgraph = subgraph_planner._plan_next_subgraph_with_model(
         goal,
         state,
         context={"application_context": application_context},
@@ -551,7 +551,7 @@ def test_model_planner_accepts_dict_context_with_application_context(monkeypatch
 
 
 def test_plan_next_subgraph_falls_back_when_model_returns_invalid_node_type(monkeypatch):
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
 
     goal = GoalEnvelope(
         goal="读取 README.md",
@@ -563,12 +563,12 @@ def test_plan_next_subgraph_falls_back_when_model_returns_invalid_node_type(monk
     state = new_agent_graph_state(run_id="run-fallback-1", goal_envelope=goal)
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_plan_next_subgraph_with_model",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad node")),
     )
 
-    subgraph = planner_v2.plan_next_subgraph(goal, state, context=None)
+    subgraph = subgraph_planner.plan_next_subgraph(goal, state, context=None)
 
     assert [node.node_type for node in subgraph.nodes] == [
         "content_search",
@@ -580,7 +580,7 @@ def test_plan_next_subgraph_falls_back_when_model_returns_invalid_node_type(monk
 
 
 def test_plan_next_subgraph_falls_back_when_model_is_unavailable(monkeypatch):
-    from agent_runtime_framework.workflow import planner_v2
+    from agent_runtime_framework.workflow import subgraph_planner
 
     goal = GoalEnvelope(
         goal="读取 README.md",
@@ -592,12 +592,12 @@ def test_plan_next_subgraph_falls_back_when_model_is_unavailable(monkeypatch):
     state = new_agent_graph_state(run_id="run-fallback-2", goal_envelope=goal)
 
     monkeypatch.setattr(
-        planner_v2,
+        subgraph_planner,
         "_plan_next_subgraph_with_model",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("model planner unavailable")),
     )
 
-    subgraph = planner_v2.plan_next_subgraph(goal, state, context=None)
+    subgraph = subgraph_planner.plan_next_subgraph(goal, state, context=None)
 
     assert [node.node_type for node in subgraph.nodes] == [
         "content_search",
@@ -609,7 +609,7 @@ def test_plan_next_subgraph_falls_back_when_model_is_unavailable(monkeypatch):
 
 
 def test_plan_next_subgraph_skips_model_when_config_disables_it():
-    from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
+    from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
     goal = GoalEnvelope(
         goal="读取 README.md",

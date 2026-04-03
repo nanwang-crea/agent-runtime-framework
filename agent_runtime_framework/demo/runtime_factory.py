@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_runtime_framework.demo.agent_branch_orchestrator import AgentBranchOrchestrator
-from agent_runtime_framework.demo.compat_workflow_orchestrator import CompatWorkflowOrchestrator
 from agent_runtime_framework.demo.pending_run_registry import PendingRunRegistry
-from agent_runtime_framework.demo.run_lifecycle_service import RunLifecycleService
+from agent_runtime_framework.demo.run_lifecycle import RunLifecycleService
+from agent_runtime_framework.demo.workflow_branch_orchestrator import WorkflowBranchOrchestrator
 from agent_runtime_framework.demo.workflow_presentation_service import WorkflowPresentationService
 from agent_runtime_framework.demo.workflow_payload_builder import WorkflowPayloadBuilder
 from agent_runtime_framework.demo.workflow_run_observer import WorkflowRunObserver
@@ -27,7 +27,7 @@ class DemoRuntimeFactory:
     app: Any
 
     def _run_conversation_branch(self, message: str, graph: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
-        return self.build_compat_workflow_orchestrator().run(message, graph=graph, root_graph=root_graph)
+        return self.build_workflow_branch_orchestrator().run(message, graph=graph, root_graph=root_graph)
 
     def _run_agent_branch(self, message: str, goal: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
         return self.build_agent_branch_orchestrator().run(message, goal_spec=goal, root_graph=root_graph)
@@ -102,10 +102,10 @@ class DemoRuntimeFactory:
             run_history_payload=self.app.run_history_payload,
         )
 
-    def build_compat_workflow_orchestrator(self) -> CompatWorkflowOrchestrator:
+    def build_workflow_branch_orchestrator(self) -> WorkflowBranchOrchestrator:
         observer = self.build_observer()
         presentation = self.build_workflow_presentation_service()
-        return CompatWorkflowOrchestrator(
+        return WorkflowBranchOrchestrator(
             build_graph_execution_runtime=self.build_graph_execution_runtime,
             workflow_payload=presentation.build_payload,
             memory_payload=self.app.memory_payload,
@@ -116,7 +116,7 @@ class DemoRuntimeFactory:
             context=self.app.context,
         )
 
-    def build_run_lifecycle_service(self) -> RunLifecycleService:
+    def build_run_lifecycle(self) -> RunLifecycleService:
         observer = self.build_observer()
         presentation = self.build_workflow_presentation_service()
         return RunLifecycleService(
@@ -135,7 +135,7 @@ class DemoRuntimeFactory:
             workspace=str(self.app.workspace),
         )
 
-    def build_root_graph_runtime(self) -> RootGraphRuntime:
+    def build_routing_runtime(self) -> RootGraphRuntime:
         return RootGraphRuntime(
             analyze_goal_fn=self.app._analyze_workflow_goal,
             context=self.app._workflow_runtime_context(),

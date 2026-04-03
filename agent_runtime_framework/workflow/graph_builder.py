@@ -8,7 +8,7 @@ from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, 
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
-from agent_runtime_framework.workflow.planner_v2 import plan_next_subgraph
+from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
 
 _NATIVE_NODE_TYPES = {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis", "aggregate_results", "final_response", "verification", "approval_gate", "target_resolution", "conversation_response"}
