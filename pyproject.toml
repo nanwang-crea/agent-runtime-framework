@@ -22,6 +22,3 @@ arf-desktop-demo = "agent_runtime_framework.demo.server:main"
 
 [tool.setuptools.packages.find]
 include = ["agent_runtime_framework*"]
-
-[tool.setuptools.package-data]
-agent_runtime_framework = ["demo/assets/*.html", "demo/assets/*.css", "demo/assets/*.js"]

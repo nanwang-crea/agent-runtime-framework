@@ -24,6 +24,7 @@ env/
 build/
 dist/
 *.egg-info/
+frontend-shell/dist/
 
 # Local data and indexes
 *.npy
@@ -33,6 +34,9 @@ dist/
 index.json
 index.pkl
 vector_store/
+.arf/
+.api_demo_config.json
 .arf_demo_config.json
+scratch/
 node_modules/
 */node_modules/*

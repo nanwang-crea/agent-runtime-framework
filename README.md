@@ -144,8 +144,8 @@ The demo combines general conversation routing with the workflow runtime, compat
 
 **HTTP surface (current):**
 
-- **GET** `/` — bundled demo HTML
-- **GET** `/app.js`, `/styles.css` — static assets
+- **GET** `/` — bundled frontend entry from `frontend-shell/dist`
+- **GET** `/<asset>` — frontend static assets resolved from `frontend-shell/dist`
 - **GET** `/api/session` — workspace, session, plan/run history, memory, context
 - **GET** `/api/model-center` — model center snapshot
 - **POST** `/api/chat` — non-streaming chat
@@ -174,17 +174,18 @@ npm run dev:web
 
 Then start the Python demo separately so `/api` can be proxied.
 
-The scaffold includes an Electron main process and preload bridge so it can grow into a desktop shell without Tauri.
+The shell includes an Electron main process and preload bridge; Tauri is not part of the current runtime path.
 
 ## Documentation Status
 
 以下文档描述的是当前仍然有效或正在执行的结构：
 
 - `docs/当前Agent设计框架.md`
-- `docs/2026-03-31-TaskGraph工作流引擎重构设计方案.md`
-- `docs/plans/2026-03-31-task-graph-workflow-engine-implementation.md`
+- `docs/architecture/final-agent-graph-runtime.md`
+- `docs/architecture/agent-stack-target.md`
+- `docs/plans/2026-04-02-runtime-architecture-cleanup-plan.md`
 
-当前工作区里部分早期设计文档已经被移除或处于删除状态；不要再把它们视为当前主架构说明。
+`docs/plans/` 下的其他计划文档保留为迁移记录和实施草案；阅读当前架构时，优先以上述文档为准。
 ## Five-Layer Agent Stack
 
 The target architecture is organized as:
@@ -196,4 +197,3 @@ The target architecture is organized as:
 - Supporting Capability Layer
 
 `WorkflowRuntime` remains the execution kernel. `WorkspaceBackend` is a backend executor. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.
-
