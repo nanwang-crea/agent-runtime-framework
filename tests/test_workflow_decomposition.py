@@ -92,8 +92,8 @@ def test_simple_file_read_request_becomes_single_subtask():
 
     assert goal.primary_intent == "file_read"
     assert subtasks == [
-        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
-        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md", metadata={"strategy": "deterministic", "model_role": "planner"}),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"], metadata={"strategy": "deterministic", "model_role": "planner"}),
     ]
 
 
@@ -123,10 +123,10 @@ def test_directory_and_readme_request_decomposes_into_overview_file_read_and_syn
     subtasks = decompose_goal(goal)
 
     assert subtasks == [
-        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
-        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
-        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
-        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"]),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target=".", metadata={"strategy": "deterministic", "model_role": "planner"}),
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md", metadata={"strategy": "deterministic", "model_role": "planner"}),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"], metadata={"strategy": "deterministic", "model_role": "planner"}),
+        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"], metadata={"strategy": "deterministic", "model_role": "planner"}),
     ]
 
 
@@ -172,10 +172,10 @@ def test_decompose_goal_prefers_model_output_when_available():
     subtasks = decompose_goal(goal, context=context)
 
     assert subtasks == [
-        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
-        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
-        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
-        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"]),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target=".", metadata={"strategy": "model", "model_role": "planner"}),
+        SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md", metadata={"strategy": "model", "model_role": "planner"}),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"], metadata={"strategy": "model", "model_role": "planner"}),
+        SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"], metadata={"strategy": "model", "model_role": "planner"}),
     ]
 
 
@@ -190,5 +190,5 @@ def test_decompose_goal_uses_model_without_feature_flag():
     subtasks = decompose_goal(goal, context=context)
 
     assert subtasks == [
-        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target=".", metadata={"strategy": "model", "model_role": "planner"}),
     ]

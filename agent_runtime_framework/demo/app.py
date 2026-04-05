@@ -13,7 +13,6 @@ from agent_runtime_framework.agents.workspace_backend.models import TaskState, W
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemorySessionMemory
-from agent_runtime_framework.runtime import AgentRuntime
 from agent_runtime_framework.models import (
     CodexCliDriver,
     InMemoryCredentialStore,
@@ -63,7 +62,6 @@ class DemoAssistantApp:
     _active_agent: str
     _available_workspaces: list[str]
     agent_registry: AgentRegistry
-    agent_runtime: AgentRuntime
     _workflow_store: WorkflowPersistenceStore
 
     def chat(self, message: str) -> dict[str, Any]:
@@ -534,9 +532,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _active_agent="workspace",
         _available_workspaces=[str(workspace_path)],
         agent_registry=agent_registry,
-        agent_runtime=AgentRuntime(app=None),
         _workflow_store=WorkflowPersistenceStore(workspace_path / ".arf" / "workflow-runs.json"),
     )
-    app.agent_runtime.app = app
     app.model_center.load()
     return app

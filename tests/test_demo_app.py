@@ -233,6 +233,13 @@ def test_workflow_package_exports_shared_conversation_message_builder():
 
 
 def test_demo_assets_are_loadable():
+    frontend_dist = Path(__file__).resolve().parents[1] / "frontend-shell" / "dist"
+    if not frontend_dist.exists():
+        scaffold = (Path(__file__).resolve().parents[1] / "frontend-shell" / "index.html").read_text(encoding="utf-8")
+        assert "<div id=\"root\"></div>" in scaffold
+        assert "/src/main.tsx" in scaffold
+        return
+
     html = _load_asset("index.html")
 
     assert "桌面端 AI 工具" in html
