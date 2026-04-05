@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from http import HTTPStatus
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ from agent_runtime_framework.core.errors import AppError
 from agent_runtime_framework.models import AuthSession, ModelProfile
 from agent_runtime_framework.demo import create_demo_assistant_app
 from agent_runtime_framework.demo import app as demo_app_module
-from agent_runtime_framework.demo.server import _load_asset
+from agent_runtime_framework.demo.server import _build_handler, _load_asset
 from agent_runtime_framework.workflow.models import GoalSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
 from agent_runtime_framework.workflow import conversation
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
@@ -292,6 +293,36 @@ def test_demo_assistant_app_updates_model_center_auth_and_routing(tmp_path: Path
     assert before["runtime"]["instances"]
     assert auth_payload["runtime"]["instances"]["openai"]["authenticated"] is True
     assert selected["config"]["routes"]["conversation"]["model"] == "gpt-5.4"
+
+
+def test_demo_server_model_center_actions_forwards_full_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = _create_demo_assistant_app_with_test_planner(workspace)
+    captured: dict[str, object] = {}
+
+    def _capture(self, action: str, payload: dict[str, object] | None = None):
+        captured["action"] = action
+        captured["payload"] = payload
+        return {"ok": True}
+
+    monkeypatch.setattr(type(app), "run_model_center_action", _capture)
+    handler_cls = _build_handler(app)
+    handler = handler_cls.__new__(handler_cls)
+    handler.path = "/api/model-center/actions"
+    handler._read_json = lambda: {"action": "authenticate_instance", "instance": "openai"}  # type: ignore[attr-defined]
+    sent: dict[str, object] = {}
+    handler._send_json = lambda payload, status=HTTPStatus.OK: sent.update({"payload": payload, "status": status})  # type: ignore[attr-defined]
+    handler.send_error = lambda status: sent.update({"error_status": status})  # type: ignore[attr-defined]
+    handler._send_exception = lambda exc, operation="POST": (_ for _ in ()).throw(exc)  # type: ignore[attr-defined]
+
+    handler_cls.do_POST(handler)
+
+    assert captured == {
+        "action": "authenticate_instance",
+        "payload": {"action": "authenticate_instance", "instance": "openai"},
+    }
+    assert sent["payload"] == {"ok": True}
 
 
 def test_demo_assistant_app_logs_unknown_errors_with_trace_id(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):

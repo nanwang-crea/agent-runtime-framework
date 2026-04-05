@@ -122,8 +122,9 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/model-center/actions":
                     payload = self._read_json()
                     action = str(payload.get("action") or "").strip()
-                    instance = str(payload.get("instance") or "").strip() or None
-                    self._send_json(app.run_model_center_action(action, instance=instance))
+                    # instance = str(payload.get("instance") or "").strip() or None   
+                    # self._send_json(app.run_model_center_action(action, instance=instance))
+                    self._send_json(app.run_model_center_action(action, payload))
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
             except Exception as exc:
