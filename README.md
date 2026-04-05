@@ -1,6 +1,6 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Root Graph -> Agent Graph -> Graph Execution Runtime**”的图优先运行时。当前迁移状态是 **partial migration complete**：`RootGraphRuntime` 只负责路由，`AgentGraphRuntime` 负责迭代式 agent graph 编排，`GraphExecutionRuntime` 负责节点调度与执行；`WorkspaceBackend` / `WorkspaceAgentLoop` 仅保留为图节点下的兼容执行器。
+`agent-runtime-framework` 当前采用 **Root Graph -> Agent Graph -> Graph Execution Runtime** 的图优先运行时。`RootGraphRuntime` 负责路由，`AgentGraphRuntime` 负责迭代式 agent graph 编排，`GraphExecutionRuntime` 负责节点调度与执行；`workspace_subtask` bridge 是当前唯一明确保留的兼容边界。
 
 当前生效的主链路是：
 
@@ -54,18 +54,18 @@
 
 - **compound / multi-step workspace goals** 走 `AgentGraphRuntime` + `GraphExecutionRuntime` 主路径
 - **conversation-style requests** 仍然走 conversation routing
-- `WorkspaceBackend` 仍然保留，但定位是 **compatibility execution backend**，而不是顶层唯一运行时
-- `DemoAssistantApp` 负责 app/session/payload 组织，不拥有兼容 bridge 业务逻辑
+- `WorkspaceBackend` 仅通过 `workspace_subtask` bridge 参与执行，不是产品入口运行时
+- `DemoAssistantApp` 负责 app/session/payload 组织，不拥有业务执行逻辑
 
-## Migration Status
+## Runtime Rules
 
-当前 graph-first 迁移处于 **partial migration complete** 阶段。规则已经收口为：
+当前运行时规则为：
 
-- `RootGraphRuntime` 只负责 route decision，不拥有业务执行逻辑
-- `AgentGraphRuntime` 只负责迭代式 graph orchestration
-- `GraphExecutionRuntime` 只负责 scheduler 驱动的节点执行
-- `WorkspaceBackend` 与 `WorkspaceAgentLoop` 仅作为 compatibility executor 存在，不能再被视为产品入口运行时
-- direct executor calls outside scheduler/runtime 仍属于迁移债，目标是移除
+- `RootGraphRuntime` 只负责 route decision
+- `AgentGraphRuntime` 只负责 graph orchestration
+- `GraphExecutionRuntime` 只负责 scheduler-driven node execution
+- conversation 分支与 workspace 分支都走统一 graph-first 路径
+- `workspace_subtask` bridge 是兼容层，不代表主路径
 
 | Area | Current | Target |
 | --- | --- | --- |
@@ -85,26 +85,25 @@
 - workflow domain models
 - sequential scheduler + runtime loop
 - deterministic goal analysis / decomposition
-- deterministic graph builder
 - native `workspace_overview` / `file_read` executors
-- `CodexSubtaskExecutor` compatibility adapter
+- `workspace_subtask` compatibility adapter
 - aggregation / final response executors
 - node-level approval / resume
 - file-backed workflow persistence
 - demo app 对 compound goal 的 workflow-first 路由
 - top-level public exports: `GraphExecutionRuntime`, `WorkflowRun`, `WorkflowNode`, `WorkflowGraph`
 
-当前迁移已经完成的部分主要是：
+当前稳定具备的部分主要是：
 
 - `RootGraphRuntime -> AgentGraphRuntime -> GraphExecutionRuntime` 作为 workspace 请求的唯一主路径
-- 非 chat workspace 请求统一先进入 workflow runtime
+- 非 chat workspace 请求统一先进入 graph-first runtime
 - clarification follow-up 优先回到 workflow path，而不是 app 层直连 loop
 - graph-native approval / resume / aggregation / final response
 - `tool_call` / `clarification` 的首批显式 workflow executors
 - `target_resolution` / `file_inspection` / `response_synthesis` 的第二批 graph-native executors
 - `workspace_subtask` bridge 的 `fallback_reason` / `compatibility_mode` / `source_loop` 元数据
 
-当前仍保留为兼容 fallback 或后续增强的部分主要是：
+当前仍作为后续增强项保留的部分主要是：
 
 - 更丰富的 graph-native node taxonomy
 - 并行调度与更细粒度的子任务图
@@ -185,14 +184,11 @@ The shell includes an Electron main process and preload bridge; Tauri is not par
 
 ## Documentation Status
 
-以下文档描述的是当前仍然有效或正在执行的结构：
+以下文档描述的是当前仍然有效的结构：
 
 - `docs/当前Agent设计框架.md`
 - `docs/architecture/final-agent-graph-runtime.md`
 - `docs/architecture/agent-stack-target.md`
-- `docs/plans/2026-04-02-runtime-architecture-cleanup-plan.md`
-
-`docs/plans/` 下的其他计划文档保留为迁移记录和实施草案；阅读当前架构时，优先以上述文档为准。
 ## Five-Layer Agent Stack
 
 The target architecture is organized as:

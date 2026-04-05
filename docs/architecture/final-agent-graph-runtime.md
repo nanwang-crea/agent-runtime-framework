@@ -149,9 +149,9 @@ goal_intake
 负责统一构造：
 - `RootGraphRuntime`
 - `AgentGraphRuntime`
-- `WorkflowRuntime`
-- `AgentBranchRunner`
-- `CompatWorkflowRunner`
+- `GraphExecutionRuntime`
+- `AgentBranchOrchestrator`
+- `WorkflowBranchOrchestrator`
 - `RunLifecycleService`
 - `WorkflowRunObserver`
 

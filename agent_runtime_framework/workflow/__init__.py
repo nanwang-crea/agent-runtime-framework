@@ -2,7 +2,6 @@ from agent_runtime_framework.workflow.approval import WorkflowResumeToken
 from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
-from agent_runtime_framework.workflow.graph_builder import build_workspace_subtask_graph
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext
@@ -97,7 +96,6 @@ __all__ = [
     "EvidenceSynthesisExecutor",
     "synthesize_text",
     "analyze_goal",
-    "build_workspace_subtask_graph",
     "decompose_goal",
     "new_agent_graph_state",
     "normalize_aggregated_workflow_payload",

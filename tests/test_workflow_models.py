@@ -179,7 +179,6 @@ def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
     workflow_files = [
         root / "agent_runtime_framework" / "workflow" / "goal_analysis.py",
         root / "agent_runtime_framework" / "workflow" / "decomposition.py",
-        root / "agent_runtime_framework" / "workflow" / "graph_builder.py",
         root / "agent_runtime_framework" / "workflow" / "subgraph_planner.py",
         root / "agent_runtime_framework" / "workflow" / "llm_access.py",
         root / "agent_runtime_framework" / "workflow" / "conversation.py",

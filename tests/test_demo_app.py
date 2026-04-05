@@ -1017,7 +1017,7 @@ def test_demo_runtime_factory_injects_compat_subtask_runner(tmp_path: Path):
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    runtime = app._build_graph_execution_runtime()
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_graph_execution_runtime()
     executor = runtime.executors["workspace_subtask"]
 
     assert executor.run_subtask is not None
@@ -1030,7 +1030,7 @@ def test_workflow_branch_orchestrator_no_longer_exposes_compat_graph_compiler(tm
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    orchestrator = app._build_workflow_branch_orchestrator()
+    orchestrator = demo_app_module.DemoRuntimeFactory(app).build_workflow_branch_orchestrator()
 
     assert not hasattr(orchestrator, "compile_for_goal")
 
@@ -1182,7 +1182,7 @@ def test_demo_workflow_runtime_registers_only_new_native_executors(tmp_path: Pat
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
-    runtime = app._build_graph_execution_runtime()
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_graph_execution_runtime()
 
     assert {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis"} <= set(runtime.executors)
     assert "repository_explainer" not in runtime.executors
@@ -1203,9 +1203,9 @@ def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_p
     monkeypatch.setattr(demo_app_module, "analyze_goal", _fake_analyze_goal)
     monkeypatch.setattr(type(app), "chat", lambda self, message: (_ for _ in ()).throw(AssertionError("stream_chat should not call chat")))
     monkeypatch.setattr(
-        type(app),
-        "_build_routing_runtime",
-        lambda self: type("_Runtime", (), {"run": lambda _self, _message: (demo_app_module.analyze_goal(_message, context=self._workflow_runtime_context()), {
+        demo_app_module.DemoRuntimeFactory,
+        "build_routing_runtime",
+        lambda _factory: type("_Runtime", (), {"run": lambda _self, _message: (demo_app_module.analyze_goal(_message, context=app._workflow_runtime_context()), {
             "status": "completed",
             "run_id": "run-1",
             "plan_id": "run-1",
@@ -1215,12 +1215,12 @@ def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_p
             "execution_trace": [{"name": "judge_1", "status": "completed", "detail": "judge"}],
             "approval_request": None,
             "resume_token_id": None,
-            "session": self.session_payload(),
-            "plan_history": self.plan_history_payload(),
-            "run_history": self.run_history_payload(),
-            "memory": self.memory_payload(),
-            "context": self.context_payload(),
-            "workspace": str(self.workspace),
+            "session": app.session_payload(),
+            "plan_history": app.plan_history_payload(),
+            "run_history": app.run_history_payload(),
+            "memory": app.memory_payload(),
+            "context": app.context_payload(),
+            "workspace": str(app.workspace),
             "judge": {"status": "accepted", "reason": "ok"},
             "planned_subgraphs": [{"iteration": 1}],
             "graph_state_summary": {"current_iteration": 1, "appended_node_ids": []},
@@ -1241,9 +1241,9 @@ def test_demo_assistant_app_routes_chat_through_root_runtime(tmp_path: Path, mon
     app = create_demo_assistant_app(workspace)
 
     monkeypatch.setattr(
-        type(app),
-        "_build_routing_runtime",
-        lambda self: type("_FakeRootRuntime", (), {
+        demo_app_module.DemoRuntimeFactory,
+        "build_routing_runtime",
+        lambda _factory: type("_FakeRootRuntime", (), {
             "run": lambda _self, message, stream=False: {
                 "status": "completed",
                 "run_id": "root-run",
@@ -1274,7 +1274,7 @@ def test_routing_runtime_passes_injected_context_to_goal_analysis(tmp_path: Path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    runtime = app._build_runtime_factory().build_routing_runtime()
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_routing_runtime()
     captured: dict[str, object] = {}
     injected_context = app._workflow_runtime_context()
     runtime.context = injected_context
@@ -1296,7 +1296,7 @@ def test_demo_runtime_factory_analyze_goal_fn_uses_runtime_context(tmp_path: Pat
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    runtime = app._build_runtime_factory().build_routing_runtime()
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_routing_runtime()
     captured: dict[str, object] = {}
     injected_context = app._workflow_runtime_context()
 
@@ -1315,7 +1315,7 @@ def test_runtime_factory_builds_routing_runtime_with_named_services(tmp_path: Pa
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    runtime = app._build_runtime_factory().build_routing_runtime()
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_routing_runtime()
 
     assert runtime.analyze_goal_fn.__name__ == "_analyze_workflow_goal"
     assert runtime.mark_route_decision.__name__ == "_mark_route_decision"
@@ -1336,11 +1336,17 @@ def test_demo_runtime_factory_uses_renamed_internal_modules(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
-    factory = app._build_runtime_factory()
+    factory = demo_app_module.DemoRuntimeFactory(app)
 
     assert factory.build_workflow_branch_orchestrator().__class__.__module__ == "agent_runtime_framework.demo.workflow_branch_orchestrator"
     assert factory.build_workflow_branch_orchestrator().__class__.__name__ == "WorkflowBranchOrchestrator"
     assert factory.build_run_lifecycle().__class__.__module__ == "agent_runtime_framework.demo.run_lifecycle"
+    assert not hasattr(app, "_build_workflow_branch_orchestrator")
+    assert not hasattr(app, "_build_graph_execution_runtime")
+    assert not hasattr(app, "_build_agent_graph_runtime")
+    assert not hasattr(app, "_build_run_lifecycle")
+    assert not hasattr(app, "_build_routing_runtime")
+    assert not hasattr(app, "_build_runtime_factory")
 
 
 
@@ -1350,9 +1356,9 @@ def test_demo_assistant_app_routes_stream_chat_through_root_runtime(tmp_path: Pa
     app = create_demo_assistant_app(workspace)
 
     monkeypatch.setattr(
-        type(app),
-        "_build_routing_runtime",
-        lambda self: type("_FakeRootRuntime", (), {
+        demo_app_module.DemoRuntimeFactory,
+        "build_routing_runtime",
+        lambda _factory: type("_FakeRootRuntime", (), {
             "run": lambda _self, message, stream=False: {
                 "status": "completed",
                 "run_id": "root-run",
