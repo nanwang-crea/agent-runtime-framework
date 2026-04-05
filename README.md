@@ -1,6 +1,6 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Task Graph / Workflow Runtime** 顶层运行时”。当前迁移状态是 **partial migration complete**：`WorkflowRuntime` 已经是 workspace 请求的唯一顶层执行内核，`WorkspaceBackend` / `WorkspaceAgentLoop` 仅保留为图节点下的兼容执行器。
+`agent-runtime-framework` 当前的主产品路径已经从“单个 `WorkspaceBackend` 顶层运行时”升级为“**Root Graph -> Agent Graph -> Graph Execution Runtime**”的图优先运行时。当前迁移状态是 **partial migration complete**：`RootGraphRuntime` 只负责路由，`AgentGraphRuntime` 负责迭代式 agent graph 编排，`GraphExecutionRuntime` 负责节点调度与执行；`WorkspaceBackend` / `WorkspaceAgentLoop` 仅保留为图节点下的兼容执行器。
 
 当前生效的主链路是：
 
@@ -48,17 +48,24 @@
 
 当前 demo 前后端主路径为：
 
-`frontend -> demo/server.py -> create_demo_assistant_app() -> DemoAssistantApp -> WorkflowRuntime`
+`frontend -> demo/server.py -> create_demo_assistant_app() -> DemoAssistantApp -> RootGraphRuntime -> (conversation graph | AgentGraphRuntime) -> GraphExecutionRuntime`
 
 其中：
 
-- **compound / multi-step workspace goals** 走 workflow 主路径
+- **compound / multi-step workspace goals** 走 `AgentGraphRuntime` + `GraphExecutionRuntime` 主路径
 - **conversation-style requests** 仍然走 conversation routing
 - `WorkspaceBackend` 仍然保留，但定位是 **compatibility execution backend**，而不是顶层唯一运行时
+- `DemoAssistantApp` 负责 app/session/payload 组织，不拥有兼容 bridge 业务逻辑
 
 ## Migration Status
 
-当前 graph-first 迁移处于 **partial migration complete** 阶段。规则已经收口为：**workspace 请求的顶层执行内核只有 `WorkflowRuntime`；`WorkspaceBackend` 与 `WorkspaceAgentLoop` 仅作为 compatibility executor 存在，不能再被视为产品入口运行时。**
+当前 graph-first 迁移处于 **partial migration complete** 阶段。规则已经收口为：
+
+- `RootGraphRuntime` 只负责 route decision，不拥有业务执行逻辑
+- `AgentGraphRuntime` 只负责迭代式 graph orchestration
+- `GraphExecutionRuntime` 只负责 scheduler 驱动的节点执行
+- `WorkspaceBackend` 与 `WorkspaceAgentLoop` 仅作为 compatibility executor 存在，不能再被视为产品入口运行时
+- direct executor calls outside scheduler/runtime 仍属于迁移债，目标是移除
 
 | Area | Current | Target |
 | --- | --- | --- |
@@ -85,11 +92,11 @@
 - node-level approval / resume
 - file-backed workflow persistence
 - demo app 对 compound goal 的 workflow-first 路由
-- top-level public exports: `WorkflowRuntime`, `WorkflowRun`, `WorkflowNode`, `WorkflowGraph`
+- top-level public exports: `GraphExecutionRuntime`, `WorkflowRun`, `WorkflowNode`, `WorkflowGraph`
 
 当前迁移已经完成的部分主要是：
 
-- `WorkflowRuntime` 作为 workspace 请求的唯一顶层执行内核
+- `RootGraphRuntime -> AgentGraphRuntime -> GraphExecutionRuntime` 作为 workspace 请求的唯一主路径
 - 非 chat workspace 请求统一先进入 workflow runtime
 - clarification follow-up 优先回到 workflow path，而不是 app 层直连 loop
 - graph-native approval / resume / aggregation / final response
@@ -196,4 +203,4 @@ The target architecture is organized as:
 - Runtime Execution Layer
 - Supporting Capability Layer
 
-`WorkflowRuntime` remains the execution kernel. `WorkspaceBackend` is a backend executor. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.
+`RootGraphRuntime` is the route layer. `AgentGraphRuntime` is the orchestration layer. `GraphExecutionRuntime` is the execution kernel. `WorkspaceBackend` is a compatibility backend executor. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.

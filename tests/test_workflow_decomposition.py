@@ -11,7 +11,8 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
-from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec
+from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, new_agent_graph_state
+from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
 
 class _FakeCompletions:
@@ -192,3 +193,43 @@ def test_decompose_goal_uses_model_without_feature_flag():
     assert subtasks == [
         SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target=".", metadata={"strategy": "model", "model_role": "planner"}),
     ]
+
+
+def test_plan_next_subgraph_marks_workspace_subtask_as_compatibility_fallback():
+    goal = GoalSpec(original_goal="编辑 README.md 并提交", primary_intent="change_and_verify")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=[],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-1", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    workspace_node = subgraph.nodes[0]
+    assert workspace_node.node_type == "workspace_subtask"
+    assert workspace_node.inputs["fallback_reason"] == "unsupported_intent"
+    assert workspace_node.inputs["compatibility_mode"] is True
+    assert workspace_node.inputs["source_loop"] == "workspace_backend"
+
+
+def test_plan_next_subgraph_keeps_native_file_read_without_compatibility_fallback():
+    goal = GoalSpec(original_goal="读取 README.md", primary_intent="file_read")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=["README.md"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-2", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    assert subgraph.nodes[0].node_type == "content_search"
+    assert "compatibility_mode" not in subgraph.nodes[0].inputs
+    assert "fallback_reason" not in subgraph.nodes[0].inputs

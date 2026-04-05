@@ -103,14 +103,14 @@ goal_intake
 - 写入 run history
 
 ### `agent_runtime_framework/demo/workflow_branch_orchestrator.py`
-角色：兼容图执行层。
+角色：conversation graph 执行层。
 
 负责：
-- `compile_compat_workflow_graph()` 编译 compat graph
-- 执行 compat graph
-- 保留旧图拒绝与少量兼容场景支持
+- 执行 conversation graph
+- 组装 conversation 分支 payload
+- 保持与主 graph runtime 一致的 workflow payload 形状
 
-说明：这是明确保留的 compat 层，不是主路径。
+说明：这不是 compat graph 编译入口；compat graph 旧入口已经移除。
 
 ### `agent_runtime_framework/demo/run_lifecycle.py`
 角色：生命周期控制器。
@@ -180,11 +180,9 @@ Replay 时：
 ## Remaining Compat Boundary
 
 当前仍保留但已被明确边界化的 compat 层：
-- `compile_compat_workflow_graph()`
-- `CompatWorkflowRunner`
 - `workspace_subtask` 对旧 backend 的适配
 
-这些模块不再代表主路径，只用于兼容与过渡场景。
+这些模块不再代表主路径；当前剩余 compat 边界主要集中在 `workspace_subtask` bridge。
 
 ## Recommended Reading Order
 

@@ -44,6 +44,32 @@ class FailExecutor:
         return NodeResult(status=NODE_STATUS_FAILED, error="boom")
 
 
+class NoDirectExecuteRuntime:
+    def __init__(self, executors):
+        self.executors = executors
+        self.calls: list[list[str]] = []
+
+    def run(self, run):
+        run.shared_state.setdefault("node_results", {})
+        self.calls.append([node.node_type for node in run.graph.nodes])
+        for node in run.graph.nodes:
+            executor = self.executors[node.node_type]
+            result = executor.execute(node, run, {})
+            run.node_states[node.node_id] = NodeState(node_id=node.node_id, status=result.status, result=result, error=result.error)
+            run.shared_state["node_results"][node.node_id] = result
+            if result.status == RUN_STATUS_FAILED:
+                run.status = RUN_STATUS_FAILED
+                return run
+        run.status = RUN_STATUS_COMPLETED
+        return run
+
+    def resume(self, run, *, resume_token, approved):
+        raise AssertionError("resume should not be used in this test")
+
+    def _execute(self, executor, node, run):
+        raise AssertionError("AgentGraphRuntime should not call _execute directly")
+
+
 def test_scheduler_only_returns_nodes_with_completed_dependencies():
     graph = WorkflowGraph(
         nodes=[
@@ -1191,3 +1217,191 @@ def test_agent_graph_runtime_survives_model_planner_failure(monkeypatch):
     assert result.metadata["agent_graph_state"]
     assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["planner"] == "deterministic_v2"
     assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["fallback_reason"] == "planner offline"
+
+
+def test_agent_graph_state_store_restores_workflow_run_with_resume_token():
+    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+
+    store = AgentGraphStateStore()
+    run = store.restore_workflow_run(
+        {
+            "run_id": "run-1",
+            "goal": "demo",
+            "status": "waiting_approval",
+            "graph": {
+                "nodes": [{"node_id": "change", "node_type": "workspace_subtask"}],
+                "edges": [],
+                "metadata": {},
+            },
+            "shared_state": {
+                "resume_token": {
+                    "token_id": "token-1",
+                    "node_id": "change",
+                }
+            },
+            "node_states": {
+                "change": {
+                    "node_id": "change",
+                    "status": "waiting_approval",
+                    "result": {
+                        "status": "waiting_approval",
+                        "output": {"summary": "needs approval"},
+                        "approval_data": {"kind": "workspace_subtask"},
+                    },
+                }
+            },
+        }
+    )
+
+    assert run.run_id == "run-1"
+    assert run.shared_state["resume_token"].token_id == "token-1"
+    assert run.node_states["change"].result.approval_data["kind"] == "workspace_subtask"
+
+
+def test_system_node_manager_seeds_goal_context_and_plan_nodes():
+    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+
+    manager = SystemNodeManager()
+    goal = GoalEnvelope(
+        goal="读取 README.md",
+        normalized_goal="读取 README.md",
+        intent="file_read",
+        target_hints=["README.md"],
+    )
+    run = WorkflowRun(
+        goal=goal.goal,
+        graph=WorkflowGraph(
+            nodes=[
+                WorkflowNode(node_id="goal_intake", node_type="goal_intake"),
+                WorkflowNode(node_id="context_assembly", node_type="context_assembly", dependencies=["goal_intake"]),
+                WorkflowNode(node_id="plan_1", node_type="plan", dependencies=["context_assembly"]),
+            ],
+            edges=[],
+        ),
+    )
+
+    manager.seed_system_nodes(
+        run,
+        goal,
+        {"memory": {"summary": "memo"}, "policy_context": {"mode": "workspace_write"}, "workspace_root": "/tmp/demo"},
+    )
+
+    assert run.node_states["goal_intake"].result.output["goal"] == "读取 README.md"
+    assert run.node_states["context_assembly"].result.output["workspace_root"] == "/tmp/demo"
+    assert run.node_states["plan_1"].result.output["summary"] == "prepared plan_1"
+
+
+def test_system_node_manager_materializes_iteration_nodes():
+    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+
+    manager = SystemNodeManager()
+    run = WorkflowRun(
+        goal="读取 README.md",
+        graph=WorkflowGraph(
+            nodes=[WorkflowNode(node_id="content_search_1", node_type="content_search")],
+            edges=[],
+        ),
+    )
+    executed = WorkflowRun(goal="读取 README.md")
+    executed.shared_state["node_results"] = {
+        "content_search_1": NodeResult(
+            status=NODE_STATUS_COMPLETED,
+            output={
+                "summary": "found README",
+                "facts": [{"kind": "file", "path": "README.md"}],
+                "evidence_items": [{"kind": "path", "path": "README.md", "summary": "README.md"}],
+            },
+            references=["README.md"],
+        )
+    }
+    subgraph = PlannedSubgraph(
+        iteration=1,
+        planner_summary="read file",
+        nodes=[PlannedNode(node_id="content_search_1", node_type="content_search", reason="locate", success_criteria=["find file"])],
+        edges=[],
+        metadata={},
+    )
+
+    aggregated_result, evidence_result = manager.materialize_iteration_system_nodes(run, executed, subgraph)
+
+    assert aggregated_result.output["facts"][0]["path"] == "README.md"
+    assert evidence_result.output["evidence_items"][0]["path"] == "README.md"
+    assert "aggregate_results_1" in run.node_states
+    assert "evidence_synthesis_1" in run.node_states
+
+
+def test_agent_graph_runtime_routes_final_response_through_graph_execution_runtime():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="读取 README.md", normalized_goal="读取 README.md", intent="file_read")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=NoDirectExecuteRuntime(
+            executors={
+                "workspace_subtask": NoopExecutor(),
+                "final_response": FinalResponseExecutor(),
+            }
+        ),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="collect",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert "final_response" in runtime.workflow_runtime.calls[-1]
+
+
+def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtime():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=NoDirectExecuteRuntime(
+            executors={
+                "workspace_subtask": NoopExecutor(),
+                "clarification": ClarificationExecutor(),
+            }
+        ),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="probe",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "needs_clarification", "reason": "多个可能目标，请先明确路径"},
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert runtime.workflow_runtime.calls[-1] == ["clarification"]
+    assert result.shared_state["clarification_request"]["clarification_required"] is True
+
+
+def test_agent_graph_runtime_fails_when_planner_emits_unsupported_node_type():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"final_response": FinalResponseExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="bad plan",
+            nodes=[PlannedNode(node_id="bad_1", node_type="unsupported_node", reason="bad", success_criteria=["none"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_FAILED
+    assert "unsupported_node" in str(result.error or result.node_states["bad_1"].error)

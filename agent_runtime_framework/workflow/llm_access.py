@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.prompting import extract_json_block
 
 
 def get_application_context(context: Any) -> Any | None:

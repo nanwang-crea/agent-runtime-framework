@@ -7,9 +7,8 @@ from typing import Any
 from uuid import uuid4
 
 from agent_runtime_framework.agents import AgentRegistry, builtin_agent_definitions
-from agent_runtime_framework.agents.workspace_backend import WorkspaceAction, WorkspaceContext, build_default_workspace_tools
+from agent_runtime_framework.agents.workspace_backend import WorkspaceContext, build_default_workspace_tools
 from agent_runtime_framework.agents.workspace_backend.personas import resolve_runtime_persona
-from agent_runtime_framework.agents.workspace_backend.models import TaskState, WorkspaceTask
 from agent_runtime_framework.applications import ApplicationContext
 from agent_runtime_framework.assistant.session import AssistantSession
 from agent_runtime_framework.memory import InMemorySessionMemory
@@ -24,6 +23,7 @@ from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
+from agent_runtime_framework.demo.compat_subtask_runner import CompatSubtaskRunner
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.demo.run_lifecycle import RunLifecycleService
 from agent_runtime_framework.demo.workflow_branch_orchestrator import WorkflowBranchOrchestrator
@@ -36,15 +36,6 @@ from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStor
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
 
 logger = logging.getLogger(__name__)
-
-
-def _format_error_detail(exc: Exception) -> str:
-    detail = f"{type(exc).__name__}: {exc}".strip()
-    detail = " ".join(detail.split())
-    return detail[:240]
-
-
-
 
 @dataclass(slots=True)
 class DemoAssistantApp:
@@ -63,6 +54,7 @@ class DemoAssistantApp:
     _available_workspaces: list[str]
     agent_registry: AgentRegistry
     _workflow_store: WorkflowPersistenceStore
+    _compat_subtask_runner: CompatSubtaskRunner
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
@@ -212,20 +204,6 @@ class DemoAssistantApp:
 
     def _build_graph_execution_runtime(self) -> GraphExecutionRuntime:
         return self._build_runtime_factory().build_graph_execution_runtime()
-
-    def _run_workspace_subtask(self, goal: str, *, task_profile: str, metadata: dict[str, Any]):
-        summary = str(metadata.get("summary") or goal)
-        target_path = str(metadata.get("target_path") or metadata.get("path") or "").strip()
-        state = TaskState()
-        if target_path:
-            state.resolved_target = target_path
-            state.evidence_items.append(EvidenceItem(source="workflow", kind="path", summary=target_path, path=target_path))
-        action = WorkspaceAction(kind="workspace_subtask", instruction=goal, status="completed", observation=summary, metadata={"direct_output": True})
-        task = WorkspaceTask(goal=goal, actions=[action], task_profile=task_profile, state=state)
-        task.summary = summary
-        from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
-
-        return WorkspaceSubtaskResult(status="completed", final_output=summary, task=task, action_kind="workspace_subtask", run_id=str(uuid4()))
 
     def memory_payload(self) -> dict[str, Any]:
         snapshot = self.context.application_context.session_memory.snapshot()
@@ -533,6 +511,7 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _available_workspaces=[str(workspace_path)],
         agent_registry=agent_registry,
         _workflow_store=WorkflowPersistenceStore(workspace_path / ".arf" / "workflow-runs.json"),
+        _compat_subtask_runner=CompatSubtaskRunner(),
     )
     app.model_center.load()
     return app

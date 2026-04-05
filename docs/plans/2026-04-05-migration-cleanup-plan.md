@@ -10,6 +10,8 @@
 
 ### Task 1: Freeze the migration target and debt inventory
 
+**Status:** completed on 2026-04-05
+
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/当前Agent设计框架.md`
@@ -55,6 +57,8 @@ git commit -m "docs: define migration cleanup target"
 
 ### Task 2: Cover and fix the immediate bridge-path correctness bug
 
+**Status:** completed on 2026-04-05
+
 **Files:**
 - Modify: `agent_runtime_framework/demo/app.py`
 - Modify: `tests/test_demo_app.py`
@@ -92,6 +96,8 @@ git commit -m "fix: cover demo bridge target evidence path"
 ```
 
 ### Task 3: Move compatibility subtask execution out of the demo app
+
+**Status:** completed on 2026-04-05
 
 **Files:**
 - Modify: `agent_runtime_framework/demo/app.py`
@@ -139,6 +145,8 @@ git commit -m "refactor: isolate compatibility subtask runner"
 ```
 
 ### Task 4: Split `AgentGraphRuntime` into orchestration vs. support services
+
+**Status:** completed on 2026-04-05
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/agent_graph_runtime.py`
@@ -199,6 +207,8 @@ git commit -m "refactor: split agent graph orchestration responsibilities"
 
 ### Task 5: Remove direct executor bypasses from steady-state graph flow
 
+**Status:** completed on 2026-04-05
+
 **Files:**
 - Modify: `agent_runtime_framework/workflow/agent_graph_runtime.py`
 - Modify: `agent_runtime_framework/workflow/execution_runtime.py`
@@ -237,6 +247,8 @@ git commit -m "refactor: route system nodes through graph execution"
 ```
 
 ### Task 6: Remove reverse dependencies from `workflow` to `agents.workspace_backend`
+
+**Status:** completed on 2026-04-05
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/graph_builder.py`
@@ -284,6 +296,8 @@ git commit -m "refactor: remove workflow dependency on workspace backend helpers
 
 ### Task 7: Make compatibility fallback explicit, minimal, and measurable
 
+**Status:** completed on 2026-04-05
+
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`
 - Modify: `agent_runtime_framework/workflow/workspace_subtask.py`
@@ -322,6 +336,8 @@ git commit -m "test: freeze compatibility fallback contract"
 
 ### Task 8: Clean dead code and obsolete migration language
 
+**Status:** completed on 2026-04-05
+
 **Files:**
 - Modify: `agent_runtime_framework/__init__.py`
 - Modify: `README.md`
@@ -355,6 +371,8 @@ git commit -m "chore: remove obsolete migration leftovers"
 ```
 
 ### Task 9: Add verification coverage for the cleaned architecture
+
+**Status:** completed on 2026-04-05
 
 **Files:**
 - Modify: `tests/test_workflow_runtime.py`
@@ -391,6 +409,8 @@ git commit -m "test: lock down cleaned graph runtime behavior"
 ```
 
 ### Task 10: Final verification and closeout
+
+**Status:** completed on 2026-04-05
 
 **Files:**
 - No required code changes

@@ -14,6 +14,8 @@ from agent_runtime_framework.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
+from pathlib import Path
+from types import SimpleNamespace
 
 
 def test_workflow_run_tracks_graph_and_node_states():
@@ -170,3 +172,48 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
 
     assert serialized_subgraph["nodes"][0]["reason"] == "Need primary evidence"
     assert serialized_judge["status"] == "needs_more_evidence"
+
+
+def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
+    root = Path(__file__).resolve().parents[1]
+    workflow_files = [
+        root / "agent_runtime_framework" / "workflow" / "goal_analysis.py",
+        root / "agent_runtime_framework" / "workflow" / "decomposition.py",
+        root / "agent_runtime_framework" / "workflow" / "graph_builder.py",
+        root / "agent_runtime_framework" / "workflow" / "subgraph_planner.py",
+        root / "agent_runtime_framework" / "workflow" / "llm_access.py",
+        root / "agent_runtime_framework" / "workflow" / "conversation.py",
+    ]
+
+    for path in workflow_files:
+        source = path.read_text(encoding="utf-8")
+        assert "agents.workspace_backend.prompting" not in source
+        assert "agents.workspace_backend.run_context" not in source
+
+
+def test_workflow_prompt_helpers_extract_json_and_build_context_block():
+    from agent_runtime_framework.workflow.prompting import (
+        build_run_context_block,
+        extract_json_block,
+        render_workflow_prompt_doc,
+    )
+
+    context = SimpleNamespace(
+        application_context=SimpleNamespace(
+            config={"default_directory": "/tmp/demo"},
+            session_memory=SimpleNamespace(
+                snapshot=lambda: SimpleNamespace(
+                    focused_resources=[SimpleNamespace(location="README.md")]
+                )
+            ),
+            tools=SimpleNamespace(names=lambda: ["read_file", "list_dir"]),
+        )
+    )
+    session = SimpleNamespace(turns=[])
+
+    assert extract_json_block("```json\n{\"ok\": true}\n```") == "{\"ok\": true}"
+    assert render_workflow_prompt_doc("conversation_system") == "你是一个简洁友好的中文助手。"
+    block = build_run_context_block(context, session=session, user_input="读取 README.md")
+    assert "Workspace: /tmp/demo" in block
+    assert "User input: 读取 README.md" in block
+    assert "Available tools: read_file, list_dir" in block

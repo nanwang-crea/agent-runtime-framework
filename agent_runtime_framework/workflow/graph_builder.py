@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, WorkflowEdge, WorkflowGraph, WorkflowNode
+from agent_runtime_framework.workflow.prompting import extract_json_block
 from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
 
@@ -15,37 +15,6 @@ _NATIVE_NODE_TYPES = {"workspace_discovery", "content_search", "chunked_file_rea
 _SUPPORTED_NODE_TYPES = _NATIVE_NODE_TYPES | {"workspace_subtask"}
 _MODEL_ONLY_FLAGS = {"workflow_model_only", "workflow_graph_model_only"}
 _SUPPORTED_NATIVE_INTENTS = {"file_read", "repository_overview", "compound", "target_explainer", "generic", "chat", "conversation"}
-
-
-def build_first_iteration_subgraph(goal_envelope, graph_state, context: Any | None = None):
-    return plan_next_subgraph(goal_envelope, graph_state, context)
-
-
-
-def compile_compat_workflow_graph(goal: GoalSpec, context: Any | None = None) -> WorkflowGraph:
-    llm_graph, fallback_reason = _build_graph_with_model(goal, context=context)
-    if llm_graph is not None:
-        graph = _normalize_graph(llm_graph, goal)
-        graph.metadata = {
-            **dict(graph.metadata or {}),
-            "strategy": "model",
-            "model_role": "planner",
-            "compatibility_mode": True,
-            "compatibility_entrypoint": "compile_compat_workflow_graph",
-        }
-        return graph
-    if _is_model_only(context):
-        raise ValueError("workflow graph compilation is model-only in this environment")
-    graph = _build_graph_deterministically(goal, context=context)
-    graph.metadata = {
-        **dict(graph.metadata or {}),
-        "strategy": ("fallback" if fallback_reason else "deterministic"),
-        "model_role": "planner",
-        **({"fallback_reason": fallback_reason} if fallback_reason else {}),
-        "compatibility_mode": True,
-        "compatibility_entrypoint": "compile_compat_workflow_graph",
-    }
-    return graph
 
 
 def _build_graph_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[WorkflowGraph | None, str | None]:

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_runtime_framework.agents.workspace_backend.prompting import render_workspace_prompt_doc
-from agent_runtime_framework.agents.workspace_backend.run_context import build_run_context_block
 from agent_runtime_framework.models import ChatMessage
+from agent_runtime_framework.workflow.prompting import build_run_context_block, render_workflow_prompt_doc
 
 
 def build_conversation_messages(user_input: str, session: Any, context: Any | None = None) -> list[ChatMessage]:
-    system_content = render_workspace_prompt_doc("conversation_system")
+    system_content = render_workflow_prompt_doc("conversation_system")
     if context is not None:
         system_content += "\n\n" + build_run_context_block(context, session=session, user_input=user_input)
     messages = [ChatMessage(role="system", content=system_content)]

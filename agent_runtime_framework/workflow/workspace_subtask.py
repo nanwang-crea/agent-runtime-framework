@@ -71,6 +71,19 @@ class WorkspaceSubtaskExecutor:
             "evidence_items": evidence_items,
             "workspace_status": result.status,
         }
+        fallback_reason = str(node.metadata.get("fallback_reason") or "").strip()
+        source_loop = str(node.metadata.get("source_loop") or "").strip()
+        compatibility_mode = node.metadata.get("compatibility_mode")
+        if fallback_reason:
+            output["fallback_reason"] = fallback_reason
+        if compatibility_mode is not None:
+            output["compatibility_mode"] = bool(compatibility_mode)
+        elif fallback_reason:
+            output["compatibility_mode"] = True
+        if source_loop:
+            output["source_loop"] = source_loop
+        elif fallback_reason:
+            output["source_loop"] = "workspace_backend"
         if verification_payload is not None:
             output["verification"] = verification_payload
         if result.resume_token is not None:

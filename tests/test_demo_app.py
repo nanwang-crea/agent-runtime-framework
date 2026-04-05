@@ -951,10 +951,11 @@ def test_demo_assistant_app_routes_simple_file_read_without_workspace_subtask(tm
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = _create_demo_assistant_app_with_test_planner(workspace)
+
     def _unexpected_run_workspace_subtask(*_args, **_kwargs):
         raise AssertionError("simple workflow-native file reads should not call workspace subtask runner")
 
-    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _unexpected_run_workspace_subtask(*args, **kwargs))
+    app._compat_subtask_runner = SimpleNamespace(run_subtask=_unexpected_run_workspace_subtask)
 
     payload = app.chat("读取 README.md")
 
@@ -983,12 +984,55 @@ def test_demo_assistant_app_runs_workspace_subtask_without_legacy_loop(tmp_path:
         return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="subtask-run")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
+    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
 
     payload = app.chat("编辑 README.md 并验证修改结果")
 
     assert payload["runtime"] == "workflow"
     assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+
+
+def test_compat_subtask_runner_preserves_target_evidence(tmp_path: Path):
+    from agent_runtime_framework.demo.compat_subtask_runner import CompatSubtaskRunner
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = CompatSubtaskRunner()
+
+    result = runner.run_subtask(
+        "读取 README.md",
+        task_profile="workspace_subtask",
+        metadata={"summary": "README summary", "target_path": "README.md"},
+    )
+
+    assert result.final_output == "README summary"
+    assert result.task.task_profile == "workspace_subtask"
+    assert result.task.state.resolved_target == "README.md"
+    assert result.task.state.evidence_items[0].path == "README.md"
+    assert result.task.state.evidence_items[0].summary == "README.md"
+
+
+def test_demo_runtime_factory_injects_compat_subtask_runner(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    runtime = app._build_graph_execution_runtime()
+    executor = runtime.executors["workspace_subtask"]
+
+    assert executor.run_subtask is not None
+    assert getattr(executor.run_subtask, "__self__", None) is app._compat_subtask_runner
+    assert not hasattr(app, "_run_workspace_subtask")
+
+
+def test_workflow_branch_orchestrator_no_longer_exposes_compat_graph_compiler(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    orchestrator = app._build_workflow_branch_orchestrator()
+
+    assert not hasattr(orchestrator, "compile_for_goal")
 
 
 def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1009,7 +1053,7 @@ def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runt
         return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="workflow-subtask-run")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
+    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
 
     payload = app.chat("编辑 README.md 并验证修改结果")
 
@@ -1060,12 +1104,7 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_sub
         )
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    monkeypatch.setattr(
-        type(app),
-        "_build_workflow_branch_orchestrator",
-        lambda self: type("_CompatRunner", (), {"compile_for_goal": lambda _self, goal: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler")), "run": lambda _self, message, graph, root_graph=None: (_ for _ in ()).throw(AssertionError("approval path should not require compat graph compiler"))})(),
-    )
-    monkeypatch.setattr(type(app), "_run_workspace_subtask", lambda self, *args, **kwargs: _fake_run_workspace_subtask(*args, **kwargs))
+    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
 
     first = app.chat("直接删除 README.md")
 
@@ -1148,29 +1187,6 @@ def test_demo_workflow_runtime_registers_only_new_native_executors(tmp_path: Pat
     assert {"workspace_discovery", "content_search", "chunked_file_read", "evidence_synthesis"} <= set(runtime.executors)
     assert "repository_explainer" not in runtime.executors
     assert "file_reader" not in runtime.executors
-
-
-def test_demo_assistant_app_rejects_legacy_file_reader_graph(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("legacy reader content", encoding="utf-8")
-    app = create_demo_assistant_app(workspace)
-
-    payload = app._build_workflow_branch_orchestrator().run(
-        "读取 README.md",
-        graph=WorkflowGraph(
-            nodes=[
-                WorkflowNode(node_id="file_read", node_type="file_reader", metadata={"target_path": "README.md"}),
-                WorkflowNode(node_id="final_response", node_type="final_response", dependencies=["file_read"]),
-            ],
-            edges=[WorkflowEdge(source="file_read", target="final_response")],
-        ),
-    )
-
-    assert payload["status"] == "failed"
-    assert any(step["detail"] == "file_reader" for step in payload["execution_trace"])
-    assert payload["final_answer"] == ""
-
 
 
 def test_demo_assistant_stream_chat_does_not_delegate_to_chat_for_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

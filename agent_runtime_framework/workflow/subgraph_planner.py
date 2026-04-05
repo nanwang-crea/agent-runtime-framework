@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent_runtime_framework.agents.workspace_backend.prompting import extract_json_block
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.prompting import extract_json_block
 
 ALLOWED_DYNAMIC_NODE_TYPES = {
     "target_resolution",
@@ -141,7 +141,13 @@ def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
             node_id="workspace_subtask",
             node_type="workspace_subtask",
             reason="Need a flexible execution step for this goal",
-            inputs={"goal": goal_envelope.goal, "intent": goal_envelope.intent},
+            inputs={
+                "goal": goal_envelope.goal,
+                "intent": goal_envelope.intent,
+                "fallback_reason": "unsupported_intent",
+                "compatibility_mode": True,
+                "source_loop": "workspace_backend",
+            },
             success_criteria=["produce progress toward the goal"],
         ),
         PlannedNode(

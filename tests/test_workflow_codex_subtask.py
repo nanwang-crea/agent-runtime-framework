@@ -62,3 +62,6 @@ def test_workspace_subtask_executor_exposes_bridge_metadata(tmp_path: Path):
 
     assert result.output["summary"] == "README summary"
     assert result.output["workspace_status"] == "completed"
+    assert result.output["fallback_reason"] == "unsupported_primary_intent"
+    assert result.output["compatibility_mode"] is True
+    assert result.output["source_loop"] == "workspace_backend"

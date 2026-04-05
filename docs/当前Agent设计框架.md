@@ -2,7 +2,7 @@
 
 > 最终架构说明见 `docs/architecture/final-agent-graph-runtime.md`。
 
-> 状态说明：当前代码库的顶层主运行时已经切换为统一入口：conversation 请求走轻量 conversation graph，非 conversation 请求走 `AgentGraphRuntime`。`WorkflowRuntime` 仍是底层节点执行壳；`CodexAgentLoop` / `WorkspaceAgentLoop` 仅保留为兼容子任务后端。
+> 状态说明：当前代码库的顶层主运行时已经切换为统一入口：所有请求先进入 `RootGraphRuntime`；conversation 请求走轻量 conversation graph，非 conversation 请求走 `AgentGraphRuntime`。`GraphExecutionRuntime` 是底层节点执行壳；`CodexAgentLoop` / `WorkspaceAgentLoop` 仅保留为兼容子任务后端。
 
 ## 1. 当前目标
 
@@ -37,13 +37,22 @@
 - 审批不再是顶层旁路；高风险子任务在 Agent Graph 执行过程中动态触发 `waiting_approval`，审批后继续回到图内执行
 - 仅兼容场景才走 `build_workflow_graph()` / compiled workflow
 
+需要继续清理的迁移债包括：
+
+- `AgentGraphRuntime` 中仍然存在 direct executor calls
+- 兼容 `workspace_subtask` bridge 仍有 app-owned 逻辑
+- `workflow` 层对 `agents.workspace_backend` 还有反向依赖
+
 ## 2.1 当前迁移状态
 
 当前 graph-first 迁移的边界已经明确：
 
-- `WorkflowRuntime` 是 workspace 请求的唯一顶层执行内核
-- `DemoAssistantApp` 负责路由与 payload 组织，不再被视为旧 loop 的直接编排器
+- `RootGraphRuntime` 负责 route decision，但不拥有业务执行逻辑
+- `AgentGraphRuntime` 负责 iterative graph orchestration，但不应该手工绕过 scheduler 调度 steady-state 节点
+- `GraphExecutionRuntime` 负责 node scheduling 与 node execution
+- `DemoAssistantApp` 负责路由接线与 payload 组织，不再被视为旧 loop 的直接编排器，也不应该长期持有兼容 bridge 业务逻辑
 - `WorkspaceAgentLoop` / `WorkspaceBackend` 只保留为 workflow 节点下的 compatibility executor
+- `workflow` 层的目标边界是不再反向依赖 `agents.workspace_backend` 的 planner-time prompt / parsing helper
 
 | 能力区域 | 当前状态 | 目标状态 |
 | --- | --- | --- |
@@ -72,9 +81,14 @@
 - demo payload 组织
 - model center / workspace 上下文管理
 
+`DemoAssistantApp` 不应长期负责：
+
+- compatibility subtask result 组装
+- `WorkspaceTask` / `EvidenceItem` bridge payload 生产
+
 ### 3.2 Workflow Layer
 
-`agent_runtime_framework.workflow` 是当前顶层主运行时。
+`agent_runtime_framework.workflow` 是当前顶层运行时主体。
 
 当前已落地模块包括：
 
@@ -98,6 +112,13 @@
 - approval / resume
 - persistence / recovery
 - 最终结果聚合
+
+责任边界进一步收口为：
+
+- `RootGraphRuntime` 负责 route
+- `AgentGraphRuntime` 负责 orchestration
+- `GraphExecutionRuntime` 负责 execution
+- compatibility bridge executor 是过渡实现，不应混入 app-specific 逻辑
 
 ### 3.3 Codex Compatibility Layer
 
@@ -195,7 +216,7 @@
 
 当前已经完成的 graph-first 迁移结果包括：
 
-- `WorkflowRuntime` 成为 workspace 请求的唯一顶层执行内核
+- `RootGraphRuntime -> AgentGraphRuntime -> GraphExecutionRuntime` 已成为 workspace 请求的主路径
 - 非 conversation 的 workspace 请求统一优先进入 workflow path
 - clarification follow-up 优先回到 workflow，而不是 app 层直连旧 loop
 - `tool_call` / `clarification` 已成为首批显式 workflow 节点执行器
@@ -210,7 +231,10 @@
 - model-planned graph 的进一步扩展
 - subagent / MCP / skills 级别的一等图节点
 - 更彻底的兼容 fallback 缩减与 dead-code cleanup
+- `AgentGraphRuntime` 中 direct executor bypass 的移除
+- `DemoAssistantApp` 中 compatibility bridge 逻辑的下沉
+- `workflow` 对 `agents.workspace_backend` 反向依赖的清除
 
 因此，当前框架可以描述为：
 
-**workflow 已成为顶层主运行时，`WorkspaceAgentLoop` / `CodexAgentLoop` 仅保留为兼容 bridge backend。**
+**graph-first 主路径已经成立，但仍有少量迁移期 bridge / bypass / reverse-dependency 代码需要清除；`WorkspaceAgentLoop` / `CodexAgentLoop` 仅保留为兼容 bridge backend。**
