@@ -177,12 +177,14 @@ Replay 时：
 - `approve()` 后继续在同一图内恢复
 - approval 不再是顶层旁路流程
 
-## Remaining Compat Boundary
+## Graph-Native Write Path
 
-当前仍保留但已被明确边界化的 compat 层：
-- `workspace_subtask` 对旧 backend 的适配
+当前写路径已经完全 graph-native：
+- 文件系统请求通过 `create_path` / `move_path` / `delete_path`
+- 文本编辑请求通过 `apply_patch` / `write_file` / `append_text`
+- verification 继续作为独立工作流节点表达修改后的检查阶段
 
-这些模块不再代表主路径；当前剩余 compat 边界主要集中在 `workspace_subtask` bridge。
+节点表达 workflow-stage semantics；底层 workspace tools 仍保持细粒度执行原语，不要求与节点一一对应。
 
 ## Recommended Reading Order
 

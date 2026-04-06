@@ -23,7 +23,6 @@ from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig, resolve_sandbox
 from agent_runtime_framework.tools import ToolRegistry
-from agent_runtime_framework.demo.compat_subtask_runner import CompatSubtaskRunner
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
@@ -52,7 +51,6 @@ class DemoAssistantApp:
     _available_workspaces: list[str]
     agent_registry: AgentRegistry
     _workflow_store: WorkflowPersistenceStore
-    _compat_subtask_runner: CompatSubtaskRunner
 
     def chat(self, message: str) -> dict[str, Any]:
         try:
@@ -489,7 +487,6 @@ def create_demo_assistant_app(workspace: str | Path, *, seed_config: dict[str, A
         _available_workspaces=[str(workspace_path)],
         agent_registry=agent_registry,
         _workflow_store=WorkflowPersistenceStore(workspace_path / ".arf" / "workflow-runs.json"),
-        _compat_subtask_runner=CompatSubtaskRunner(),
     )
     app.model_center.load()
     return app

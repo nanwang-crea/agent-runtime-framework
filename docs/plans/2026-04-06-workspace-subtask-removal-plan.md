@@ -212,7 +212,7 @@ git commit -m "refactor: remove modify flows from workspace_subtask"
 
 ### Task 5: Remove `workspace_subtask` runtime wiring
 
-Status: in_progress
+Status: completed
 
 **Files:**
 - Delete or modify: `agent_runtime_framework/workflow/workspace_subtask.py`
@@ -259,6 +259,8 @@ git commit -m "refactor: remove workspace_subtask bridge"
 
 ### Task 6: Add end-to-end coverage for graph-native write flows
 
+Status: completed
+
 **Files:**
 - Modify: `tests/test_workflow_end_to_end.py`
 - Modify: `tests/test_demo_app.py`
@@ -294,6 +296,8 @@ git commit -m "test: cover graph-native write flows"
 ```
 
 ### Task 7: Final cleanup and docs closeout
+
+Status: completed
 
 **Files:**
 - Modify: `README.md`

@@ -24,7 +24,7 @@
 - `GraphExecutionRuntime`：只负责 scheduler-driven node execution
 - `DemoAssistantApp`：只负责 app/session/payload 组织
 - `DemoRuntimeFactory`：只负责 wiring 和服务装配
-- `workspace_subtask`：是迁移期临时保留的兼容 bridge，正在被 graph-native write nodes 替代
+- graph-native write nodes：负责文件系统与文本编辑的工作流阶段语义
 
 ## 3. 当前稳定能力
 
@@ -36,7 +36,7 @@
 - clarification / approval / resume
 - workflow persistence / replay
 - target resolution
-- `workspace_subtask` fallback 元数据暴露（仅限迁移期兼容场景）
+- graph-native write-node 执行结果与 verification 结果暴露
 
 当前稳定使用的核心对象包括：
 
@@ -61,12 +61,17 @@
 - `verification`
 - `approval_gate`
 - `final_response`
-- `workspace_subtask`
 - `target_resolution`
 - `clarification`
 - `conversation_response`
+- `create_path`
+- `move_path`
+- `delete_path`
+- `apply_patch`
+- `write_file`
+- `append_text`
 
-正在冻结的 graph-native 写节点类型包括：
+当前稳定使用的 graph-native 写节点类型包括：
 
 - `create_path`
 - `move_path`
@@ -83,7 +88,7 @@
 - `final_response` 读取 judge 结果后生成最终回答
 - 节点名称表达 workflow stage intent，不与底层 tool 名称一一对应
 - tools 继续保持 fine-grained execution primitives
-- `workspace_subtask` 是临时兼容 bridge，计划移除，不再扩展
+- 文件系统与文本编辑请求已经不再经过兼容 bridge
 
 ## 5. 当前文档范围
 

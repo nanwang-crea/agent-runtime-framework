@@ -12,6 +12,7 @@ def test_public_surface_exports_new_agent_layers():
 
 def test_workflow_surface_no_longer_exports_legacy_graph_builder():
     assert not hasattr(workflow, "build_workspace_subtask_graph")
+    assert not hasattr(workflow, "WorkspaceSubtaskExecutor")
 
 
 def test_workspace_write_node_architecture_note_defines_public_taxonomy():

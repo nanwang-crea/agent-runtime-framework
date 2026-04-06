@@ -1,5 +1,4 @@
 from agent_runtime_framework.workflow.approval import WorkflowResumeToken
-from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
@@ -61,7 +60,6 @@ __all__ = [
     "RUN_STATUS_PENDING",
     "RUN_STATUS_RUNNING",
     "RUN_STATUS_WAITING_APPROVAL",
-    "WorkspaceSubtaskExecutor",
     "AgentGraphState",
     "GoalSpec",
     "GoalEnvelope",

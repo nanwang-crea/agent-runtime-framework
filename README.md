@@ -1,6 +1,6 @@
 # Agent Runtime Framework
 
-`agent-runtime-framework` 当前采用 **Root Graph -> Agent Graph -> Graph Execution Runtime** 的图优先运行时。`RootGraphRuntime` 负责路由，`AgentGraphRuntime` 负责迭代式 agent graph 编排，`GraphExecutionRuntime` 负责节点调度与执行。当前写路径正在从 `workspace_subtask` compatibility bridge 迁移到 graph-native write nodes；bridge 是临时兼容边界，不是长期扩展方向。
+`agent-runtime-framework` 当前采用 **Root Graph -> Agent Graph -> Graph Execution Runtime** 的图优先运行时。`RootGraphRuntime` 负责路由，`AgentGraphRuntime` 负责迭代式 agent graph 编排，`GraphExecutionRuntime` 负责节点调度与执行。文件系统与文本编辑请求已经通过 graph-native write nodes 执行，底层继续复用 fine-grained workspace tools。
 
 当前生效的主链路是：
 
@@ -54,7 +54,7 @@
 
 - **compound / multi-step workspace goals** 走 `AgentGraphRuntime` + `GraphExecutionRuntime` 主路径
 - **conversation-style requests** 仍然走 conversation routing
-- `WorkspaceBackend` 仅通过临时兼容层参与部分执行，不是产品入口运行时
+- `WorkspaceBackend` 作为底层工具与资源访问能力参与执行，不是产品入口运行时
 - `DemoAssistantApp` 负责 app/session/payload 组织，不拥有业务执行逻辑
 
 ## Runtime Rules
@@ -65,8 +65,7 @@
 - `AgentGraphRuntime` 只负责 graph orchestration
 - `GraphExecutionRuntime` 只负责 scheduler-driven node execution
 - conversation 分支与 workspace 分支都走统一 graph-first 路径
-- 写请求正迁移到 graph-native nodes，底层仍复用 fine-grained workspace tools
-- `workspace_subtask` bridge 是临时兼容层，不代表主路径
+- 写请求已经走 graph-native nodes，底层仍复用 fine-grained workspace tools
 
 | Area | Current | Target |
 | --- | --- | --- |
@@ -75,11 +74,11 @@
 | approval / resume | graph-native | graph-native |
 | aggregation | graph-native | graph-native |
 | final response | graph-native | graph-native |
-| complex workspace subtask execution | loop-backed compatibility | explicit graph nodes first, loop fallback only |
+| graph-native write execution | explicit workflow nodes | explicit graph nodes + fine-grained tools |
 | clarification handling | partially loop-backed | graph-native first |
 | tool-call orchestration fallback | loop-backed compatibility | explicit graph nodes first |
-| filesystem writes | compatibility bridge | graph-native `create_path` / `move_path` / `delete_path` |
-| text edits | compatibility bridge | graph-native `apply_patch` / `write_file` / `append_text` |
+| filesystem writes | graph-native | `create_path` / `move_path` / `delete_path` |
+| text edits | graph-native | `apply_patch` / `write_file` / `append_text` |
 
 ## Workflow Runtime Status
 
@@ -89,8 +88,7 @@
 - sequential scheduler + runtime loop
 - deterministic goal analysis / decomposition
 - native `workspace_overview` / `file_read` executors
-- graph-native write-node taxonomy for filesystem and text-edit migration
-- `workspace_subtask` compatibility adapter (temporary)
+- graph-native write-node taxonomy for filesystem and text-edit execution
 - aggregation / final response executors
 - node-level approval / resume
 - file-backed workflow persistence
@@ -105,11 +103,11 @@
 - graph-native approval / resume / aggregation / final response
 - `tool_call` / `clarification` 的首批显式 workflow executors
 - `target_resolution` / `file_inspection` / `response_synthesis` 的第二批 graph-native executors
-- `workspace_subtask` bridge 的 `fallback_reason` / `compatibility_mode` / `source_loop` 元数据
+- graph-native write nodes for filesystem and text-edit stages
 
 当前仍作为后续增强项保留的部分主要是：
 
-- graph-native write nodes replacing the remaining compatibility bridge
+- richer graph-native node taxonomy on top of the write path
 - 并行调度与更细粒度的子任务图
 - model-planned graph 的进一步扩展
 - subagent / MCP / skills 级别的图节点化

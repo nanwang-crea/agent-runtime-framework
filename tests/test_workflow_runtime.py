@@ -456,6 +456,31 @@ def test_runtime_executes_append_text_node_with_workspace_tool(tmp_path):
     assert target.read_text(encoding="utf-8") == "line one\nline two\n"
 
 
+def test_runtime_preserves_verification_payload_after_graph_native_modify():
+    verification = VerificationExecutor().execute(
+        WorkflowNode(node_id="verification", node_type="verification"),
+        WorkflowRun(
+            goal="modify and verify",
+            shared_state={
+                "node_results": {
+                    "write": NodeResult(
+                        status=NODE_STATUS_COMPLETED,
+                        output={
+                            "summary": "modified file",
+                            "verification_events": [
+                                {"status": "passed", "success": True, "summary": "verified after modify", "verification_type": "post_modify"}
+                            ],
+                        },
+                    )
+                }
+            },
+        ),
+    )
+
+    assert verification.output["verification"]["status"] == "passed"
+    assert verification.output["verification_by_type"]["post_modify"]["status"] == "passed"
+
+
 def test_aggregate_node_results_preserves_structured_output_fields():
     aggregated = aggregate_node_results(
         [

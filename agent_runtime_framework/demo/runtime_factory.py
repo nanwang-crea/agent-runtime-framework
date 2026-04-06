@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_runtime_framework.demo.agent_branch_orchestrator import AgentBranchOrchestrator
-from agent_runtime_framework.demo.compat_subtask_runner import CompatSubtaskRunner
 from agent_runtime_framework.demo.pending_run_registry import PendingRunRegistry
 from agent_runtime_framework.demo.run_lifecycle import RunLifecycleService
 from agent_runtime_framework.demo.workflow_branch_orchestrator import WorkflowBranchOrchestrator
@@ -27,20 +26,12 @@ from agent_runtime_framework.workflow.filesystem_node_executors import (
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FinalResponseExecutor, VerificationExecutor
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
-from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskExecutor
 from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
 
 
 @dataclass(slots=True)
 class DemoRuntimeFactory:
     app: Any
-
-    def build_compat_subtask_runner(self) -> CompatSubtaskRunner:
-        runner = getattr(self.app, "_compat_subtask_runner", None)
-        if runner is None:
-            runner = CompatSubtaskRunner()
-            self.app._compat_subtask_runner = runner
-        return runner
 
     def _run_conversation_branch(self, message: str, graph: Any, root_graph: dict[str, Any]) -> dict[str, Any]:
         return self.build_workflow_branch_orchestrator().run(message, graph=graph, root_graph=root_graph)
@@ -68,7 +59,6 @@ class DemoRuntimeFactory:
                 "tool_call": ToolCallExecutor(),
                 "clarification": ClarificationExecutor(),
                 "target_resolution": TargetResolutionExecutor(),
-                "workspace_subtask": WorkspaceSubtaskExecutor(run_subtask=self.build_compat_subtask_runner().run_subtask),
             },
             context=self.app._workflow_runtime_context(),
         )

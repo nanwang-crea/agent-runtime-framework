@@ -15,7 +15,6 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "workspace_discovery",
     "content_search",
     "chunked_file_read",
-    "workspace_subtask",
     "tool_call",
     "clarification",
     "verification_step",
@@ -283,25 +282,12 @@ def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
         ]
     return [
         PlannedNode(
-            node_id="workspace_subtask",
-            node_type="workspace_subtask",
-            reason="Need a flexible execution step for this goal",
-            inputs={
-                "goal": goal_envelope.goal,
-                "intent": goal_envelope.intent,
-                "fallback_reason": "unsupported_intent",
-                "compatibility_mode": True,
-                "source_loop": "workspace_backend",
-            },
-            success_criteria=["produce progress toward the goal"],
-        ),
-        PlannedNode(
-            node_id="evidence_synthesis",
-            node_type="evidence_synthesis",
-            reason="Need to summarize flexible execution outputs for judging",
-            depends_on=["workspace_subtask"],
-            success_criteria=["summarize subtask evidence"],
-        ),
+            node_id="clarification",
+            node_type="clarification",
+            reason="Need a clearer workflow-native instruction for this unsupported request",
+            inputs={"prompt": "请进一步明确你希望执行的工作区操作或目标结果。"},
+            success_criteria=["collect enough detail to plan graph-native nodes"],
+        )
     ]
 
 

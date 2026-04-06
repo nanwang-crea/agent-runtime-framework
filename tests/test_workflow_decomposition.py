@@ -289,7 +289,7 @@ def test_plan_next_subgraph_prefers_clarification_for_underspecified_modify_requ
     assert "workspace_subtask" not in [node.node_type for node in subgraph.nodes]
 
 
-def test_plan_next_subgraph_uses_workspace_subtask_only_for_unsupported_generic_request():
+def test_plan_next_subgraph_uses_clarification_for_unsupported_generic_request():
     goal = GoalSpec(original_goal="帮我整理这个仓库的后续开发事项", primary_intent="generic")
     envelope = SimpleNamespace(
         goal=goal.original_goal,
@@ -303,11 +303,9 @@ def test_plan_next_subgraph_uses_workspace_subtask_only_for_unsupported_generic_
 
     subgraph = plan_next_subgraph(envelope, state, context=None)
 
-    workspace_node = subgraph.nodes[0]
-    assert workspace_node.node_type == "workspace_subtask"
-    assert workspace_node.inputs["fallback_reason"] == "unsupported_intent"
-    assert workspace_node.inputs["compatibility_mode"] is True
-    assert workspace_node.inputs["source_loop"] == "workspace_backend"
+    clarification_node = subgraph.nodes[0]
+    assert clarification_node.node_type == "clarification"
+    assert "workspace_subtask" not in [node.node_type for node in subgraph.nodes]
 
 
 def test_plan_next_subgraph_keeps_native_file_read_without_compatibility_fallback():

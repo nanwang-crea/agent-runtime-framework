@@ -647,27 +647,31 @@ def test_demo_assistant_app_does_not_install_next_action_planner_by_default(tmp_
 
 
 
-def test_demo_assistant_app_workspace_subtask_ignores_next_action_planner_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_runtime_framework.workflow.models import GoalSpec
+def test_demo_assistant_app_graph_native_edit_ignores_next_action_planner_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
     def _fake_analyze_goal(_message: str, context=None):
-        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
+        return GoalSpec(original_goal="把 README.md 中的 line one 替换成 first line，并验证结果", primary_intent="change_and_verify", target_paths=["README.md"])
 
     def _unexpected_planner(*_args, **_kwargs):
         raise AssertionError("legacy next_action_planner should not be consulted")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.agent_graph_runtime.judge_progress",
+        lambda goal_envelope, aggregated_payload, graph_state: JudgeDecision(status="accepted", reason="graph-native edit completed"),
+    )
     app.context.services["next_action_planner"] = _unexpected_planner
 
-    payload = app.chat("编辑 README.md 并验证修改结果")
+    payload = app.chat("把 README.md 中的 line one 替换成 first line，并验证结果")
 
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
-    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+    assert any(step["name"] == "apply_patch" for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path):
@@ -681,7 +685,7 @@ def test_demo_assistant_app_requires_llm_for_codex_agent_planning(tmp_path: Path
     assert payload["status"] == "completed"
     assert payload["runtime"] == "workflow"
     assert "README.md" in payload["final_answer"]
-    assert any(step["detail"] in {"workspace_discovery", "workspace_subtask"} for step in payload["execution_trace"])
+    assert any(step["detail"] == "workspace_discovery" for step in payload["execution_trace"])
 
 
 def test_demo_assistant_app_routes_plain_greeting_without_planner(tmp_path: Path):
@@ -983,77 +987,88 @@ def test_demo_assistant_app_routes_simple_file_read_without_workspace_subtask(tm
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = _create_demo_assistant_app_with_test_planner(workspace)
 
-    def _unexpected_run_workspace_subtask(*_args, **_kwargs):
-        raise AssertionError("simple workflow-native file reads should not call workspace subtask runner")
-
-    app._compat_subtask_runner = SimpleNamespace(run_subtask=_unexpected_run_workspace_subtask)
-
     payload = app.chat("读取 README.md")
 
     assert payload["runtime"] == "workflow"
     assert payload["capability_name"] == "workflow"
     assert any(step["detail"] == "content_search" for step in payload["execution_trace"])
 
-
-
-def test_demo_assistant_app_runs_workspace_subtask_without_legacy_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_demo_assistant_app_routes_text_edit_through_graph_native_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from agent_runtime_framework.workflow.models import GoalSpec
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "README.md").write_text("line one\n", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
     def _fake_analyze_goal(_message: str, context=None):
-        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
-
-    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
-        from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState, VerificationResult
-        from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
-
-        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
-        task.summary = "changed README"
-        return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="subtask-run")
+        return GoalSpec(original_goal="向 README.md 追加一行 line two，并验证结果", primary_intent="change_and_verify", target_paths=["README.md"])
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
 
-    payload = app.chat("编辑 README.md 并验证修改结果")
+    payload = app.chat("向 README.md 追加一行 line two，并验证结果")
 
     assert payload["runtime"] == "workflow"
-    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+    assert any(step["name"] == "append_text" for step in payload["execution_trace"])
 
 
-def test_compat_subtask_runner_preserves_target_evidence(tmp_path: Path):
-    from agent_runtime_framework.demo.compat_subtask_runner import CompatSubtaskRunner
+def test_demo_assistant_app_rewrites_file_through_graph_native_write_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner = CompatSubtaskRunner()
+    (workspace / "README.md").write_text("old body\n", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
 
-    result = runner.run_subtask(
-        "读取 README.md",
-        task_profile="workspace_subtask",
-        metadata={"summary": "README summary", "target_path": "README.md"},
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="重写 README.md 为 new body，并验证结果", primary_intent="change_and_verify", target_paths=["README.md"])
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.agent_graph_runtime.judge_progress",
+        lambda goal_envelope, aggregated_payload, graph_state: JudgeDecision(status="accepted", reason="rewrite completed"),
     )
 
-    assert result.final_output == "README summary"
-    assert result.task.task_profile == "workspace_subtask"
-    assert result.task.state.resolved_target == "README.md"
-    assert result.task.state.evidence_items[0].path == "README.md"
-    assert result.task.state.evidence_items[0].summary == "README.md"
+    payload = app.chat("重写 README.md 为 new body，并验证结果")
+
+    assert payload["status"] == "completed"
+    assert any(step["name"] == "write_file" for step in payload["execution_trace"])
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "new body"
 
 
-def test_demo_runtime_factory_injects_compat_subtask_runner(tmp_path: Path):
+def test_demo_assistant_app_applies_patch_through_graph_native_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("line one\nline two\n", encoding="utf-8")
+    app = create_demo_assistant_app(workspace)
+
+    def _fake_analyze_goal(_message: str, context=None):
+        return GoalSpec(original_goal="把 README.md 中的 line one 替换成 first line，并验证结果", primary_intent="change_and_verify", target_paths=["README.md"])
+
+    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.agent_graph_runtime.judge_progress",
+        lambda goal_envelope, aggregated_payload, graph_state: JudgeDecision(status="accepted", reason="patch completed"),
+    )
+
+    payload = app.chat("把 README.md 中的 line one 替换成 first line，并验证结果")
+
+    assert payload["status"] == "completed"
+    assert any(step["name"] == "apply_patch" for step in payload["execution_trace"])
+    assert (workspace / "README.md").read_text(encoding="utf-8").startswith("first line")
+
+
+def test_demo_runtime_factory_no_longer_registers_workspace_subtask(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     app = create_demo_assistant_app(workspace)
 
     runtime = demo_app_module.DemoRuntimeFactory(app).build_graph_execution_runtime()
-    executor = runtime.executors["workspace_subtask"]
 
-    assert executor.run_subtask is not None
-    assert getattr(executor.run_subtask, "__self__", None) is app._compat_subtask_runner
-    assert not hasattr(app, "_run_workspace_subtask")
+    assert "workspace_subtask" not in runtime.executors
+    assert not hasattr(app, "_compat_subtask_runner")
 
 
 def test_demo_runtime_factory_registers_graph_native_filesystem_executors(tmp_path: Path):
@@ -1078,31 +1093,25 @@ def test_workflow_branch_orchestrator_no_longer_exposes_compat_graph_compiler(tm
     assert not hasattr(orchestrator, "compile_for_goal")
 
 
-def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_demo_assistant_app_routes_generic_goal_to_conversation_without_workspace_subtask_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from agent_runtime_framework.workflow.models import GoalSpec
-    from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
-    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState, VerificationResult
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
+    _install_conversation_model(app, "generic reply")
     def _fake_analyze_goal(_message: str, context=None):
-        return GoalSpec(original_goal="编辑 README.md 并验证修改结果", primary_intent="change_and_verify")
-
-    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
-        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
-        task.summary = "changed README"
-        return WorkspaceSubtaskResult(status="completed", final_output="changed README", task=task, action_kind="workspace_subtask", run_id="workflow-subtask-run")
+        return GoalSpec(original_goal="帮我处理这个仓库的复杂后续事项", primary_intent="generic")
 
     monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
 
-    payload = app.chat("编辑 README.md 并验证修改结果")
+    payload = app.chat("帮我处理这个仓库的复杂后续事项")
 
     assert payload["runtime"] == "workflow"
-    assert payload["capability_name"] == "workflow"
-    assert any(step["name"] == "workspace_subtask" for step in payload["execution_trace"])
+    assert payload["capability_name"] == "conversation"
+    assert payload["status"] == "completed"
+    assert all(step["name"] != "workspace_subtask" for step in payload["execution_trace"])
 
 
 
@@ -1132,6 +1141,7 @@ def test_demo_assistant_app_preserves_workflow_approval_resume_for_delete_path(t
     assert resumed["status"] == "completed"
     assert resumed["runtime"] == "workflow"
     assert not (workspace / "README.md").exists()
+    assert resumed["evidence"]["verification"]["status"] in {"passed", "not_run"}
 
 
 
