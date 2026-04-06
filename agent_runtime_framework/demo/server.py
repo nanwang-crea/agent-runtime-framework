@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.demo.app import DemoAssistantApp, create_demo_assistant_app
+from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 
 logging.basicConfig(
     level=logging.INFO,
