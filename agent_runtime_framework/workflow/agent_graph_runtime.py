@@ -131,6 +131,9 @@ class AgentGraphRuntime:
         state.current_iteration = subgraph.iteration
         state.planned_subgraphs.append(subgraph)
         state.appended_node_ids.extend(node.node_id for node in subgraph.nodes)
+        planner_summary = str(subgraph.planner_summary or "").strip()
+        if planner_summary and planner_summary not in state.attempted_strategies:
+            state.attempted_strategies.append(planner_summary)
         aggregated_result, evidence_result = self._materialize_iteration_system_nodes(
             run,
             executed,
@@ -149,6 +152,30 @@ class AgentGraphRuntime:
         else:
             last_decision = self._judge(goal_envelope, state)
         state.judge_history.append(last_decision)
+        state.open_issues = list(last_decision.missing_evidence)
+        state.iteration_summaries.append(
+            {
+                "iteration": state.current_iteration,
+                "planner_summary": subgraph.planner_summary,
+                "node_ids": [node.node_id for node in subgraph.nodes],
+                "judge_status": last_decision.status,
+                "judge_reason": last_decision.reason,
+                "missing_evidence": list(last_decision.missing_evidence),
+                "diagnosis": dict(last_decision.diagnosis),
+                "strategy_guidance": dict(last_decision.strategy_guidance),
+            }
+        )
+        if last_decision.status != "accepted":
+            state.failure_history.append(
+                {
+                    "iteration": state.current_iteration,
+                    "status": last_decision.status,
+                    "reason": last_decision.reason,
+                    "missing_evidence": list(last_decision.missing_evidence),
+                    "diagnosis": dict(last_decision.diagnosis),
+                    "strategy_guidance": dict(last_decision.strategy_guidance),
+                }
+            )
         state.execution_summary = {
             "current_iteration": state.current_iteration,
             "last_judge_status": last_decision.status,
@@ -157,6 +184,11 @@ class AgentGraphRuntime:
             "appended_node_ids": list(state.appended_node_ids),
             "summaries": list(state.aggregated_payload.get("summaries", []) or []),
             "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
+            "open_issues": list(state.open_issues),
+            "attempted_strategies": list(state.attempted_strategies),
+            "latest_diagnosis": dict(last_decision.diagnosis),
+            "latest_strategy_guidance": dict(last_decision.strategy_guidance),
+            "latest_failure": dict(state.failure_history[-1]) if state.failure_history else None,
         }
         run.shared_state["judge_decision"] = last_decision.as_payload()
         judge_node_id = f"judge_{state.current_iteration}"
@@ -237,6 +269,8 @@ class AgentGraphRuntime:
             missing_evidence=[str(item) for item in decision.get("missing_evidence", []) or []],
             coverage_report=dict(decision.get("coverage_report") or {}),
             replan_hint=dict(decision.get("replan_hint") or {}),
+            diagnosis=dict(decision.get("diagnosis") or {}),
+            strategy_guidance=dict(decision.get("strategy_guidance") or {}),
         )
 
     def _execution_graph(self, subgraph: PlannedSubgraph) -> WorkflowGraph:

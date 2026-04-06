@@ -248,6 +248,8 @@ class JudgeDecision:
     missing_evidence: list[str] = field(default_factory=list)
     coverage_report: dict[str, Any] = field(default_factory=dict)
     replan_hint: dict[str, Any] = field(default_factory=dict)
+    diagnosis: dict[str, Any] = field(default_factory=dict)
+    strategy_guidance: dict[str, Any] = field(default_factory=dict)
 
     def as_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -263,6 +265,10 @@ class AgentGraphState:
     planned_subgraphs: list[PlannedSubgraph] = field(default_factory=list)
     judge_history: list[JudgeDecision] = field(default_factory=list)
     appended_node_ids: list[str] = field(default_factory=list)
+    iteration_summaries: list[dict[str, Any]] = field(default_factory=list)
+    failure_history: list[dict[str, Any]] = field(default_factory=list)
+    open_issues: list[str] = field(default_factory=list)
+    attempted_strategies: list[str] = field(default_factory=list)
 
     def as_payload(self) -> dict[str, Any]:
         return serialize_agent_graph_state(self)
@@ -282,4 +288,8 @@ def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
         "planned_subgraphs": [subgraph.as_payload() for subgraph in state.planned_subgraphs],
         "judge_history": [decision.as_payload() for decision in state.judge_history],
         "appended_node_ids": list(state.appended_node_ids),
+        "iteration_summaries": [dict(item) for item in state.iteration_summaries],
+        "failure_history": [dict(item) for item in state.failure_history],
+        "open_issues": list(state.open_issues),
+        "attempted_strategies": list(state.attempted_strategies),
     }

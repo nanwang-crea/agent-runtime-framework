@@ -40,6 +40,10 @@ class AgentGraphStateStore:
             planned_subgraphs=[],
             judge_history=[],
             appended_node_ids=[str(item) for item in prior_state.get("appended_node_ids", []) or []],
+            iteration_summaries=[dict(item) for item in prior_state.get("iteration_summaries", []) or [] if isinstance(item, dict)],
+            failure_history=[dict(item) for item in prior_state.get("failure_history", []) or [] if isinstance(item, dict)],
+            open_issues=[str(item) for item in prior_state.get("open_issues", []) or [] if str(item).strip()],
+            attempted_strategies=[str(item) for item in prior_state.get("attempted_strategies", []) or [] if str(item).strip()],
         )
         for item in prior_state.get("planned_subgraphs", []) or []:
             nodes = [
@@ -64,6 +68,8 @@ class AgentGraphStateStore:
                     missing_evidence=[str(v) for v in item.get("missing_evidence", []) or []],
                     coverage_report=dict(item.get("coverage_report") or {}),
                     replan_hint=dict(item.get("replan_hint") or {}),
+                    diagnosis=dict(item.get("diagnosis") or {}),
+                    strategy_guidance=dict(item.get("strategy_guidance") or {}),
                 )
             )
         return state

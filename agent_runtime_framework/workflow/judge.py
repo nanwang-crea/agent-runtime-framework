@@ -10,6 +10,15 @@ def _needs_verification(goal_envelope: GoalEnvelope) -> bool:
     return "verify" in intent or "change" in intent or bool(goal_envelope.constraints.get("requires_verification"))
 
 
+def _verification_status(payload: dict[str, Any], goal_envelope: GoalEnvelope) -> str:
+    verification = payload.get("verification")
+    if isinstance(verification, dict) and bool(verification.get("success", verification.get("status") == "passed")):
+        return "satisfied"
+    if _needs_verification(goal_envelope):
+        return "missing"
+    return "not_required"
+
+
 def judge_progress(
     goal_envelope: GoalEnvelope,
     aggregated_payload: dict[str, Any] | None,
@@ -23,6 +32,15 @@ def judge_progress(
             reason="Iteration budget exhausted",
             missing_evidence=["additional iterations"],
             coverage_report={"iterations_used": graph_state.current_iteration, "max_iterations": max_iterations},
+            diagnosis={
+                "primary_gap": "iteration_budget_exhausted",
+                "goal_status": "budget_exhausted",
+                "verification_status": _verification_status(payload, goal_envelope),
+            },
+            strategy_guidance={
+                "recommended_strategy": "summarize_current_progress",
+                "focus": ["report_remaining_gaps"],
+            },
         )
 
     open_questions = [str(item) for item in payload.get("open_questions", []) or [] if str(item).strip()]
@@ -32,6 +50,15 @@ def judge_progress(
             reason=open_questions[-1],
             missing_evidence=open_questions,
             coverage_report={"open_questions": open_questions},
+            diagnosis={
+                "primary_gap": "clarification_missing",
+                "goal_status": "ambiguous",
+                "verification_status": _verification_status(payload, goal_envelope),
+            },
+            strategy_guidance={
+                "recommended_strategy": "request_target_clarification",
+                "focus": ["clarify_ambiguous_target"],
+            },
         )
 
     evidence_count = len(payload.get("evidence_items", []) or []) + len(payload.get("chunks", []) or []) + len(payload.get("facts", []) or [])
@@ -46,6 +73,17 @@ def judge_progress(
                 "recommended_next_actions": ["content_search", "chunked_file_read"],
                 "must_include": ["grounded evidence"],
                 "must_avoid": ["final_response"],
+            },
+            diagnosis={
+                "primary_gap": "grounded_evidence_missing",
+                "goal_status": "insufficient_coverage",
+                "evidence_status": "missing",
+                "verification_status": _verification_status(payload, goal_envelope),
+            },
+            strategy_guidance={
+                "recommended_strategy": "gather_grounded_evidence",
+                "focus": ["content_search", "chunked_file_read"],
+                "avoid": ["final_response"],
             },
         )
 
@@ -65,10 +103,31 @@ def judge_progress(
                 "must_include": ["verification"],
                 "must_avoid": ["repeat_same_write_without_verification"],
             },
+            diagnosis={
+                "primary_gap": "verification_missing",
+                "goal_status": "partially_complete",
+                "evidence_status": "collected",
+                "verification_status": "missing",
+            },
+            strategy_guidance={
+                "recommended_strategy": "verify_existing_changes",
+                "focus": ["verification"],
+                "avoid": ["repeat_same_write_without_verification"],
+            },
         )
 
     return JudgeDecision(
         status="accepted",
         reason="Collected sufficient evidence",
         coverage_report={"evidence_count": evidence_count, "verification": verification or {}},
+        diagnosis={
+            "primary_gap": "resolved",
+            "goal_status": "satisfied",
+            "evidence_status": "sufficient",
+            "verification_status": _verification_status(payload, goal_envelope),
+        },
+        strategy_guidance={
+            "recommended_strategy": "finalize_response",
+            "focus": ["final_response"],
+        },
     )

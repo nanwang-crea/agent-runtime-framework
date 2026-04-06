@@ -161,6 +161,10 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.judge_history == []
     assert state.appended_node_ids == []
     assert state.execution_summary == {}
+    assert state.iteration_summaries == []
+    assert state.failure_history == []
+    assert state.open_issues == []
+    assert state.attempted_strategies == []
 
     payload = serialize_agent_graph_state(state)
 
@@ -168,6 +172,10 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert payload["goal_envelope"]["goal"] == "总结 agent graph runtime 设计"
     assert payload["aggregated_payload"]["summaries"] == []
     assert payload["execution_summary"] == {}
+    assert payload["iteration_summaries"] == []
+    assert payload["failure_history"] == []
+    assert payload["open_issues"] == []
+    assert payload["attempted_strategies"] == []
 
     serialized_subgraph = subgraph.as_payload()
     serialized_judge = judge.as_payload()
@@ -175,6 +183,8 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert serialized_subgraph["nodes"][0]["reason"] == "Need primary evidence"
     assert serialized_judge["status"] == "needs_more_evidence"
     assert serialized_judge["replan_hint"] == {}
+    assert serialized_judge["diagnosis"] == {}
+    assert serialized_judge["strategy_guidance"] == {}
 
 
 def test_workflow_prompt_helpers_are_owned_by_workflow_layer():

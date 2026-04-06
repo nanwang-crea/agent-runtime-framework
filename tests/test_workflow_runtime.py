@@ -778,6 +778,9 @@ def test_judge_progress_requests_more_evidence_when_payload_is_thin():
     decision = judge_progress(goal, normalize_aggregated_workflow_payload({}), new_agent_graph_state(run_id="judge-2", goal_envelope=goal))
 
     assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "grounded_evidence_missing"
+    assert decision.diagnosis["goal_status"] == "insufficient_coverage"
+    assert decision.strategy_guidance["recommended_strategy"] == "gather_grounded_evidence"
 
 
 def test_judge_progress_requests_verification_when_evidence_exists_but_verification_is_missing():
@@ -796,6 +799,8 @@ def test_judge_progress_requests_verification_when_evidence_exists_but_verificat
     )
 
     assert decision.status == "needs_verification"
+    assert decision.diagnosis["primary_gap"] == "verification_missing"
+    assert decision.strategy_guidance["recommended_strategy"] == "verify_existing_changes"
     assert decision.replan_hint["next_node_type"] == "verification"
     assert decision.replan_hint["verification_type"] == "post_change"
     assert "verification" in decision.replan_hint["must_include"]
@@ -915,6 +920,45 @@ def test_agent_graph_runtime_records_execution_summary_for_replanning():
 
     assert result.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
     assert result.metadata["agent_graph_state"]["execution_summary"]["last_judge_status"] == "accepted"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["open_issues"] == []
+    assert result.metadata["agent_graph_state"]["attempted_strategies"] == ["create file"]
+    assert result.metadata["agent_graph_state"]["iteration_summaries"][0]["planner_summary"] == "create file"
+
+
+def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="总结 docs",
+        normalized_goal="总结 docs",
+        intent="compound",
+        success_criteria=["collect evidence"],
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="collect baseline evidence",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {
+            "status": "needs_more_evidence",
+            "reason": "still missing grounded evidence",
+            "missing_evidence": ["grounded evidence"],
+            "diagnosis": {"primary_gap": "grounded_evidence_missing", "goal_status": "insufficient_coverage"},
+            "strategy_guidance": {"recommended_strategy": "gather_grounded_evidence"},
+        },
+        max_iterations=1,
+    )
+
+    result = runtime.run(goal, context={})
+
+    assert result.metadata["agent_graph_state"]["open_issues"] == ["grounded evidence"]
+    assert result.metadata["agent_graph_state"]["failure_history"][0]["status"] == "needs_more_evidence"
+    assert result.metadata["agent_graph_state"]["failure_history"][0]["diagnosis"]["primary_gap"] == "grounded_evidence_missing"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure"]["status"] == "needs_more_evidence"
 
 
 def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesis():
