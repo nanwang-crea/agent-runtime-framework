@@ -17,6 +17,7 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "chunked_file_read",
     "tool_call",
     "clarification",
+    "verification",
     "verification_step",
     "aggregate_results",
     "evidence_synthesis",
@@ -29,6 +30,107 @@ _PATH_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./-]+")
 _REWRITE_PATTERN = re.compile(r"重写.*?为(?P<content>.+?)(?:[，,。]|并|$)")
 _APPEND_PATTERN = re.compile(r"追加(?P<content>.+?)(?:[，,。]|并|$)")
 _REPLACE_PATTERN = re.compile(r"把.*?中的\s*(?P<search>.+?)\s*替换(?:成|为)\s*(?P<replace>.+?)(?:[，,。]|并|$)")
+_CREATE_WITH_CONTENT_PATTERN = re.compile(r"(?:加入|写入|填入)(?P<content>.+?)(?:[，,。]|$)")
+
+
+def _latest_judge_decision(graph_state: AgentGraphState) -> Any | None:
+    if not graph_state.judge_history:
+        return None
+    return graph_state.judge_history[-1]
+
+
+def _judge_feedback_payload(decision: Any | None) -> dict[str, Any] | None:
+    if decision is None:
+        return None
+    if hasattr(decision, "as_payload"):
+        return dict(decision.as_payload())
+    if isinstance(decision, dict):
+        return dict(decision)
+    return None
+
+
+def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
+    if graph_state.execution_summary:
+        return dict(graph_state.execution_summary)
+    payload = graph_state.aggregated_payload
+    return {
+        "current_iteration": graph_state.current_iteration,
+        "appended_node_ids": list(graph_state.appended_node_ids),
+        "summaries": list(payload.get("summaries", []) or []),
+        "evidence_count": len(payload.get("evidence_items", []) or []) + len(payload.get("chunks", []) or []) + len(payload.get("facts", []) or []),
+        "verification": dict(payload.get("verification") or {}) if isinstance(payload.get("verification"), dict) else None,
+    }
+
+
+def _node_from_replan_hint(decision: Any | None) -> PlannedNode | None:
+    payload = _judge_feedback_payload(decision)
+    if not payload:
+        return None
+    hint = dict(payload.get("replan_hint") or {})
+    next_node_type = str(hint.get("next_node_type") or "").strip()
+    if next_node_type == "verification_step":
+        next_node_type = "verification"
+
+    if next_node_type == "verification":
+        verification_type = str(hint.get("verification_type") or "completion").strip() or "completion"
+        return PlannedNode(
+            node_id="verification",
+            node_type="verification",
+            reason=str(payload.get("reason") or "Need verification before the workflow can complete."),
+            inputs={"verification_type": verification_type},
+            success_criteria=["produce an explicit verification result"],
+        )
+
+    if next_node_type == "clarification":
+        prompt = str(hint.get("prompt") or payload.get("reason") or "Please clarify the request.").strip()
+        return PlannedNode(
+            node_id="clarification",
+            node_type="clarification",
+            reason=str(payload.get("reason") or "Need clarification before replanning."),
+            inputs={"prompt": prompt},
+            success_criteria=["collect the missing information"],
+        )
+    return None
+
+
+def _nodes_from_replan_hint(decision: Any | None) -> list[PlannedNode]:
+    payload = _judge_feedback_payload(decision)
+    if not payload:
+        return []
+    hint = dict(payload.get("replan_hint") or {})
+    recommended = [str(item).strip() for item in hint.get("recommended_next_actions", []) or hint.get("must_include", []) or [] if str(item).strip()]
+    target_path = str(hint.get("target_path") or "").strip()
+    content_brief = str(hint.get("content_brief") or "").strip()
+    nodes: list[PlannedNode] = []
+    previous_id: str | None = None
+    for action in recommended:
+        normalized = "verification" if action == "verification_step" else action
+        if normalized == "write_file":
+            node = PlannedNode(
+                node_id="write_file",
+                node_type="write_file",
+                reason=str(payload.get("reason") or "Need to write the missing content."),
+                inputs={"path": target_path, "content": content_brief},
+                depends_on=([previous_id] if previous_id else []),
+                success_criteria=["write the missing content to the target file"],
+            )
+        elif normalized == "verification":
+            node = PlannedNode(
+                node_id="verification",
+                node_type="verification",
+                reason=str(payload.get("reason") or "Need explicit verification before completion."),
+                inputs={"verification_type": str(hint.get("verification_type") or "completion")},
+                depends_on=([previous_id] if previous_id else []),
+                success_criteria=["produce an explicit verification result"],
+            )
+        else:
+            continue
+        nodes.append(node)
+        previous_id = node.node_id
+    if nodes:
+        return nodes
+    single = _node_from_replan_hint(decision)
+    return [single] if single is not None else []
 
 
 def _extract_goal_paths(goal: str) -> list[str]:
@@ -93,6 +195,39 @@ def _build_filesystem_node(goal_envelope: GoalEnvelope) -> PlannedNode | None:
         )
 
     return None
+
+
+def _build_create_with_content_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
+    if goal_envelope.intent != "change_and_verify":
+        return []
+    goal = goal_envelope.goal
+    target_hint = goal_envelope.target_hints[0] if goal_envelope.target_hints else ""
+    if not target_hint:
+        return []
+    is_create = any(token in goal for token in ("创建", "新建", "新增", "建立", "create"))
+    content_match = _CREATE_WITH_CONTENT_PATTERN.search(goal)
+    if not is_create or content_match is None:
+        return []
+    content = content_match.group("content").strip()
+    if not content:
+        return []
+    return [
+        PlannedNode(
+            node_id="create_path",
+            node_type="create_path",
+            reason="Need to create the requested workspace path before writing content",
+            inputs={"path": target_hint, "kind": "file"},
+            success_criteria=["create the requested file"],
+        ),
+        PlannedNode(
+            node_id="write_file",
+            node_type="write_file",
+            reason="Need to write the requested content into the new file",
+            inputs={"path": target_hint, "content": content},
+            depends_on=["create_path"],
+            success_criteria=["write the requested content into the target file"],
+        ),
+    ]
 
 
 def _build_text_edit_node(goal_envelope: GoalEnvelope) -> PlannedNode | None:
@@ -173,8 +308,14 @@ def _planner_mode(goal_envelope: GoalEnvelope, context: Any | None) -> str:
     return mode
 
 
-def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
+def _candidate_nodes(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> list[PlannedNode]:
     target_hint = goal_envelope.target_hints[0] if goal_envelope.target_hints else ""
+    feedback_nodes = _nodes_from_replan_hint(_latest_judge_decision(graph_state))
+    if feedback_nodes:
+        return feedback_nodes
+    create_with_content = _build_create_with_content_nodes(goal_envelope)
+    if create_with_content:
+        return create_with_content
     filesystem_node = _build_filesystem_node(goal_envelope)
     if filesystem_node is not None:
         return [filesystem_node]
@@ -318,6 +459,8 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
                             "target_hints": goal_envelope.target_hints,
                             "success_criteria": goal_envelope.success_criteria,
                             "iteration": graph_state.current_iteration + 1,
+                            "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
+                            "execution_summary": _execution_summary(graph_state),
                         },
                         ensure_ascii=False,
                     ),
@@ -388,7 +531,7 @@ def _plan_next_subgraph_with_model(goal_envelope: GoalEnvelope, graph_state: Age
 def _plan_next_subgraph_deterministically(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> PlannedSubgraph:
     max_dynamic_nodes = _max_dynamic_nodes(goal_envelope, context)
     iteration = graph_state.current_iteration + 1
-    base_nodes = _candidate_nodes(goal_envelope)[:max_dynamic_nodes]
+    base_nodes = _candidate_nodes(goal_envelope, graph_state)[:max_dynamic_nodes]
     node_id_map = {node.node_id: f"{node.node_id}_{iteration}" for node in base_nodes}
     nodes = [
         PlannedNode(
@@ -418,8 +561,6 @@ def _plan_next_subgraph_deterministically(goal_envelope: GoalEnvelope, graph_sta
 
 
 def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> PlannedSubgraph:
-    if _planner_mode(goal_envelope, context) == "deterministic":
-        return _plan_next_subgraph_deterministically(goal_envelope, graph_state, context)
     try:
         return _plan_next_subgraph_with_model(goal_envelope, graph_state, context)
     except Exception as exc:

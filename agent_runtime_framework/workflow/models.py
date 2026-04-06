@@ -259,6 +259,7 @@ class AgentGraphState:
     goal_envelope: GoalEnvelope
     current_iteration: int = 0
     aggregated_payload: AggregatedWorkflowPayload = field(default_factory=normalize_aggregated_workflow_payload)
+    execution_summary: dict[str, Any] = field(default_factory=dict)
     planned_subgraphs: list[PlannedSubgraph] = field(default_factory=list)
     judge_history: list[JudgeDecision] = field(default_factory=list)
     appended_node_ids: list[str] = field(default_factory=list)
@@ -277,6 +278,7 @@ def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
         "goal_envelope": state.goal_envelope.as_payload(),
         "current_iteration": state.current_iteration,
         "aggregated_payload": normalize_aggregated_workflow_payload(state.aggregated_payload),
+        "execution_summary": dict(state.execution_summary),
         "planned_subgraphs": [subgraph.as_payload() for subgraph in state.planned_subgraphs],
         "judge_history": [decision.as_payload() for decision in state.judge_history],
         "appended_node_ids": list(state.appended_node_ids),

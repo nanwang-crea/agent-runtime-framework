@@ -658,6 +658,42 @@ def test_verification_executor_returns_passed_only_for_explicit_success_events()
     }
 
 
+def test_verification_executor_actively_verifies_post_write_nodes(tmp_path):
+    target = tmp_path / "tet.txt"
+    target.write_text("鳄鱼通常生活在河流、湖泊和沼泽地带。", encoding="utf-8")
+    run = WorkflowRun(
+        goal="创建 tet.txt 并写入鳄鱼习性",
+        shared_state={
+            "node_results": {
+                "write_file": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "tool_name": "edit_workspace_text",
+                        "arguments": {"path": "tet.txt", "content": "鳄鱼通常生活在河流、湖泊和沼泽地带。"},
+                        "tool_output": {
+                            "path": "tet.txt",
+                            "changed_paths": ["tet.txt"],
+                            "summary": "Edited tet.txt",
+                        },
+                        "summary": "Edited tet.txt",
+                    },
+                    references=["tet.txt"],
+                )
+            }
+        },
+    )
+
+    result = VerificationExecutor().execute(
+        WorkflowNode(node_id="verification", node_type="verification", metadata={"verification_type": "post_write"}),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["verification"]["status"] == "passed"
+    assert result.output["verification_by_type"]["post_write"]["status"] == "passed"
+
+
 def test_workspace_discovery_executor_emits_candidates_facts_and_evidence(tmp_path):
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
     package = tmp_path / "agent_runtime_framework"
@@ -1292,6 +1328,9 @@ def test_judge_progress_requests_verification_when_evidence_exists_but_verificat
     )
 
     assert decision.status == "needs_verification"
+    assert decision.replan_hint["next_node_type"] == "verification"
+    assert decision.replan_hint["verification_type"] == "post_change"
+    assert "verification" in decision.replan_hint["must_include"]
 
 
 def test_judge_progress_requests_clarification_when_ambiguity_is_present():
@@ -1416,6 +1455,70 @@ def test_agent_graph_runtime_survives_model_planner_failure(monkeypatch):
     assert result.metadata["agent_graph_state"]
     assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["planner"] == "deterministic_v2"
     assert result.metadata["agent_graph_state"]["planned_subgraphs"][0]["metadata"]["fallback_reason"] == "planner offline"
+
+
+def test_agent_graph_runtime_replans_from_judge_feedback_to_verification():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=["write file"],
+    )
+
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(
+            executors={
+                "create_path": NoopExecutor(),
+                "write_file": NoopExecutor(),
+                "verification": NoopExecutor(),
+                "final_response": FinalResponseExecutor(),
+            }
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: (
+            {"status": "needs_verification", "reason": "verification missing", "missing_evidence": ["verification"], "replan_hint": {"next_node_type": "verification", "verification_type": "post_write"}}
+            if state.current_iteration == 1
+            else {"status": "accepted", "reason": "done"}
+        ),
+        max_iterations=3,
+    )
+
+    result = runtime.run(goal, context={"services": {"planner_mode": "deterministic"}})
+
+    assert result.status == RUN_STATUS_COMPLETED
+    planned = result.metadata["agent_graph_state"]["planned_subgraphs"]
+    assert [node["node_type"] for node in planned[0]["nodes"][:2]] == ["create_path", "write_file"]
+    assert planned[1]["nodes"][0]["node_type"] == "verification"
+
+
+def test_agent_graph_runtime_records_execution_summary_for_replanning():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=["write file"],
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"create_path": NoopExecutor(), "final_response": FinalResponseExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="create file",
+            nodes=[PlannedNode(node_id="create_path_1", node_type="create_path", reason="create", success_criteria=["create file"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal, context={})
+
+    assert result.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
+    assert result.metadata["agent_graph_state"]["execution_summary"]["last_judge_status"] == "accepted"
 
 
 def test_agent_graph_state_store_restores_workflow_run_with_resume_token():

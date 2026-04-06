@@ -160,18 +160,21 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.planned_subgraphs == []
     assert state.judge_history == []
     assert state.appended_node_ids == []
+    assert state.execution_summary == {}
 
     payload = serialize_agent_graph_state(state)
 
     assert payload["run_id"] == "run-1"
     assert payload["goal_envelope"]["goal"] == "总结 agent graph runtime 设计"
     assert payload["aggregated_payload"]["summaries"] == []
+    assert payload["execution_summary"] == {}
 
     serialized_subgraph = subgraph.as_payload()
     serialized_judge = judge.as_payload()
 
     assert serialized_subgraph["nodes"][0]["reason"] == "Need primary evidence"
     assert serialized_judge["status"] == "needs_more_evidence"
+    assert serialized_judge["replan_hint"] == {}
 
 
 def test_workflow_prompt_helpers_are_owned_by_workflow_layer():

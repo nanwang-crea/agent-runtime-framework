@@ -41,6 +41,12 @@ def judge_progress(
             reason="Not enough evidence collected yet",
             missing_evidence=["grounded evidence"],
             coverage_report={"evidence_count": evidence_count},
+            replan_hint={
+                "goal_gap": "grounded_evidence_missing",
+                "recommended_next_actions": ["content_search", "chunked_file_read"],
+                "must_include": ["grounded evidence"],
+                "must_avoid": ["final_response"],
+            },
         )
 
     verification = payload.get("verification")
@@ -51,6 +57,14 @@ def judge_progress(
             reason="Verification coverage is missing",
             missing_evidence=["verification"],
             coverage_report={"verification": verification or {"status": "missing"}},
+            replan_hint={
+                "goal_gap": "verification_missing",
+                "next_node_type": "verification",
+                "verification_type": "post_change",
+                "recommended_next_actions": ["verification"],
+                "must_include": ["verification"],
+                "must_avoid": ["repeat_same_write_without_verification"],
+            },
         )
 
     return JudgeDecision(

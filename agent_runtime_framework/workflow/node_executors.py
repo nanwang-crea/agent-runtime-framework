@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.models import ChatRequest, chat_once, resolve_model_runtime
 
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
-from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context
+from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context, get_workspace_root
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike, WorkflowNodeExecutor
@@ -86,6 +87,8 @@ class VerificationExecutor:
                 if reference not in references:
                     references.append(reference)
         if not verification_events:
+            verification_events = self._active_verification_events(node_results, context, verification_type=str(node.metadata.get("verification_type") or "").strip())
+        if not verification_events:
             summary = str(node.metadata.get("verification_summary") or "No explicit verification result was produced.")
             verification = {"status": "not_run", "success": False, "summary": summary}
             return NodeResult(
@@ -128,6 +131,70 @@ class VerificationExecutor:
             references=references,
             error=None,
         )
+
+    def _active_verification_events(
+        self,
+        node_results: dict[str, NodeResult],
+        context: RuntimeContextLike,
+        *,
+        verification_type: str,
+    ) -> list[dict[str, Any]]:
+        workspace_root = Path(get_workspace_root(context, ".")).expanduser()
+        active_types = {verification_type, "post_write", "post_change", "completion", ""}
+        events: list[dict[str, Any]] = []
+        for result in node_results.values():
+            output = result.output if isinstance(getattr(result, "output", None), dict) else {}
+            tool_name = str(output.get("tool_name") or "").strip()
+            if tool_name not in {
+                "create_workspace_path",
+                "move_workspace_path",
+                "delete_workspace_path",
+                "apply_text_patch",
+                "edit_workspace_text",
+                "append_workspace_text",
+            }:
+                continue
+            arguments = dict(output.get("arguments") or {})
+            requested_path = str(arguments.get("path") or "").strip()
+            destination_path = str(arguments.get("destination_path") or "").strip()
+            expected_content = str(arguments.get("content") or arguments.get("replace_text") or "").strip()
+            search_text = str(arguments.get("search_text") or "").strip()
+            if tool_name == "move_workspace_path" and destination_path:
+                target = workspace_root / destination_path
+                success = target.exists()
+                summary = f"Verified moved path {destination_path}" if success else f"Moved path missing: {destination_path}"
+                events.append({"status": "passed" if success else "failed", "success": success, "summary": summary, "verification_type": verification_type or "post_change"})
+                continue
+            if not requested_path:
+                continue
+            target = workspace_root / requested_path
+            if tool_name == "delete_workspace_path":
+                success = not target.exists()
+                summary = f"Verified deleted path {requested_path}" if success else f"Deleted path still exists: {requested_path}"
+                events.append({"status": "passed" if success else "failed", "success": success, "summary": summary, "verification_type": verification_type or "post_change"})
+                continue
+            if tool_name == "create_workspace_path":
+                success = target.exists()
+                if success and expected_content:
+                    success = target.read_text(encoding="utf-8") == expected_content
+                summary = f"Verified created path {requested_path}" if success else f"Created path verification failed: {requested_path}"
+                events.append({"status": "passed" if success else "failed", "success": success, "summary": summary, "verification_type": verification_type or "post_write"})
+                continue
+            if tool_name in {"edit_workspace_text", "append_workspace_text", "apply_text_patch"}:
+                if not target.exists():
+                    events.append({"status": "failed", "success": False, "summary": f"Target file missing: {requested_path}", "verification_type": verification_type or "post_write"})
+                    continue
+                content = target.read_text(encoding="utf-8")
+                success = True
+                if tool_name == "edit_workspace_text" and expected_content:
+                    success = content == expected_content
+                elif tool_name == "append_workspace_text" and expected_content:
+                    success = content.endswith(expected_content)
+                elif tool_name == "apply_text_patch":
+                    success = (not search_text or search_text not in content) and (not expected_content or expected_content in content)
+                summary = f"Verified file update {requested_path}" if success else f"File update verification failed: {requested_path}"
+                events.append({"status": "passed" if success else "failed", "success": success, "summary": summary, "verification_type": verification_type or "post_write"})
+        return [event for event in events if event.get("verification_type") in active_types]
 
 
 @dataclass(slots=True)

@@ -74,6 +74,7 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
         "current_iteration": 1,
         "goal_envelope": {"goal": "demo", "normalized_goal": "demo", "intent": "file_read", "target_hints": [], "memory_snapshot": {}, "workspace_snapshot": {}, "policy_context": {}, "constraints": {}, "success_criteria": []},
         "aggregated_payload": {"summaries": ["s"], "facts": [], "evidence_items": [], "chunks": [], "artifacts": {}, "open_questions": [], "verification": None, "verification_events": []},
+        "execution_summary": {"current_iteration": 1, "summaries": ["s"]},
         "planned_subgraphs": [{"iteration": 1, "planner_summary": "p", "nodes": [], "edges": [], "metadata": {}}],
         "judge_history": [{"status": "accepted", "reason": "ok", "missing_evidence": [], "coverage_report": {}, "replan_hint": {}}],
         "appended_node_ids": ["content_search_1"],
@@ -83,4 +84,5 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
     restored = store.load(run.run_id)
 
     assert restored.metadata["agent_graph_state"]["current_iteration"] == 1
+    assert restored.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
     assert restored.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"

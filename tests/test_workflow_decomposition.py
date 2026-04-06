@@ -11,7 +11,7 @@ from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
-from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec, new_agent_graph_state
+from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision, SubTaskSpec, new_agent_graph_state
 from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
 
 
@@ -325,3 +325,148 @@ def test_plan_next_subgraph_keeps_native_file_read_without_compatibility_fallbac
     assert subgraph.nodes[0].node_type == "content_search"
     assert "compatibility_mode" not in subgraph.nodes[0].inputs
     assert "fallback_reason" not in subgraph.nodes[0].inputs
+
+
+def test_plan_next_subgraph_replans_to_verification_from_latest_judge_feedback():
+    envelope = SimpleNamespace(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-feedback-1", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="needs_verification",
+            reason="Verification coverage is missing",
+            missing_evidence=["verification"],
+            replan_hint={"next_node_type": "verification", "verification_type": "post_write"},
+        )
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    assert subgraph.nodes[0].node_type == "verification"
+    assert subgraph.nodes[0].inputs["verification_type"] == "post_write"
+
+
+def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
+    instance = _FakeInstance(
+        client_content='{"planner_summary":"verification follow-up","nodes":[{"node_id":"verify","node_type":"verification","reason":"judge requested verification","inputs":{"verification_type":"post_write"},"depends_on":[],"success_criteria":["produce verification result"]}]}'
+    )
+    workspace = LocalFileResourceRepository(["."])
+    app_context = ApplicationContext(
+        resource_repository=workspace,
+        session_memory=InMemorySessionMemory(),
+        policy=SimpleDesktopPolicy(),
+        tools=ToolRegistry(),
+        config={"default_directory": "."},
+    )
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(instance)
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("planner", instance_id="fake", model_name="planner-model")
+    app_context.services["model_registry"] = registry
+    app_context.services["model_router"] = router
+    context = SimpleNamespace(application_context=app_context, services={})
+
+    envelope = SimpleNamespace(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=["write file"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-feedback-2", goal_envelope=envelope)
+    state.aggregated_payload["summaries"] = ["created tet.txt"]
+    state.aggregated_payload["evidence_items"] = [{"kind": "path", "path": "tet.txt"}]
+    state.judge_history.append(
+        JudgeDecision(
+            status="needs_verification",
+            reason="Verification coverage is missing",
+            missing_evidence=["verification"],
+            replan_hint={"next_node_type": "verification", "verification_type": "post_write"},
+        )
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert subgraph.nodes[0].node_type == "verification"
+    client = instance.last_client
+    assert client is not None
+    request_body = client.completions.last_kwargs["messages"][1]["content"]
+    assert '"latest_judge_decision"' in request_body
+    assert '"needs_verification"' in request_body
+    assert '"execution_summary"' in request_body
+
+
+def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_mode():
+    context = _workflow_context(
+        '{"planner_summary":"model plan","nodes":[{"node_id":"verify","node_type":"verification","reason":"model picked verification","inputs":{"verification_type":"post_write"},"depends_on":[],"success_criteria":["produce verification result"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-model-first", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=SimpleNamespace(application_context=context.application_context, services={"planner_mode": "deterministic"}))
+
+    assert subgraph.metadata["strategy"] == "model"
+    assert subgraph.nodes[0].node_type == "verification"
+
+
+def test_plan_next_subgraph_emits_create_and_write_chain_for_create_with_content_request():
+    envelope = SimpleNamespace(
+        goal="在根目录下创建一个 tet.txt 文件，在里面加入鳄鱼的相关习性",
+        normalized_goal="在根目录下创建一个 tet.txt 文件，在里面加入鳄鱼的相关习性",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-create-write", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes[:2]] == ["create_path", "write_file"]
+    assert subgraph.nodes[1].depends_on == [subgraph.nodes[0].node_id]
+    assert subgraph.nodes[1].inputs["path"] == "tet.txt"
+
+
+def test_plan_next_subgraph_replans_to_write_and_verification_when_judge_reports_missing_content():
+    envelope = SimpleNamespace(
+        goal="在根目录下创建一个 tet.txt 文件，在里面加入鳄鱼的相关习性",
+        normalized_goal="在根目录下创建一个 tet.txt 文件，在里面加入鳄鱼的相关习性",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-create-write-2", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="needs_more_evidence",
+            reason="The file exists, but the requested content was not written or verified yet.",
+            missing_evidence=["write_content", "verification"],
+            replan_hint={
+                "goal_gap": "content_missing",
+                "recommended_next_actions": ["write_file", "verification"],
+                "must_include": ["write_file", "verification"],
+                "target_path": "tet.txt",
+                "content_brief": "鳄鱼的相关习性",
+            },
+        )
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    assert [node.node_type for node in subgraph.nodes[:2]] == ["write_file", "verification"]

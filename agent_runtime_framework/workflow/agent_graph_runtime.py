@@ -148,6 +148,15 @@ class AgentGraphRuntime:
         else:
             last_decision = self._judge(goal_envelope, state)
         state.judge_history.append(last_decision)
+        state.execution_summary = {
+            "current_iteration": state.current_iteration,
+            "last_judge_status": last_decision.status,
+            "last_judge_reason": last_decision.reason,
+            "missing_evidence": list(last_decision.missing_evidence),
+            "appended_node_ids": list(state.appended_node_ids),
+            "summaries": list(state.aggregated_payload.get("summaries", []) or []),
+            "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
+        }
         run.shared_state["judge_decision"] = last_decision.as_payload()
         judge_node_id = f"judge_{state.current_iteration}"
         judge_result = NodeResult(status="completed", output=last_decision.as_payload())
