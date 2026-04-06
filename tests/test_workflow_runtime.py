@@ -1521,6 +1521,82 @@ def test_agent_graph_runtime_records_execution_summary_for_replanning():
     assert result.metadata["agent_graph_state"]["execution_summary"]["last_judge_status"] == "accepted"
 
 
+def test_agent_graph_runtime_carries_prior_node_results_into_verification_iteration(tmp_path):
+    from agent_runtime_framework.agents.workspace_backend import WorkspaceContext, build_default_workspace_tools
+    from agent_runtime_framework.applications import ApplicationContext
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.filesystem_node_executors import CreatePathExecutor, WriteFileExecutor
+
+    app_context = ApplicationContext(resource_repository=LocalFileResourceRepository([tmp_path]), config={"default_directory": str(tmp_path)})
+    for tool in build_default_workspace_tools():
+        app_context.tools.register(tool)
+    workspace_context = WorkspaceContext(application_context=app_context)
+
+    goal = GoalEnvelope(
+        goal="创建 tet.txt 并写入鳄鱼习性",
+        normalized_goal="创建 tet.txt 并写入鳄鱼习性",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=["write file"],
+    )
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(
+            executors={
+                "create_path": CreatePathExecutor(),
+                "write_file": WriteFileExecutor(),
+                "verification": VerificationExecutor(),
+                "final_response": FinalResponseExecutor(),
+            },
+            context={"application_context": app_context, "workspace_context": workspace_context, "workspace_root": str(tmp_path)},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: (
+            {"status": "needs_verification", "reason": "verification missing", "missing_evidence": ["verification"], "replan_hint": {"next_node_type": "verification", "verification_type": "post_change"}}
+            if state.current_iteration == 1
+            else {"status": "accepted", "reason": "done"}
+        ),
+        max_iterations=3,
+    )
+
+    result = runtime.run(goal, context={"application_context": app_context, "workspace_context": workspace_context, "workspace_root": str(tmp_path)})
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.shared_state["aggregated_result"].output["verification"]["status"] == "passed"
+
+
+def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesis():
+    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+
+    manager = SystemNodeManager()
+    run = WorkflowRun(
+        goal="创建 tet.txt 并写入内容",
+        graph=WorkflowGraph(nodes=[WorkflowNode(node_id="verification_2", node_type="verification")], edges=[]),
+        shared_state={"evidence_synthesis": {"summary": "", "verification": None, "verification_events": []}},
+    )
+    executed = WorkflowRun(goal="创建 tet.txt 并写入内容")
+    executed.shared_state["node_results"] = {
+        "verification_2": NodeResult(
+            status=NODE_STATUS_COMPLETED,
+            output={
+                "summary": "verified",
+                "verification": {"status": "passed", "success": True, "summary": "verified"},
+                "verification_events": [{"status": "passed", "success": True, "summary": "verified", "verification_type": "post_write"}],
+            },
+        )
+    }
+    subgraph = PlannedSubgraph(
+        iteration=2,
+        planner_summary="verify",
+        nodes=[PlannedNode(node_id="verification_2", node_type="verification", reason="verify", success_criteria=["verify"])],
+        edges=[],
+        metadata={},
+    )
+
+    aggregated_result, evidence_result = manager.materialize_iteration_system_nodes(run, executed, subgraph)
+
+    assert aggregated_result.output["verification"]["status"] == "passed"
+    assert evidence_result.output["verification"]["status"] == "passed"
+
+
 def test_agent_graph_state_store_restores_workflow_run_with_resume_token():
     from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
 

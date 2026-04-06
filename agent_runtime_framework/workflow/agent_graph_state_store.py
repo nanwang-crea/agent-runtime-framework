@@ -76,6 +76,12 @@ class AgentGraphStateStore:
             metadata=dict(graph_payload.get("metadata", {})),
         )
         shared_state = dict(payload.get("shared_state", {}))
+        raw_node_results = dict(shared_state.get("node_results", {}) or {})
+        if raw_node_results:
+            shared_state["node_results"] = {
+                str(node_id): (NodeResult(**result_payload) if isinstance(result_payload, dict) else result_payload)
+                for node_id, result_payload in raw_node_results.items()
+            }
         resume_token_payload = shared_state.get("resume_token")
         if isinstance(resume_token_payload, dict):
             from agent_runtime_framework.workflow.approval import WorkflowResumeToken

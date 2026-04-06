@@ -16,15 +16,19 @@ CHANGE_PATTERN = re.compile(r"(修改|编辑|更新|重构|重写|创建|新增|
 DESTRUCTIVE_PATTERN = re.compile(r"(删除|移除|清空|卸载)", re.IGNORECASE)
 VERIFY_PATTERN = re.compile(r"(验证|校验|检查|确认|测试)", re.IGNORECASE)
 READ_PATTERN = re.compile(r"(读取|查看|看看|总结|概括|解释|讲解|分析)", re.IGNORECASE)
+PATH_FRAGMENT_PATTERN = re.compile(
+    r"([A-Za-z0-9_\-./]+\.[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]+/[A-Za-z0-9_\-./]+)"
+)
 
 
 def _extract_target_hint(user_input: str) -> str:
-    for part in user_input.replace("\n", " ").split():
-        candidate = part.strip('`"，。,. ')
+    for match in PATH_FRAGMENT_PATTERN.finditer(user_input):
+        candidate = match.group(1).strip('`"，。,. ')
         if not candidate:
             continue
-        if "/" in candidate or "." in candidate:
-            return candidate
+        if candidate.endswith(".") or candidate.startswith("."):
+            continue
+        return candidate
     return ""
 
 

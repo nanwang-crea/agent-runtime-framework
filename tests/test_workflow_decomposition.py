@@ -213,6 +213,20 @@ def test_analyze_goal_treats_modify_and_verify_request_as_change_intent():
     assert goal.metadata["requires_verification"] is True
 
 
+def test_analyze_goal_extracts_filename_from_chinese_create_request_without_spaces():
+    goal = analyze_goal("帮我在根目录下创建一个tet.txt文件，在里面加入鳄鱼的相关习性")
+
+    assert goal.primary_intent == "change_and_verify"
+    assert goal.target_paths == ["tet.txt"]
+    assert goal.target_paths != ["帮我在根目录下创建一个tet.txt文件，在里面加入鳄鱼的相关习性"]
+
+
+def test_analyze_goal_fallback_target_extraction_stays_conservative_for_chinese_sentence():
+    goal = analyze_goal("请帮我处理一个复杂需求，不要把整句话当成路径，比如这里提到了tet.txt文件")
+
+    assert goal.target_paths == ["tet.txt"]
+
+
 def test_plan_next_subgraph_emits_apply_patch_for_targeted_replace_request():
     goal = GoalSpec(original_goal="把 README.md 中的 hello 替换成 hi，并验证结果", primary_intent="change_and_verify")
     envelope = SimpleNamespace(

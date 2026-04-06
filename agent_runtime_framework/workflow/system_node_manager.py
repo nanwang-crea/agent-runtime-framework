@@ -88,7 +88,10 @@ class SystemNodeManager:
         evidence_payload = dict(getattr(aggregated_result, "output", {}) or {})
         synthesized_payload = dict(run.shared_state.get("evidence_synthesis") or {})
         if synthesized_payload:
-            evidence_payload.update(synthesized_payload)
+            for key, value in synthesized_payload.items():
+                if key in {"verification", "verification_events"} and evidence_payload.get(key):
+                    continue
+                evidence_payload[key] = value
         evidence_payload.setdefault("summary", "")
         evidence_result = NodeResult(
             status="completed",

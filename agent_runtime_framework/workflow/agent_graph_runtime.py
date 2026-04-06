@@ -92,6 +92,7 @@ class AgentGraphRuntime:
             graph = append_subgraph(graph, subgraph, after_node_id=anchor_node_id)
             run.graph = graph
             subrun = WorkflowRun(goal=goal_envelope.goal, graph=self._execution_graph(subgraph))
+            subrun.shared_state["node_results"] = dict(run.shared_state.get("node_results") or {})
             executed = self.workflow_runtime.run(subrun)
             outcome = self._consume_subrun(goal_envelope, state, run, executed, subgraph)
             if outcome is not None:
