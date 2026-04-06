@@ -108,7 +108,7 @@ class AgentGraphRuntime:
     def _consume_subrun(self, goal_envelope: GoalEnvelope, state: AgentGraphState, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph) -> WorkflowRun | None:
         run.node_states.update(dict(executed.node_states or {}))
         run.shared_state.setdefault("node_results", {}).update(dict(executed.shared_state.get("node_results") or {}))
-        for key in ("evidence_synthesis", "clarification_request", "workspace_subtask_results", "resolved_target"):
+        for key in ("evidence_synthesis", "clarification_request", "resolved_target"):
             if key in executed.shared_state:
                 run.shared_state[key] = executed.shared_state[key]
         if executed.status == RUN_STATUS_FAILED:

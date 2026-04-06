@@ -46,22 +46,6 @@ def test_aggregation_executor_collects_completed_node_results():
     assert set(result.references) == {"src/", "README.md"}
 
 
-def test_final_response_contains_merged_summaries_and_references():
-    run = WorkflowRun(goal="demo")
-    run.shared_state["aggregated_result"] = NodeResult(
-        status=NODE_STATUS_COMPLETED,
-        output={"summaries": ["overview", "readme"]},
-        references=["src/", "README.md"],
-    )
-    node = WorkflowNode(node_id="final_response", node_type="final_response")
-
-    result = FinalResponseExecutor().execute(node, run, {})
-
-    assert "overview" in result.output["final_response"]
-    assert "readme" in result.output["final_response"]
-    assert result.references == ["src/", "README.md"]
-
-
 def test_final_response_prefers_model_formatted_answer_when_available():
     run = WorkflowRun(goal="总结仓库情况")
     run.shared_state["aggregated_result"] = NodeResult(

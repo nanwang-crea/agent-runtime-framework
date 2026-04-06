@@ -58,12 +58,12 @@ def test_workflow_runtime_resumes_only_waiting_approval_node():
 def test_workflow_runtime_resumes_explicit_approval_gate_graph():
     graph = WorkflowGraph(
         nodes=[
-            WorkflowNode(node_id="workspace_subtask", node_type="noop"),
-            WorkflowNode(node_id="approval_gate", node_type="noop", dependencies=["workspace_subtask"], requires_approval=True),
+            WorkflowNode(node_id="change_step", node_type="noop"),
+            WorkflowNode(node_id="approval_gate", node_type="noop", dependencies=["change_step"], requires_approval=True),
             WorkflowNode(node_id="final_response", node_type="noop", dependencies=["approval_gate"]),
         ],
         edges=[
-            WorkflowEdge(source="workspace_subtask", target="approval_gate"),
+            WorkflowEdge(source="change_step", target="approval_gate"),
             WorkflowEdge(source="approval_gate", target="final_response"),
         ],
     )

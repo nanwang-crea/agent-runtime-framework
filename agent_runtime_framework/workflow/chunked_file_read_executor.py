@@ -99,7 +99,9 @@ class ChunkedFileReadExecutor:
             ),
             payload={"goal": run.goal, "path": str(path), "chunks": chunks},
             max_tokens=220,
-        ) or self._fallback_summary(path, chunks)
+        )
+        if summary is None:
+            raise RuntimeError("composer model unavailable for chunked_file_read summary")
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -159,8 +161,3 @@ class ChunkedFileReadExecutor:
             return str(path.relative_to(workspace_root))
         except ValueError:
             return str(path)
-
-    def _fallback_summary(self, path: Path, chunks: list[dict[str, Any]]) -> str:
-        if not chunks:
-            return f"No readable content found in {path.name}."
-        return f"Read {path.name} lines {chunks[0]['start_line']}-{chunks[0]['end_line']}."

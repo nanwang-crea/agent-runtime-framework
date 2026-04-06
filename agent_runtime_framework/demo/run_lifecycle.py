@@ -9,7 +9,6 @@ from agent_runtime_framework.demo.pending_run_registry import PendingRunRegistry
 PayloadFn = Callable[[Any], dict[str, Any]]
 RecordRunFn = Callable[[dict[str, Any], str], None]
 RememberRunFn = Callable[[str, Any], None]
-CaptureHistoryFn = Callable[[Any], None]
 LoadRunFn = Callable[[str], Any]
 ChatFn = Callable[[str], dict[str, Any]]
 MemoryPayloadFn = Callable[[], dict[str, Any]]
@@ -25,7 +24,6 @@ class RunLifecycleService:
     workflow_payload: PayloadFn
     record_run: RecordRunFn
     remember_workflow_run: RememberRunFn
-    capture_workflow_codex_history: CaptureHistoryFn
     load_workflow_run: LoadRunFn
     chat: ChatFn
     session_payload: SessionPayloadFn
@@ -44,7 +42,6 @@ class RunLifecycleService:
         resumed = runtime.resume(run, resume_token=resume_token, approved=approved)
         action = f"approval:{'approve' if approved else 'reject'}"
         self.remember_workflow_run(action, resumed)
-        self.capture_workflow_codex_history(resumed)
         payload = self.workflow_payload(resumed)
         self.record_run(payload, action)
         return payload

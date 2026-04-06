@@ -113,7 +113,9 @@ class ContentSearchExecutor:
             ),
             payload={"goal": run.goal, "terms": terms, "matches": matches[:10]},
             max_tokens=180,
-        ) or self._fallback_summary(matches)
+        )
+        if summary is None:
+            raise RuntimeError("composer model unavailable for content_search summary")
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -206,8 +208,3 @@ class ContentSearchExecutor:
             return str(path.relative_to(workspace_root))
         except ValueError:
             return str(path)
-
-    def _fallback_summary(self, matches: list[dict[str, Any]]) -> str:
-        if not matches:
-            return "No matching files found."
-        return "；".join(item["relative_path"] for item in matches[:5])

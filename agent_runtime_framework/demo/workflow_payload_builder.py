@@ -99,8 +99,6 @@ class WorkflowPayloadBuilder:
         candidates: list[dict[str, Any]] = []
         chunks: list[dict[str, Any]] = []
         verification = dict(synthesized.get("verification") or aggregated_output.get("verification") or {})
-        if not verification:
-            verification = {"status": "not_run", "success": False, "summary": "No explicit verification result was produced."}
         for result in node_results.values():
             output = result.output if isinstance(getattr(result, "output", None), dict) else {}
             candidates.extend(item for item in output.get("evidence_items", []) if isinstance(item, dict))

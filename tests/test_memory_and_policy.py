@@ -222,30 +222,6 @@ def test_workspace_planner_uses_new_intent_terms(tmp_path: Path):
     assert compound_intent.task_kind == "compound_read"
 
 
-def test_goal_intake_builds_goal_envelope_with_memory_workspace_and_constraints(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("hello", encoding="utf-8")
-    app_context = ApplicationContext(
-        resource_repository=LocalFileResourceRepository([workspace]),
-        config={"default_directory": str(workspace), "max_dynamic_nodes": 3},
-    )
-    focus = ResourceRef.for_path(workspace / "README.md")
-    app_context.session_memory.remember_focus([focus], summary="read README")
-
-    goal = build_goal_envelope(
-        "读取 README.md",
-        application_context=app_context,
-        workspace_root=workspace,
-    )
-
-    assert goal.goal == "读取 README.md"
-    assert goal.intent == "file_read"
-    assert goal.target_hints == ["README.md"]
-    assert goal.memory_snapshot["last_summary"] == "read README"
-    assert goal.workspace_snapshot["workspace_root"] == str(workspace)
-    assert "README.md" in goal.workspace_snapshot["top_level_entries"]
-    assert goal.constraints["max_dynamic_nodes"] == 3
 
 
 def test_context_assembly_collects_application_workspace_memory_and_policy(tmp_path: Path):

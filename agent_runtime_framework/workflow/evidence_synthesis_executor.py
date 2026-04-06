@@ -31,26 +31,27 @@ class EvidenceSynthesisExecutor:
             summaries.append(single_summary)
         references = list(getattr(aggregated, "references", []) or [])
         include_path = bool(run.shared_state.get("resolved_target")) or _looks_like_explicit_target(run.goal)
-        if chunks:
-            summary = self._chunk_fallback(chunks, evidence_items, include_path=include_path)
-        else:
-            summary = synthesize_text(
-                context,
-                role="composer",
-                system_prompt=(
-                    "You synthesize workflow evidence for an end user. "
-                    "Summarize the most important findings clearly and concisely in the user's language."
-                ),
-                payload={
-                    "goal": run.goal,
-                    "facts": facts,
-                    "evidence_items": evidence_items,
-                    "summaries": summaries,
-                    "references": references,
-                    "open_questions": open_questions,
-                },
-                max_tokens=260,
-            ) or self._fallback_summary(facts, summaries, evidence_items)
+        summary = synthesize_text(
+            context,
+            role="composer",
+            system_prompt=(
+                "You synthesize workflow evidence for an end user. "
+                "Summarize the most important findings clearly and concisely in the user's language."
+            ),
+            payload={
+                "goal": run.goal,
+                "facts": facts,
+                "evidence_items": evidence_items,
+                "chunks": chunks,
+                "summaries": summaries,
+                "references": references,
+                "open_questions": open_questions,
+                "include_path": include_path,
+            },
+            max_tokens=260,
+        )
+        if summary is None:
+            raise RuntimeError("composer model unavailable for evidence_synthesis summary")
         output = {
             "summary": summary,
             "facts": facts,
@@ -65,30 +66,6 @@ class EvidenceSynthesisExecutor:
             output=output,
             references=references,
         )
-
-    def _fallback_summary(self, facts: list[dict[str, Any]], summaries: list[str], evidence_items: list[dict[str, Any]]) -> str:
-        if summaries:
-            return "\n".join(str(item) for item in summaries if item)
-        if facts:
-            return "；".join(f"{fact.get('kind')}: {fact.get('path')}" for fact in facts[:6])
-        if evidence_items:
-            return "；".join(str(item.get("summary") or item.get("path") or "") for item in evidence_items[:6])
-        return "No synthesized evidence available."
-
-    def _chunk_fallback(self, chunks: list[dict[str, Any]], evidence_items: list[dict[str, Any]], *, include_path: bool) -> str:
-        texts = [str(chunk.get("text") or "").rstrip() for chunk in chunks if str(chunk.get("text") or "").strip()]
-        if not texts:
-            return "No synthesized evidence available."
-        path_hint = ""
-        if include_path and evidence_items and isinstance(evidence_items[0], dict):
-            path_hint = str(evidence_items[0].get("relative_path") or evidence_items[0].get("path") or "").strip()
-        if include_path and not path_hint and chunks and isinstance(chunks[0], dict):
-            path_hint = str(chunks[0].get("relative_path") or chunks[0].get("path") or "").strip()
-        if len(texts) == 1:
-            return f"{path_hint}\n{texts[0]}".strip() if path_hint else texts[0]
-        body = f"{texts[0]}\n...[已截断]\n{texts[-1]}"
-        return f"{path_hint}\n{body}".strip() if path_hint else body
-
 
 def _looks_like_explicit_target(text: str) -> bool:
     value = str(text or "").strip()

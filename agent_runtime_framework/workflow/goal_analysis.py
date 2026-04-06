@@ -35,24 +35,12 @@ def _extract_target_hint(user_input: str) -> str:
 def analyze_goal(user_input: str, context: Any | None = None) -> GoalSpec:
     text = user_input.strip()
     if not text:
-        return GoalSpec(original_goal=text, primary_intent="generic", metadata={"strategy": "deterministic"})
+        raise RuntimeError("planner model unavailable for goal analysis: empty input")
 
-    llm_goal, fallback_reason = _analyze_goal_with_model(text, context=context)
+    llm_goal, error_reason = _analyze_goal_with_model(text, context=context)
     if llm_goal is not None:
-        llm_goal.metadata = {
-            **dict(llm_goal.metadata or {}),
-            "strategy": "model",
-            "model_role": "planner",
-        }
         return llm_goal
-    keyword_goal = _analyze_goal_with_keywords(text)
-    keyword_goal.metadata = {
-        **dict(keyword_goal.metadata or {}),
-        "strategy": ("fallback" if fallback_reason else "deterministic"),
-        "model_role": "planner",
-        **({"fallback_reason": fallback_reason} if fallback_reason else {}),
-    }
-    return keyword_goal
+    raise RuntimeError(f"planner model unavailable for goal analysis: {error_reason or 'unknown error'}")
 
 
 def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[GoalSpec | None, str | None]:
@@ -102,93 +90,3 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[G
         target_paths=target_paths,
         metadata=dict(parsed.get("metadata") or {}),
     ), None
-
-
-def _analyze_goal_with_keywords(user_input: str) -> GoalSpec:
-    wants_readme = bool(README_PATTERN.search(user_input))
-    wants_overview = any(token in user_input for token in ["列一下", "文件夹", "目录", "仓库结构", "当前文件夹", "仓库"])
-    wants_summary = any(token in user_input for token in ["总结", "概括", "讲什么", "介绍"])
-    target_hint = _extract_target_hint(user_input)
-    wants_change = bool(CHANGE_PATTERN.search(user_input))
-    wants_destructive_change = bool(DESTRUCTIVE_PATTERN.search(user_input))
-    wants_verification = bool(VERIFY_PATTERN.search(user_input))
-    wants_read = bool(READ_PATTERN.search(user_input))
-
-    if wants_destructive_change:
-        metadata = {"requires_approval": True}
-        if wants_verification:
-            metadata["requires_verification"] = True
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="dangerous_change",
-            requires_file_read=bool(target_hint),
-            requires_final_synthesis=True,
-            target_paths=([target_hint] if target_hint else []),
-            metadata=metadata,
-        )
-
-    if wants_change:
-        metadata = {"requires_verification": wants_verification or True}
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="change_and_verify",
-            requires_file_read=bool(target_hint),
-            requires_final_synthesis=True,
-            target_paths=([target_hint] if target_hint else (["README.md"] if wants_readme else [])),
-            metadata=metadata,
-        )
-
-    if wants_overview and wants_readme:
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="compound",
-            requires_repository_overview=True,
-            requires_file_read=True,
-            requires_final_synthesis=True,
-            target_paths=["README.md"],
-        )
-
-    if wants_readme:
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="file_read",
-            requires_file_read=True,
-            target_paths=["README.md"],
-            metadata={"wants_summary": wants_summary},
-        )
-
-    if target_hint:
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="file_read",
-            requires_file_read=True,
-            target_paths=[target_hint],
-            metadata={"target_hint": target_hint, "wants_summary": wants_summary},
-        )
-
-    if target_hint and wants_read:
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="file_read",
-            requires_file_read=True,
-            target_paths=[target_hint],
-            metadata={"wants_summary": wants_summary or ("总结" in user_input), "target_hint": target_hint},
-        )
-
-    if wants_overview:
-        return GoalSpec(
-            original_goal=user_input,
-            primary_intent="repository_overview",
-            requires_repository_overview=True,
-        )
-
-    wants_target_explainer = (not target_hint) and any(
-        token in user_input for token in ["讲解", "解释", "模块", "文件", "看看", "查看", "读取", "总结"]
-    )
-    if wants_target_explainer:
-        metadata = {"target_query": user_input}
-        if target_hint:
-            metadata["target_hint"] = target_hint
-        return GoalSpec(original_goal=user_input, primary_intent="target_explainer", metadata=metadata)
-
-    return GoalSpec(original_goal=user_input, primary_intent="generic")

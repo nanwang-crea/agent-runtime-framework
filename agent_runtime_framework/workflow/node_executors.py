@@ -89,12 +89,13 @@ class VerificationExecutor:
         if not verification_events:
             verification_events = self._active_verification_events(node_results, context, verification_type=str(node.metadata.get("verification_type") or "").strip())
         if not verification_events:
-            summary = str(node.metadata.get("verification_summary") or "No explicit verification result was produced.")
-            verification = {"status": "not_run", "success": False, "summary": summary}
+            summary = str(node.metadata.get("verification_summary") or "No verification result was produced.")
+            verification = {"status": "failed", "success": False, "summary": summary}
             return NodeResult(
-                status=NODE_STATUS_COMPLETED,
+                status=NODE_STATUS_FAILED,
                 output={"summary": summary, "verification": verification, "verification_events": []},
                 references=references,
+                error=summary,
             )
         verification_by_type: dict[str, dict[str, Any]] = {}
         for event in verification_events:
@@ -105,9 +106,6 @@ class VerificationExecutor:
             event_status = str(event.get("status") or ("passed" if event_success else "failed"))
             if event_status == "failed" or event_success is False and event_status != "not_run":
                 bucket["status"] = "failed"
-                bucket["success"] = False
-            elif event_status == "not_run" and bucket["status"] != "failed":
-                bucket["status"] = "not_run"
                 bucket["success"] = False
             bucket["summary"] = str(event.get("summary") or bucket.get("summary") or "").strip()
 
@@ -258,7 +256,9 @@ class FinalResponseExecutor:
                     "references": list(aggregated.references if aggregated else []),
                 },
                 max_tokens=320,
-            ) or self._fallback_final_response(summaries, facts, evidence_items, verification)
+            ) or ""
+        if not final_response:
+            raise RuntimeError("final_response_model_unavailable: no model-generated final response available")
         result = NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={"final_response": final_response},
@@ -266,24 +266,3 @@ class FinalResponseExecutor:
         )
         run.final_output = final_response
         return result
-
-    def _fallback_final_response(
-        self,
-        summaries: list[Any],
-        facts: list[Any],
-        evidence_items: list[Any],
-        verification: Any,
-    ) -> str:
-        if summaries:
-            return "\n".join(str(item) for item in summaries if item)
-        parts: list[str] = []
-        if facts:
-            parts.append("；".join(f"{item.get('kind')}: {item.get('path')}" for item in facts if isinstance(item, dict)))
-        if evidence_items:
-            parts.append("；".join(str(item.get("summary") or item.get("path") or "") for item in evidence_items if isinstance(item, dict)))
-        if isinstance(verification, dict) and verification:
-            status = str(verification.get("status") or "")
-            summary = str(verification.get("summary") or "").strip()
-            if status or summary:
-                parts.append(f"verification={status}: {summary}".strip())
-        return "\n".join(part for part in parts if part)

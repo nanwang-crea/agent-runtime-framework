@@ -26,7 +26,7 @@ from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.demo.model_center import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
-from agent_runtime_framework.workflow import RootGraphRuntime, analyze_goal
+from agent_runtime_framework.workflow import RootGraphRuntime
 from agent_runtime_framework.workflow.routing_runtime import RuntimePayload, RootGraphPayload
 from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext, build_runtime_context
 from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
@@ -55,7 +55,7 @@ class DemoAssistantApp:
     def chat(self, message: str) -> dict[str, Any]:
         try:
             self._ensure_session()
-            payload = self._run_workflow(message)
+            payload = DemoRuntimeFactory(self).build_routing_runtime().run(message)
             return payload
         except Exception as exc:
             return self._error_payload(exc)
@@ -67,26 +67,6 @@ class DemoAssistantApp:
             session = AssistantSession(session_id=str(uuid4()))
             self.context.session = session
         return session
-
-    def _analyze_workflow_goal(self, message: str, context: WorkflowRuntimeContext) -> Any:
-        return analyze_goal(message, context=context)
-
-    def _mark_route_decision(self, route: str, source: str) -> None:
-        self._last_route_decision = {"route": route, "source": source}
-
-    def _has_pending_clarification(self) -> bool:
-        return self._pending_workflow_clarification is not None
-
-    def _get_pending_workflow_clarification(self) -> dict[str, Any] | None:
-        return self._pending_workflow_clarification
-
-    def _set_pending_workflow_clarification(self, payload: dict[str, Any] | None) -> None:
-        self._pending_workflow_clarification = payload
-
-    def _run_workflow(self, message: str) -> RuntimePayload:
-        runtime = DemoRuntimeFactory(self).build_routing_runtime()
-        return runtime.run(message)
-
 
     def stream_chat(self, message: str, *, chunk_size: int = 24):
         yield {"type": "start", "message": message}
@@ -111,13 +91,6 @@ class DemoAssistantApp:
             return
         yield {"type": "delta", "delta": final_answer}
         yield {"type": "final", "payload": payload}
-
-    def approve(self, token_id: str, approved: bool) -> dict[str, Any]:
-        return DemoRuntimeFactory(self).build_run_lifecycle().approve(token_id, approved)
-
-    def replay(self, run_id: str) -> dict[str, Any]:
-        return DemoRuntimeFactory(self).build_run_lifecycle().replay(run_id)
-
 
     def context_payload(self) -> dict[str, Any]:
         return {
@@ -190,15 +163,6 @@ class DemoAssistantApp:
             "last_summary": snapshot.last_summary,
             "active_capability": self.context.session.focused_capability if self.context.session is not None else None,
         }
-
-    def model_center_payload(self) -> dict[str, Any]:
-        return self.model_center.payload()
-
-    def update_model_center(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.model_center.update(payload)
-
-    def run_model_center_action(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.model_center.run_action(action, payload)
 
     def plan_history_payload(self) -> list[dict[str, Any]]:
         return [

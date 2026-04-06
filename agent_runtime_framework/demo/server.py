@@ -46,6 +46,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             try:
+                run_lifecycle = DemoRuntimeFactory(app).build_run_lifecycle()
                 if self.path == "/api/session":
                     self._send_json(
                         {
@@ -59,7 +60,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 if self.path == "/api/model-center":
-                    self._send_json(app.model_center_payload())
+                    self._send_json(app.model_center.payload())
                     return
                 asset_path = _resolve_frontend_path(self.path)
                 if asset_path is not None:
@@ -71,6 +72,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             try:
+                run_lifecycle = DemoRuntimeFactory(app).build_run_lifecycle()
                 if self.path == "/api/chat":
                     payload = self._read_json()
                     message = str(payload.get("message") or "").strip()
@@ -96,7 +98,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     if not token_id:
                         self._send_json({"error": "token_id is required"}, status=HTTPStatus.BAD_REQUEST)
                         return
-                    self._send_json(app.approve(token_id, approved))
+                    self._send_json(run_lifecycle.approve(token_id, approved))
                     return
                 if self.path == "/api/replay":
                     payload = self._read_json()
@@ -104,11 +106,11 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                     if not run_id:
                         self._send_json({"error": "run_id is required"}, status=HTTPStatus.BAD_REQUEST)
                         return
-                    self._send_json(app.replay(run_id))
+                    self._send_json(run_lifecycle.replay(run_id))
                     return
                 if self.path == "/api/model-center":
                     payload = self._read_json()
-                    self._send_json(app.update_model_center(payload))
+                    self._send_json(app.model_center.update(payload))
                     return
                 if self.path == "/api/context":
                     payload = self._read_json()
@@ -122,9 +124,7 @@ def _build_handler(app: DemoAssistantApp) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/model-center/actions":
                     payload = self._read_json()
                     action = str(payload.get("action") or "").strip()
-                    # instance = str(payload.get("instance") or "").strip() or None   
-                    # self._send_json(app.run_model_center_action(action, instance=instance))
-                    self._send_json(app.run_model_center_action(action, payload))
+                    self._send_json(app.model_center.run_action(action, payload))
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
             except Exception as exc:

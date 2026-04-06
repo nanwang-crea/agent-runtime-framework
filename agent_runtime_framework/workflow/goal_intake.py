@@ -42,8 +42,6 @@ def _constraints(application_context: Any | None) -> dict[str, Any]:
     constraints: dict[str, Any] = {}
     if "max_dynamic_nodes" in config:
         constraints["max_dynamic_nodes"] = config["max_dynamic_nodes"]
-    if "planner_mode" in config:
-        constraints["planner_mode"] = config["planner_mode"]
     if "default_directory" in config:
         constraints["default_directory"] = config["default_directory"]
     return constraints

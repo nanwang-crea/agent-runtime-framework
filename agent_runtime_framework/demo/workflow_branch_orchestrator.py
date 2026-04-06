@@ -12,7 +12,6 @@ BuildRuntimeFn = Callable[[], Any]
 PayloadFn = Callable[[Any], dict[str, Any]]
 MemoryFn = Callable[[], dict[str, Any]]
 RememberFn = Callable[[str, Any], None]
-CaptureFn = Callable[[Any], None]
 
 
 @dataclass(slots=True)
@@ -21,7 +20,6 @@ class WorkflowBranchOrchestrator:
     workflow_payload: PayloadFn
     memory_payload: MemoryFn
     remember_workflow_run: RememberFn
-    capture_workflow_codex_history: CaptureFn
     application_context: Any
     workspace_root: Any
     context: Any
@@ -41,5 +39,4 @@ class WorkflowBranchOrchestrator:
         run.shared_state["session_memory_snapshot"] = self.application_context.session_memory.snapshot()
         run = runtime.run(run)
         self.remember_workflow_run(message, run)
-        self.capture_workflow_codex_history(run)
         return self.workflow_payload(run)

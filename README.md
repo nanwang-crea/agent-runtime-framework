@@ -76,7 +76,7 @@
 | final response | graph-native | graph-native |
 | graph-native write execution | explicit workflow nodes | explicit graph nodes + fine-grained tools |
 | clarification handling | partially loop-backed | graph-native first |
-| tool-call orchestration fallback | loop-backed compatibility | explicit graph nodes first |
+| tool-call orchestration | explicit graph nodes | explicit graph nodes first |
 | filesystem writes | graph-native | `create_path` / `move_path` / `delete_path` |
 | text edits | graph-native | `apply_patch` / `write_file` / `append_text` |
 
@@ -86,7 +86,7 @@
 
 - workflow domain models
 - sequential scheduler + runtime loop
-- deterministic goal analysis / decomposition
+- model-driven goal analysis / decomposition
 - native `workspace_overview` / `file_read` executors
 - graph-native write-node taxonomy for filesystem and text-edit execution
 - aggregation / final response executors
@@ -148,7 +148,7 @@ Then open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 You still need a valid API key (or other credentials) for that provider in the model center before remote calls succeed.
 
-The demo combines general conversation routing with the workflow runtime, compatibility Codex execution, workspace tools, layered memory, and model-center-based per-role model routing.
+The demo combines general conversation routing with the workflow runtime, Codex execution, workspace tools, layered memory, and model-center-based per-role model routing.
 
 **HTTP surface (current):**
 
@@ -201,4 +201,4 @@ The target architecture is organized as:
 - Runtime Execution Layer
 - Supporting Capability Layer
 
-`RootGraphRuntime` is the route layer. `AgentGraphRuntime` is the orchestration layer. `GraphExecutionRuntime` is the execution kernel. `WorkspaceBackend` is a compatibility backend executor. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.
+`RootGraphRuntime` is the route layer. `AgentGraphRuntime` is the orchestration layer. `GraphExecutionRuntime` is the execution kernel. `WorkspaceBackend` provides tool-backed workspace execution. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.

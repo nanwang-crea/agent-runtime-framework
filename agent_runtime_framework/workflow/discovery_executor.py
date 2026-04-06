@@ -86,7 +86,9 @@ class WorkspaceDiscoveryExecutor:
                 "tree_sample": tree_sample[:20],
             },
             max_tokens=220,
-        ) or self._fallback_summary(facts, tree_sample)
+        )
+        if summary is None:
+            raise RuntimeError("composer model unavailable for workspace_discovery summary")
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -117,11 +119,3 @@ class WorkspaceDiscoveryExecutor:
     def _score_path(self, path: Path, goal_terms: set[str]) -> float:
         haystack = str(path).lower()
         return float(sum(1 for term in goal_terms if term in haystack))
-
-    def _fallback_summary(self, facts: list[dict[str, Any]], tree_sample: list[str]) -> str:
-        parts: list[str] = []
-        if facts:
-            parts.append("；".join(f"{item['kind']}: {item['path']}" for item in facts[:4]))
-        if tree_sample:
-            parts.append("，".join(tree_sample[:8]))
-        return "；".join(part for part in parts if part)

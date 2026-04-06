@@ -15,15 +15,6 @@ class WorkflowRunObserver:
     workspace: Path
     task_history: list[Any]
 
-    def capture_workflow_codex_history(self, run: Any) -> None:
-        results = run.shared_state.get("workspace_subtask_results", {})
-        for result in results.values():
-            task = getattr(result, "task", None)
-            if task is None:
-                continue
-            self.task_history.insert(0, task)
-        self.task_history[:] = self.task_history[:40]
-
     def remember_workflow_run(self, message: str, run: Any) -> None:
         session = self.context.session
         if session is not None:

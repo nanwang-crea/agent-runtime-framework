@@ -14,7 +14,6 @@ class AgentBranchOrchestrator:
     workflow_store: Any
     workflow_payload: Callable[[Any], dict[str, Any]]
     remember_workflow_run: Callable[[str, Any], None]
-    capture_workflow_codex_history: Callable[[Any], None]
     application_context: Any
     workspace: Any
     context: Any
@@ -42,7 +41,6 @@ class AgentBranchOrchestrator:
             run.metadata["root_graph"] = dict(root_graph)
         self.workflow_store.save(run)
         self.remember_workflow_run(message, run)
-        self.capture_workflow_codex_history(run)
         payload = self.workflow_payload(run)
         self.record_run(payload, message)
         payload["run_history"] = self.run_history_payload()
