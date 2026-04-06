@@ -6,6 +6,7 @@ from typing import Any
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec
+from agent_runtime_framework.workflow.planner_prompts import build_decomposition_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
 
 
@@ -49,10 +50,7 @@ def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[
                 messages=[
                     ChatMessage(
                         role="system",
-                        content=(
-                            "You decompose a workflow goal into ordered subtasks. "
-                            "Return JSON only with key subtasks. Each subtask needs: task_id, task_profile, target, depends_on, metadata."
-                        ),
+                        content=build_decomposition_system_prompt(),
                     ),
                     ChatMessage(role="user", content=json.dumps({
                         "original_goal": goal.original_goal,

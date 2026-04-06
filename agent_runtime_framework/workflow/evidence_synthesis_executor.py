@@ -30,8 +30,9 @@ class EvidenceSynthesisExecutor:
         if single_summary and single_summary not in summaries:
             summaries.append(single_summary)
         references = list(getattr(aggregated, "references", []) or [])
+        include_path = bool(run.shared_state.get("resolved_target")) or _looks_like_explicit_target(run.goal)
         if chunks:
-            summary = self._chunk_fallback(chunks, evidence_items, include_path=bool(run.shared_state.get("resolved_target")))
+            summary = self._chunk_fallback(chunks, evidence_items, include_path=include_path)
         else:
             summary = synthesize_text(
                 context,
@@ -81,7 +82,14 @@ class EvidenceSynthesisExecutor:
         path_hint = ""
         if include_path and evidence_items and isinstance(evidence_items[0], dict):
             path_hint = str(evidence_items[0].get("relative_path") or evidence_items[0].get("path") or "").strip()
+        if include_path and not path_hint and chunks and isinstance(chunks[0], dict):
+            path_hint = str(chunks[0].get("relative_path") or chunks[0].get("path") or "").strip()
         if len(texts) == 1:
             return f"{path_hint}\n{texts[0]}".strip() if path_hint else texts[0]
         body = f"{texts[0]}\n...[已截断]\n{texts[-1]}"
         return f"{path_hint}\n{body}".strip() if path_hint else body
+
+
+def _looks_like_explicit_target(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value) and " " not in value and "\n" not in value and ("/" in value or "." in value)

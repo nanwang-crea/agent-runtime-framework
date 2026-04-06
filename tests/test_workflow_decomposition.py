@@ -195,6 +195,24 @@ def test_decompose_goal_uses_model_without_feature_flag():
     ]
 
 
+def test_analyze_goal_treats_explicit_file_path_summary_as_file_read():
+    goal = analyze_goal("请读取 src/service.py 并总结这个文件在做什么")
+
+    assert goal.primary_intent == "file_read"
+    assert goal.requires_file_read is True
+    assert goal.target_paths == ["src/service.py"]
+
+
+def test_analyze_goal_treats_modify_and_verify_request_as_change_intent():
+    goal = analyze_goal("修改 README.md 并验证结果")
+
+    assert goal.primary_intent == "change_and_verify"
+    assert goal.requires_file_read is True
+    assert goal.requires_final_synthesis is True
+    assert goal.target_paths == ["README.md"]
+    assert goal.metadata["requires_verification"] is True
+
+
 def test_plan_next_subgraph_marks_workspace_subtask_as_compatibility_fallback():
     goal = GoalSpec(original_goal="编辑 README.md 并提交", primary_intent="change_and_verify")
     envelope = SimpleNamespace(

@@ -46,9 +46,22 @@ class RootGraphRuntime:
         return self._with_root_trace(payload, goal, route)
 
     def _analyze_goal(self, message: str) -> GoalSpec:
-        route_source = "clarification" if self.has_pending_clarification() else "goal_analysis"
+        has_pending = self.has_pending_clarification()
+        route_source = "clarification" if has_pending else "goal_analysis"
         self.mark_route_decision("workflow", route_source)
-        return self.analyze_goal_fn(message, self.context)
+        goal = self.analyze_goal_fn(message, self.context)
+        if has_pending and _looks_like_explicit_target(message):
+            metadata = {**dict(goal.metadata or {}), "target_hint": message.strip(), "target_query": message.strip()}
+            goal = GoalSpec(
+                original_goal=goal.original_goal,
+                primary_intent="target_explainer",
+                requires_repository_overview=goal.requires_repository_overview,
+                requires_file_read=True,
+                requires_final_synthesis=True,
+                target_paths=[message.strip()],
+                metadata=metadata,
+            )
+        return goal
 
     def _is_conversation_goal(self, goal: GoalSpec) -> bool:
         if self.has_pending_clarification():
@@ -85,3 +98,8 @@ class RootGraphRuntime:
             "intent": str(goal.primary_intent or ""),
         }
         return updated
+
+
+def _looks_like_explicit_target(message: str) -> bool:
+    text = str(message or "").strip()
+    return bool(text) and ("/" in text or "." in text)

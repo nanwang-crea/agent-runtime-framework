@@ -6,6 +6,7 @@ from typing import Any
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
 
 ALLOWED_DYNAMIC_NODE_TYPES = {
@@ -110,6 +111,13 @@ def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
                 depends_on=["content_search"],
                 success_criteria=["read the resolved target"],
             ),
+            PlannedNode(
+                node_id="evidence_synthesis",
+                node_type="evidence_synthesis",
+                reason="Need to synthesize the resolved target evidence into an explanation",
+                depends_on=["chunked_file_read"],
+                success_criteria=["produce a grounded target explanation"],
+            ),
         ]
     if goal_envelope.intent in {"compound", "compound_read"}:
         return [
@@ -176,11 +184,7 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
             messages=[
                 ChatMessage(
                     role="system",
-                    content=(
-                        "You plan a workflow subgraph. Return JSON only with keys: "
-                        "planner_summary, nodes. Each node must contain node_id, node_type, "
-                        "reason, inputs, depends_on, success_criteria."
-                    ),
+                    content=build_subgraph_planner_system_prompt(),
                 ),
                 ChatMessage(
                     role="user",

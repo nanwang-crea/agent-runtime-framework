@@ -216,3 +216,24 @@ def test_workflow_prompt_helpers_extract_json_and_build_context_block():
     assert "Workspace: /tmp/demo" in block
     assert "User input: 读取 README.md" in block
     assert "Available tools: read_file, list_dir" in block
+
+
+def test_workflow_planner_prompt_helpers_expose_intent_and_node_taxonomy():
+    from agent_runtime_framework.workflow.planner_prompts import (
+        build_decomposition_system_prompt,
+        build_goal_analysis_system_prompt,
+        build_subgraph_planner_system_prompt,
+    )
+
+    goal_prompt = build_goal_analysis_system_prompt()
+    decomposition_prompt = build_decomposition_system_prompt()
+    subgraph_prompt = build_subgraph_planner_system_prompt()
+
+    assert "primary_intent" in goal_prompt
+    assert "file_read" in goal_prompt
+    assert "target_explainer" in goal_prompt
+    assert "change_and_verify" in goal_prompt
+    assert "task_profile" in decomposition_prompt
+    assert "workspace_discovery" in decomposition_prompt
+    assert "workspace_subtask" in subgraph_prompt
+    assert "target_resolution" in subgraph_prompt
