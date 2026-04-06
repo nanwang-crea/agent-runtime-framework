@@ -17,13 +17,23 @@
 - 为高风险节点提供审批 / 恢复
 - 为长链执行保留运行状态与恢复点
 
+当前工作流默认依赖模型完成：
+
+- goal analysis
+- decomposition
+- subgraph planning
+- evidence synthesis
+- final response generation
+
+如果这些阶段没有可用模型，运行时会直接报错，而不是再使用本地 fallback 规则或兜底摘要。
+
 ## Current Architecture
 
 当前生效的运行时可以分成五层：
 
 - `agent_runtime_framework.workflow`
   - `GoalSpec / SubTaskSpec / WorkflowRun / WorkflowNode / NodeState`
-  - goal analysis / decomposition / graph builder
+  - model-driven goal analysis / decomposition / graph planning
   - scheduler / runtime / approval / persistence
   - aggregation / final response / native node executors
 
@@ -86,7 +96,7 @@
 
 - workflow domain models
 - sequential scheduler + runtime loop
-- model-driven goal analysis / decomposition
+- model-required goal analysis / decomposition / graph planning
 - native `workspace_overview` / `file_read` executors
 - graph-native write-node taxonomy for filesystem and text-edit execution
 - aggregation / final response executors
@@ -104,6 +114,7 @@
 - `tool_call` / `clarification` 的首批显式 workflow executors
 - `target_resolution` / `file_inspection` / `response_synthesis` 的第二批 graph-native executors
 - graph-native write nodes for filesystem and text-edit stages
+- model-required synthesis and final response generation
 
 当前仍作为后续增强项保留的部分主要是：
 

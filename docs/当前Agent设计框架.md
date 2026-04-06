@@ -30,7 +30,7 @@
 
 当前已稳定具备的能力包括：
 
-- goal analysis / decomposition
+- model-driven goal analysis / decomposition / graph planning
 - workspace discovery / content search / chunked file read
 - evidence synthesis / aggregation / final response
 - clarification / approval / resume
@@ -89,6 +89,7 @@
 - 节点名称表达 workflow stage intent，不与底层 tool 名称一一对应
 - tools 继续保持 fine-grained execution primitives
 - 文件系统与文本编辑请求已经不再经过兼容 bridge
+- 无模型时不再使用规则 fallback 或摘要 fallback，相关阶段直接报错
 
 ## 5. 当前文档范围
 

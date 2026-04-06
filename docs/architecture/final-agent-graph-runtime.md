@@ -112,6 +112,14 @@ goal_intake
 
 说明：这不是 compat graph 编译入口；compat graph 旧入口已经移除。
 
+### `agent_runtime_framework/demo/workflow_payload_builder.py`
+角色：payload builder。
+
+负责：
+- 组装 workflow payload
+- 写入 approval / resume token 结果
+- 映射 clarification 与 evidence 展示字段
+
 ### `agent_runtime_framework/demo/run_lifecycle.py`
 角色：生命周期控制器。
 
@@ -120,20 +128,6 @@ goal_intake
 - `replay`
 - token / run 恢复
 - missing token / missing run 兜底返回
-
-### `agent_runtime_framework/demo/workflow_payload_builder.py`
-角色：workflow payload presenter。
-
-负责：
-- `execution_trace`
-- `evidence`
-- `approval_request`
-- `resume_token_id`
-- `judge`
-- `planned_subgraphs`
-- `append_history`
-- `root_graph`
-- clarification status 映射
 
 ### `agent_runtime_framework/demo/workflow_run_observer.py`
 角色：运行副作用同步器。
@@ -154,6 +148,7 @@ goal_intake
 - `WorkflowBranchOrchestrator`
 - `RunLifecycleService`
 - `WorkflowRunObserver`
+- payload builder / pending approval registry 所需装配闭包
 
 ## Persistence and Replay
 
@@ -185,6 +180,17 @@ Replay 时：
 - verification 继续作为独立工作流节点表达修改后的检查阶段
 
 节点表达 workflow-stage semantics；底层 workspace tools 仍保持细粒度执行原语，不要求与节点一一对应。
+
+## Model Requirement
+
+当前主工作流依赖模型完成以下阶段：
+- goal analysis
+- decomposition
+- subgraph planning
+- evidence synthesis
+- final response generation
+
+这些阶段在没有可用模型时会直接报错；运行时不再提供本地 fallback 规则、fallback 总结或 fallback 最终回答。
 
 ## Recommended Reading Order
 
