@@ -10,6 +10,8 @@
 
 ### Task 1: Freeze the replacement node taxonomy
 
+Status: completed
+
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/当前Agent设计框架.md`
@@ -59,6 +61,8 @@ git commit -m "docs: define graph-native write node taxonomy"
 ```
 
 ### Task 2: Add graph-native filesystem operation nodes
+
+Status: in_progress
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/models.py`
