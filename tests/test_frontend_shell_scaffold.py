@@ -74,3 +74,13 @@ def test_frontend_shell_keeps_pending_user_turn_until_final_payload():
     assert "const finalPayload = await sendMessageStream(trimmed, {" in app_tsx
     assert "if (finalPayload !== null) {" in app_tsx
     assert 'setPendingUserMessage("");' in app_tsx
+
+
+def test_frontend_model_center_supports_wire_api_configuration():
+    root = Path(__file__).resolve().parents[1] / "frontend-shell" / "src"
+    app_tsx = (root / "App.tsx").read_text(encoding="utf-8")
+    types_ts = (root / "types.ts").read_text(encoding="utf-8")
+
+    assert '["wire_api"]' in app_tsx
+    assert 'connection: { base_url: draft.baseUrl, wire_api: draft.wireApi }' in app_tsx
+    assert "wire_api: string;" in types_ts

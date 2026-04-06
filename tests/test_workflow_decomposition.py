@@ -195,3 +195,23 @@ def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_
     subgraph = plan_next_subgraph(envelope, state, context=SimpleNamespace(application_context=context.application_context, services={}))
 
     assert subgraph.nodes[0].node_type == "verification"
+
+
+def test_plan_next_subgraph_ignores_non_mapping_inputs_payload():
+    context = _workflow_context(
+        '{"planner_summary":"model plan","nodes":[{"node_id":"verify","node_type":"verification","reason":"model picked verification","inputs":["post_write_input"],"depends_on":[],"success_criteria":["produce verification result"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-model-invalid-inputs", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert subgraph.nodes[0].node_type == "verification"
+    assert subgraph.nodes[0].inputs == {}

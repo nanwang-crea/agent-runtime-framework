@@ -30,21 +30,21 @@ DEFAULT_V3_CONFIG: dict[str, Any] = {
         "openai": {
             "type": "openai_compatible",
             "enabled": True,
-            "connection": {"base_url": "https://api.openai.com/v1"},
+            "connection": {"base_url": "https://api.openai.com/v1", "wire_api": "chat_completions"},
             "credentials": {"api_key": ""},
             "catalog": {"mode": "static", "models": ["gpt-5.4"]},
         },
         "dashscope": {
             "type": "openai_compatible",
             "enabled": True,
-            "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            "connection": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "wire_api": "chat_completions"},
             "credentials": {"api_key": ""},
             "catalog": {"mode": "static", "models": ["qwen3.5-plus", "qwen-plus"]},
         },
         "minimax": {
             "type": "openai_compatible",
             "enabled": True,
-            "connection": {"base_url": "https://api.minimax.chat/v1"},
+            "connection": {"base_url": "https://api.minimax.chat/v1", "wire_api": "chat_completions"},
             "credentials": {"api_key": ""},
             "catalog": {"mode": "static", "models": ["MiniMax-M2.1"]},
         },
@@ -349,7 +349,7 @@ def _default_instance(instance_id: str) -> dict[str, Any]:
     return {
         "type": "openai_compatible",
         "enabled": True,
-        "connection": {"base_url": ""},
+        "connection": {"base_url": "", "wire_api": "chat_completions"},
         "credentials": {"api_key": ""},
         "catalog": {"mode": "static", "models": []},
     }

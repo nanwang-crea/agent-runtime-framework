@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -24,6 +25,14 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
 }
 
 _DEFAULT_MAX_DYNAMIC_NODES = 3
+
+
+def _normalize_node_inputs(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
 def _latest_judge_decision(graph_state: AgentGraphState) -> Any | None:
     if not graph_state.judge_history:
         return None
@@ -133,7 +142,7 @@ def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_
                 node_id=node_id_map[source_id],
                 node_type=node_type,
                 reason=str(item.get("reason") or "").strip() or f"Execute {node_type}",
-                inputs=dict(item.get("inputs") or {}),
+                inputs=_normalize_node_inputs(item.get("inputs")),
                 depends_on=[node_id_map[dep] for dep in depends_on],
                 success_criteria=success_criteria,
                 requires_approval=bool(item.get("requires_approval")),

@@ -13,19 +13,23 @@ from agent_runtime_framework.models.core import AuthSession, CredentialStore, Dr
 
 
 class _OpenAICompatibleClient:
-    def __init__(self, api_key: str, base_url: str) -> None:
+    def __init__(self, api_key: str, base_url: str, *, wire_api: str = "chat_completions") -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._wire_api = wire_api.strip().lower() or "chat_completions"
         self.chat = _OpenAICompatChat(self)
 
     def create_chat_completion(self, request: ChatRequest) -> ChatResponse:
         parsed = self._send(request, stream=False)
-        content = parsed.get("choices", [{}])[0].get("message", {}).get("content", "")
+        content = _extract_text_content(parsed, wire_api=self._wire_api)
         return ChatResponse(content=str(content or ""), raw=parsed)
 
     def stream_chat_completion(self, request: ChatRequest) -> Iterable[ChatChunk]:
         req = self._request(request, stream=True)
         with self._open_with_retry(req, timeout=60) as response:
+            if self._wire_api == "responses":
+                yield from _iter_responses_stream(response)
+                return
             for raw_line in response:
                 line = raw_line.decode("utf-8").strip()
                 if not line or not line.startswith("data:"):
@@ -54,17 +58,10 @@ class _OpenAICompatibleClient:
                 time.sleep(0.2)
 
     def _request(self, request: ChatRequest, *, stream: bool) -> Any:
-        payload = json.dumps(
-            {
-                "model": request.model,
-                "messages": [message.as_dict() for message in request.messages],
-                "temperature": request.temperature if request.temperature is not None else 0.0,
-                "max_tokens": request.max_tokens,
-                "stream": stream,
-            }
-        ).encode("utf-8")
+        payload = json.dumps(_request_payload(request, stream=stream, wire_api=self._wire_api)).encode("utf-8")
+        endpoint = "/responses" if self._wire_api == "responses" else "/chat/completions"
         return urllib_request.Request(
-            f"{self._base_url}/chat/completions",
+            f"{self._base_url}{endpoint}",
             data=payload,
             headers={
                 "Content-Type": "application/json",
@@ -87,6 +84,83 @@ def _is_transient_ssl_eof(exc: Exception) -> bool:
     if isinstance(exc, ssl.SSLError):
         return "EOF" in str(exc).upper()
     return False
+
+
+def _request_payload(request: ChatRequest, *, stream: bool, wire_api: str) -> dict[str, Any]:
+    if wire_api != "responses":
+        return {
+            "model": request.model,
+            "messages": [message.as_dict() for message in request.messages],
+            "temperature": request.temperature if request.temperature is not None else 0.0,
+            "max_tokens": request.max_tokens,
+            "stream": stream,
+        }
+
+    instructions_parts = [message.content for message in request.messages if message.role == "system" and message.content]
+    input_text = _responses_input_text([message for message in request.messages if message.role != "system" and message.content])
+    payload: dict[str, Any] = {
+        "model": request.model,
+        "input": input_text,
+        "stream": stream,
+    }
+    if instructions_parts:
+        payload["instructions"] = "\n\n".join(instructions_parts)
+    if request.max_tokens is not None:
+        payload["max_output_tokens"] = request.max_tokens
+    return payload
+
+
+def _responses_input_text(messages: list[ChatMessage]) -> str:
+    if not messages:
+        return ""
+    if len(messages) == 1 and messages[0].role == "user":
+        return messages[0].content
+    parts: list[str] = []
+    for message in messages:
+        parts.append(f"[{message.role}]\n{message.content}")
+    return "\n\n".join(parts)
+
+
+def _extract_text_content(parsed: dict[str, Any], *, wire_api: str) -> str:
+    if wire_api != "responses":
+        return str(parsed.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+
+    parts: list[str] = []
+    for item in list(parsed.get("output") or []):
+        if not isinstance(item, dict):
+            continue
+        for content in list(item.get("content") or []):
+            if not isinstance(content, dict):
+                continue
+            if str(content.get("type") or "") != "output_text":
+                continue
+            text = str(content.get("text") or "")
+            if text:
+                parts.append(text)
+    return "".join(parts)
+
+
+def _iter_responses_stream(response: Any) -> Iterable[ChatChunk]:
+    event_name = ""
+    for raw_line in response:
+        line = raw_line.decode("utf-8").strip()
+        if not line:
+            event_name = ""
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            continue
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]" or event_name == "response.completed":
+            break
+        if event_name != "response.output_text.delta":
+            continue
+        parsed = json.loads(payload)
+        content = str(parsed.get("delta") or "")
+        if content:
+            yield ChatChunk(content=content, raw=parsed)
 
 
 class _OpenAICompatChatCompletions:
@@ -138,6 +212,7 @@ def _compat_stream(chunks: Iterable[ChatChunk]):
 class OpenAICompatibleInstance(ModelInstance):
     instance_id: str
     default_base_url: str | None = None
+    wire_api: str = "chat_completions"
     available_models: list[ModelProfile] = field(default_factory=list)
 
     def list_models(self) -> list[ModelProfile]:
@@ -172,7 +247,7 @@ class OpenAICompatibleInstance(ModelInstance):
         base_url = str(credentials.get("base_url") or self.default_base_url or "").strip()
         if not base_url:
             return None
-        return _OpenAICompatibleClient(api_key=api_key, base_url=base_url)
+        return _OpenAICompatibleClient(api_key=api_key, base_url=base_url, wire_api=self.wire_api)
 
 
 @dataclass(slots=True)
@@ -192,6 +267,7 @@ class OpenAICompatibleDriver(ModelDriver):
         return OpenAICompatibleInstance(
             instance_id=instance_id,
             default_base_url=str(connection.get("base_url") or "").strip() or None,
+            wire_api=str(connection.get("wire_api") or "chat_completions").strip().lower() or "chat_completions",
             available_models=[_profile_for_model(instance_id, model_name) for model_name in model_names],
         )
 

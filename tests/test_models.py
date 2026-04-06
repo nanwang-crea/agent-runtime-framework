@@ -314,6 +314,191 @@ def test_openai_compatible_driver_retries_transient_ssl_eof_once():
     assert response.content == "retry-ok"
 
 
+def test_openai_compatible_driver_supports_responses_api_mode():
+    store = InMemoryCredentialStore()
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "openai",
+        {
+            "connection": {
+                "base_url": "https://ice.v.ua/v1",
+                "wire_api": "responses",
+            },
+            "catalog": {"models": ["gpt-5.4"]},
+        },
+    )
+    instance.authenticate(
+        {
+            "api_key": "sk-test",
+            "base_url": "https://ice.v.ua/v1",
+        },
+        store,
+    )
+    client = instance.get_client(store)
+
+    class _FakeHTTPResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "hello from responses"}
+                            ],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse()) as mocked:
+        response = client.create_chat_completion(
+            ChatRequest(
+                model="gpt-5.4",
+                messages=[
+                    ChatMessage(role="system", content="you are helpful"),
+                    ChatMessage(role="user", content="hi"),
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            )
+        )
+
+    request = mocked.call_args.args[0]
+    payload = json.loads(request.data.decode("utf-8"))
+
+    assert request.full_url == "https://ice.v.ua/v1/responses"
+    assert payload["model"] == "gpt-5.4"
+    assert payload["instructions"] == "you are helpful"
+    assert payload["input"] == "hi"
+    assert payload["max_output_tokens"] == 120
+    assert response.content == "hello from responses"
+
+
+def test_openai_compatible_driver_streams_responses_api_mode():
+    store = InMemoryCredentialStore()
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "openai",
+        {
+            "connection": {
+                "base_url": "https://ice.v.ua/v1",
+                "wire_api": "responses",
+            },
+            "catalog": {"models": ["gpt-5.4"]},
+        },
+    )
+    instance.authenticate(
+        {
+            "api_key": "sk-test",
+            "base_url": "https://ice.v.ua/v1",
+        },
+        store,
+    )
+    client = instance.get_client(store)
+
+    class _StreamingHTTPResponse:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.closed = True
+            return False
+
+        def __iter__(self):
+            if self.closed:
+                raise RuntimeError("response closed before stream consumption")
+            return iter(
+                [
+                    b"event: response.output_text.delta\n",
+                    b'data: {"delta":"hello"}\n\n',
+                    b"event: response.output_text.delta\n",
+                    b'data: {"delta":" world"}\n\n',
+                    b"event: response.completed\n",
+                    b"data: {}\n\n",
+                ]
+            )
+
+    with patch("urllib.request.urlopen", return_value=_StreamingHTTPResponse()) as mocked:
+        response = client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        chunks = list(response)
+
+    request = mocked.call_args.args[0]
+    payload = json.loads(request.data.decode("utf-8"))
+
+    assert request.full_url == "https://ice.v.ua/v1/responses"
+    assert payload["stream"] is True
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ["hello", " world"]
+
+
+def test_openai_compatible_driver_flattens_responses_input_for_multiturn_prompts():
+    store = InMemoryCredentialStore()
+    driver = OpenAICompatibleDriver()
+    instance = driver.create_instance(
+        "openai",
+        {
+            "connection": {
+                "base_url": "https://ice.v.ua/v1",
+                "wire_api": "responses",
+            },
+            "catalog": {"models": ["gpt-5.4"]},
+        },
+    )
+    instance.authenticate(
+        {
+            "api_key": "sk-test",
+            "base_url": "https://ice.v.ua/v1",
+        },
+        store,
+    )
+    client = instance.get_client(store)
+
+    class _FakeHTTPResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}'
+
+    with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse()) as mocked:
+        response = client.create_chat_completion(
+            ChatRequest(
+                model="gpt-5.4",
+                messages=[
+                    ChatMessage(role="system", content="be precise"),
+                    ChatMessage(role="user", content="first question"),
+                    ChatMessage(role="assistant", content="first answer"),
+                    ChatMessage(role="user", content="second question"),
+                ],
+            )
+        )
+
+    request = mocked.call_args.args[0]
+    payload = json.loads(request.data.decode("utf-8"))
+
+    assert "messages" not in payload
+    assert isinstance(payload["input"], str)
+    assert payload["input"] == "[user]\nfirst question\n\n[assistant]\nfirst answer\n\n[user]\nsecond question"
+    assert payload["instructions"] == "be precise"
+    assert response.content == "ok"
+
+
 def test_chat_once_uses_standardized_response_contract():
     class _Client:
         def create_chat_completion(self, request: ChatRequest):

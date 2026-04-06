@@ -31,6 +31,7 @@ const views = [
   { id: "history", label: "History" },
   { id: "settings", label: "Settings" },
 ] as const;
+const defaultWireApi = "chat_completions";
 
 type ViewId = (typeof views)[number]["id"];
 
@@ -94,7 +95,7 @@ function App() {
   const [pendingUserMessage, setPendingUserMessage] = useState("");
   const [uiError, setUiError] = useState<AssistantError | null>(null);
   const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
-  const [instanceDrafts, setInstanceDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+  const [instanceDrafts, setInstanceDrafts] = useState<Record<string, { apiKey: string; baseUrl: string; wireApi: string }>>({});
   const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -136,12 +137,14 @@ function App() {
         const next = { ...current };
         for (const [instanceName, instanceCfg] of Object.entries(payload.config.instances || {})) {
           const baseUrl = String((instanceCfg.connection || {})["base_url"] || "");
+          const wireApi = String((instanceCfg.connection || {})["wire_api"] || defaultWireApi);
           if (!next[instanceName]) {
-            next[instanceName] = { apiKey: "", baseUrl };
-          } else if (!next[instanceName].baseUrl) {
+            next[instanceName] = { apiKey: "", baseUrl, wireApi };
+          } else if (!next[instanceName].baseUrl || !next[instanceName].wireApi) {
             next[instanceName] = {
               ...next[instanceName],
               baseUrl,
+              wireApi,
             };
           }
         }
@@ -195,6 +198,7 @@ function App() {
         api_key_set: Boolean(instanceCfg.api_key_set),
         api_key_preview: String(instanceCfg.api_key_preview || ""),
         base_url: String((instanceCfg.connection || {})["base_url"] || ""),
+        wire_api: String((instanceCfg.connection || {})["wire_api"] || defaultWireApi),
       };
     });
     const routes = Object.fromEntries(
@@ -450,12 +454,13 @@ function App() {
     }
   }
 
-  function updateDraft(instanceId: string, key: "apiKey" | "baseUrl", value: string) {
+  function updateDraft(instanceId: string, key: "apiKey" | "baseUrl" | "wireApi", value: string) {
     setInstanceDrafts((current) => ({
       ...current,
       [instanceId]: {
         apiKey: current[instanceId]?.apiKey || "",
         baseUrl: current[instanceId]?.baseUrl || "",
+        wireApi: current[instanceId]?.wireApi || defaultWireApi,
         [key]: value,
       },
     }));
@@ -463,12 +468,12 @@ function App() {
 
   async function handleAuth(instanceId: string) {
     try {
-      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
+      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "", wireApi: defaultWireApi };
       const updated = await updateModelCenter({
         instances: {
           [instanceId]: {
             credentials: { api_key: draft.apiKey },
-            connection: { base_url: draft.baseUrl },
+            connection: { base_url: draft.baseUrl, wire_api: draft.wireApi },
           },
         },
       });
@@ -513,13 +518,13 @@ function App() {
 
   async function handleSaveConfig(instanceId: string) {
     try {
-      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "" };
+      const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "", wireApi: defaultWireApi };
       const payload = await updateModelCenter(
         {
           instances: {
             [instanceId]: {
               credentials: { api_key: draft.apiKey },
-              connection: { base_url: draft.baseUrl },
+              connection: { base_url: draft.baseUrl, wire_api: draft.wireApi },
             },
           },
         },
@@ -1037,7 +1042,11 @@ function App() {
 
               <div className="settings-grid">
                 {config.instances.map((instanceConfig) => {
-                  const draft = instanceDrafts[instanceConfig.instance] || { apiKey: "", baseUrl: instanceConfig.base_url || "" };
+                  const draft = instanceDrafts[instanceConfig.instance] || {
+                    apiKey: "",
+                    baseUrl: instanceConfig.base_url || "",
+                    wireApi: instanceConfig.wire_api || defaultWireApi,
+                  };
                   const runtimeInstance = models.instances.find((item) => item.instance === instanceConfig.instance);
                   return (
                     <div key={`config-${instanceConfig.instance}`} className="settings-card instance-card">
@@ -1051,7 +1060,7 @@ function App() {
                         </span>
                       </div>
                       <p className="instance-meta">
-                        {instanceConfig.type} · catalog: {runtimeInstance?.catalog_mode || "static"} · {runtimeInstance?.auth_error || `base URL: ${instanceConfig.base_url || "未配置"}`}
+                        {instanceConfig.type} · catalog: {runtimeInstance?.catalog_mode || "static"} · {runtimeInstance?.auth_error || `base URL: ${instanceConfig.base_url || "未配置"} · wire API: ${instanceConfig.wire_api || defaultWireApi}`}
                       </p>
                       <div className="instance-capabilities">
                         <span className={`mini-pill ${runtimeInstance?.capabilities.supports_stream ? "on" : ""}`}>stream</span>
@@ -1070,6 +1079,13 @@ function App() {
                           onChange={(event) => updateDraft(instanceConfig.instance, "baseUrl", event.target.value)}
                           placeholder={instanceConfig.base_url || "base URL"}
                         />
+                        <select
+                          value={draft.wireApi}
+                          onChange={(event) => updateDraft(instanceConfig.instance, "wireApi", event.target.value)}
+                        >
+                          <option value="chat_completions">chat_completions</option>
+                          <option value="responses">responses</option>
+                        </select>
                       </div>
                       <div className="action-row">
                         <button

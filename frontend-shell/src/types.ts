@@ -138,6 +138,7 @@ export type ConfigInstance = {
   api_key_set: boolean;
   api_key_preview: string;
   base_url: string;
+  wire_api: string;
 };
 
 export type ConfigResponse = {

@@ -50,3 +50,26 @@ def test_normalize_config_v3_drops_legacy_sections():
     assert "providers" not in normalized
     assert "models" not in normalized
     assert normalized["instances"]["dashscope"]["catalog"]["models"] == ["qwen3.5-plus"]
+
+
+def test_normalize_config_v3_preserves_openai_wire_api():
+    payload = {
+        "schema_version": 3,
+        "instances": {
+            "openai": {
+                "type": "openai_compatible",
+                "enabled": True,
+                "connection": {
+                    "base_url": "https://ice.v.ua/v1",
+                    "wire_api": "responses",
+                },
+                "credentials": {"api_key": "sk-test"},
+                "catalog": {"mode": "static", "models": ["gpt-5.4"]},
+            }
+        },
+        "routes": {"planner": {"instance": "openai", "model": "gpt-5.4"}},
+    }
+
+    normalized = normalize_config_v3(payload)
+
+    assert normalized["instances"]["openai"]["connection"]["wire_api"] == "responses"
