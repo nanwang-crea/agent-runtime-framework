@@ -10,7 +10,7 @@ from typing import Any
 from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
 
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 
 
 @dataclass(slots=True)
@@ -24,6 +24,8 @@ class ContentSearchExecutor:
         workspace_root = Path(get_workspace_root(runtime_context, ".")).resolve()
         resolved_target = dict(run.shared_state.get("resolved_target") or {})
         search_plan = dict(run.shared_state.get("search_plan") or {})
+        if not search_plan:
+            return NodeResult(status=NODE_STATUS_FAILED, error="Missing search_plan")
         if bool(resolved_target.get("clarification_required")):
             summary = str(resolved_target.get("text") or resolved_target.get("summary") or "Please clarify the target.")
             return NodeResult(
@@ -39,9 +41,11 @@ class ContentSearchExecutor:
                 references=[],
             )
 
-        terms = [str(item).strip() for item in search_plan.get("semantic_queries", []) or [] if str(item).strip()] or self._search_terms(run.goal, node.metadata)
-        symbol_hint = str(node.metadata.get("symbol_hint") or "").strip()
-        candidates = self._candidate_paths(run, node.metadata)
+        terms = [str(item).strip() for item in search_plan.get("semantic_queries", []) or [] if str(item).strip()]
+        if not terms:
+            return NodeResult(status=NODE_STATUS_FAILED, error="search_plan missing semantic_queries")
+        symbol_hint = ""
+        candidates = self._candidate_paths(search_plan)
         path_bias = [str(item).strip() for item in search_plan.get("path_bias", []) or [] if str(item).strip()]
         if path_bias:
             candidates = list(dict.fromkeys([*path_bias, *candidates]))
@@ -162,34 +166,14 @@ class ContentSearchExecutor:
             references=list(dict.fromkeys(references)),
         )
 
-    def _candidate_paths(self, run: WorkflowRun, metadata: dict[str, Any] | None = None) -> list[str]:
-        node_results = run.shared_state.get("node_results", {})
+    def _candidate_paths(self, search_plan: dict[str, Any]) -> list[str]:
         candidates: list[str] = []
-        metadata = dict(metadata or {})
-        for key in ("target_path", "target_hint"):
-            value = str(metadata.get(key) or "").strip()
-            if value:
-                candidates.append(value)
-        for result in node_results.values():
-            if not isinstance(result.output, dict):
-                continue
-            for item in result.output.get("evidence_items", []) or []:
-                if isinstance(item, dict) and item.get("path"):
-                    candidates.append(str(item["path"]))
-            for reference in result.references:
-                candidates.append(reference)
+        for key in ("path_bias", "candidate_paths"):
+            for value in search_plan.get(key, []) or []:
+                text = str(value or "").strip()
+                if text:
+                    candidates.append(text)
         return list(dict.fromkeys(candidates))
-
-    def _search_terms(self, goal: str, metadata: dict[str, Any]) -> list[str]:
-        terms: list[str] = []
-        for raw in [metadata.get("target_hint"), metadata.get("target_path"), metadata.get("symbol_hint"), goal]:
-            value = str(raw or "").strip()
-            if not value:
-                continue
-            normalized = value.lower().replace("/", " ").replace("_", " ")
-            terms.extend(part for part in normalized.split() if len(part) >= 2)
-            terms.extend(token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]+", value) if len(token) >= 2)
-        return list(dict.fromkeys(terms))
 
     def _path_score(self, path: Path, terms: list[str], *, prefer_code: bool) -> int:
         haystack = str(path).lower()

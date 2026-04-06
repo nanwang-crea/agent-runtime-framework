@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_runtime_framework.workflow.memory_views import build_judge_memory_view
 from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, JudgeDecision, normalize_aggregated_workflow_payload
 
 
@@ -23,6 +24,57 @@ def _quality_signals(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in (payload.get("quality_signals", []) or []) if isinstance(item, dict)]
 
 
+def _normalize_path(value: Any) -> str:
+    return str(value or "").strip().replace("\\", "/")
+
+
+def _path_matches(actual: str, expected: str) -> bool:
+    actual_norm = _normalize_path(actual)
+    expected_norm = _normalize_path(expected)
+    if not actual_norm or not expected_norm:
+        return False
+    if actual_norm == expected_norm:
+        return True
+    if expected_norm.startswith("/"):
+        return False
+    if actual_norm.startswith("/"):
+        return actual_norm.endswith(f"/{expected_norm}")
+    return False
+
+
+def _semantic_path_consistency_conflicts(payload: dict[str, Any], judge_memory_view: dict[str, Any]) -> list[str]:
+    evidence_paths = [
+        _normalize_path(item.get("relative_path") or item.get("path"))
+        for item in payload.get("evidence_items", []) or []
+        if isinstance(item, dict)
+    ]
+    read_paths = [
+        _normalize_path(item.get("path") or item.get("relative_path"))
+        for item in payload.get("chunks", []) or []
+        if isinstance(item, dict)
+    ]
+    observed_paths = [path for path in [*evidence_paths, *read_paths] if path]
+    conflicts: list[str] = []
+    confirmed_targets = [_normalize_path(item) for item in judge_memory_view.get("confirmed_targets", []) or [] if _normalize_path(item)]
+    excluded_targets = [_normalize_path(item) for item in judge_memory_view.get("excluded_targets", []) or [] if _normalize_path(item)]
+    read_plan = dict((judge_memory_view.get("semantic_constraints") or {}).get("read_plan") or {})
+    planned_read_path = _normalize_path(read_plan.get("target_path"))
+
+    if confirmed_targets and observed_paths:
+        for path in observed_paths:
+            if not any(_path_matches(path, target) for target in confirmed_targets):
+                conflicts.append(f"path_mismatch:{path}")
+    if excluded_targets:
+        for path in observed_paths:
+            if any(_path_matches(path, target) for target in excluded_targets):
+                conflicts.append(f"excluded_target:{path}")
+    if planned_read_path:
+        for path in read_paths:
+            if not _path_matches(path, planned_read_path):
+                conflicts.append(f"read_plan_mismatch:{path}")
+    return conflicts
+
+
 def _has_grounded_progress(signals: list[dict[str, Any]]) -> bool:
     grounded_contributions = {
         "grounded_evidence_collected",
@@ -41,6 +93,7 @@ def judge_progress(
     graph_state: AgentGraphState,
 ) -> JudgeDecision:
     payload = normalize_aggregated_workflow_payload(aggregated_payload)
+    judge_memory_view = build_judge_memory_view(graph_state)
     max_iterations = int(goal_envelope.constraints.get("max_iterations") or 0)
     if max_iterations and graph_state.current_iteration >= max_iterations:
         return JudgeDecision(
@@ -78,6 +131,7 @@ def judge_progress(
         )
 
     conflicts = [str(item) for item in payload.get("conflicts", []) or [] if str(item).strip()]
+    conflicts.extend(_semantic_path_consistency_conflicts(payload, judge_memory_view))
     quality_signals = _quality_signals(payload)
     if conflicts:
         return JudgeDecision(

@@ -4,8 +4,8 @@ from __future__ import annotations
 def build_goal_analysis_system_prompt() -> str:
     return (
         "You analyze a user goal for a workflow runtime. "
-        "Return JSON only with keys: primary_intent, requires_repository_overview, "
-        "requires_file_read, requires_final_synthesis, target_paths, metadata. "
+        "Return JSON only with keys: primary_intent, requires_target_interpretation, "
+        "requires_search, requires_read, requires_verification, metadata. "
         "Allowed primary_intent values are: generic, repository_overview, file_read, compound, "
         "target_explainer, change_and_verify, dangerous_change. "
         "Use file_read when the user explicitly names a concrete file path to read, summarize, explain, or inspect. "
@@ -14,7 +14,10 @@ def build_goal_analysis_system_prompt() -> str:
         "Use target_explainer only when the target is ambiguous and must be resolved before reading. "
         "Use change_and_verify when the user asks to edit, modify, create, refactor, or update files and expects the result to be checked. "
         "Use dangerous_change for destructive requests such as delete or remove. "
-        "Populate metadata.requires_verification for change_and_verify when verification is requested."
+        "Set requires_target_interpretation when the exact workspace target must be semantically resolved. "
+        "Set requires_search when the task needs search before reading or answering. "
+        "Set requires_read when direct grounded file or directory evidence is required. "
+        "Set requires_verification when the final result must be checked."
     )
 
 
@@ -36,11 +39,10 @@ def build_subgraph_planner_system_prompt() -> str:
         "tool_call, clarification, verification, verification_step, aggregate_results, evidence_synthesis, "
         "create_path, move_path, delete_path, apply_patch, write_file, append_text. "
         "Prefer graph-native nodes first. Use target_resolution when the target is ambiguous. "
-        "You will also receive latest_judge_decision, execution_summary, open_issues, attempted_strategies, "
-        "failure_history, iteration_summaries, and ineffective_actions from prior iterations. "
+        "You will also receive latest_judge_decision, execution_summary, and planner_memory_view from prior iterations. "
         "Plan against those feedback signals instead of repeating a prior insufficient node. "
-        "Treat those histories as compact recent context, not exhaustive logs. "
-        "You must change strategy when failure_history or open_issues show the prior plan was insufficient. "
+        "Treat planner_memory_view as the canonical compact memory context. "
+        "You must change strategy when planner_memory_view shows prior insufficiency. "
         "Do not repeat a previously ineffective action unless the new node explicitly addresses the diagnosed gap. "
         "If the judge requests verification, include a verification-oriented node in the next subgraph."
     )

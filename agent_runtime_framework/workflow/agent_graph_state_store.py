@@ -15,6 +15,7 @@ from agent_runtime_framework.workflow.models import (
     WorkflowGraph,
     WorkflowNode,
     WorkflowRun,
+    WorkflowMemoryState,
     new_agent_graph_state,
     normalize_aggregated_workflow_payload,
 )
@@ -45,6 +46,12 @@ class AgentGraphStateStore:
             open_issues=[str(item) for item in prior_state.get("open_issues", []) or [] if str(item).strip()],
             attempted_strategies=[str(item) for item in prior_state.get("attempted_strategies", []) or [] if str(item).strip()],
             recovery_history=[dict(item) for item in prior_state.get("recovery_history", []) or [] if isinstance(item, dict)],
+            memory_state=WorkflowMemoryState(
+                clarification_memory=dict((prior_state.get("memory_state") or {}).get("clarification_memory") or {}),
+                semantic_memory=dict((prior_state.get("memory_state") or {}).get("semantic_memory") or {}),
+                execution_memory=dict((prior_state.get("memory_state") or {}).get("execution_memory") or {}),
+                preference_memory=dict((prior_state.get("memory_state") or {}).get("preference_memory") or {}),
+            ),
         )
         for item in prior_state.get("planned_subgraphs", []) or []:
             nodes = [

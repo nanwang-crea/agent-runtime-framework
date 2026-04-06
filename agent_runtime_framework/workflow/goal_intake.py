@@ -60,17 +60,19 @@ def build_goal_envelope(
         analysis_context = type("GoalAnalysisContext", (), {"application_context": application_context})()
     goal_spec = goal_spec or analyze_goal(message, context=analysis_context)
     normalized_goal = " ".join(message.split())
-    target_hints = list(goal_spec.target_paths)
+    target_hints: list[str] = []
     target_hint = str(goal_spec.metadata.get("target_hint") or "").strip()
     if target_hint and target_hint not in target_hints:
         target_hints.append(target_hint)
     success_criteria = ["produce a grounded response"]
-    if goal_spec.requires_file_read:
+    if goal_spec.requires_target_interpretation:
+        success_criteria.append("resolve the intended target")
+    if goal_spec.requires_search:
+        success_criteria.append("collect targeted search evidence")
+    if goal_spec.requires_read:
         success_criteria.append("collect target file evidence")
-    if goal_spec.requires_repository_overview:
-        success_criteria.append("collect workspace structure evidence")
-    if goal_spec.requires_final_synthesis:
-        success_criteria.append("synthesize findings into final answer")
+    if goal_spec.requires_verification:
+        success_criteria.append("verify the final result")
     return GoalEnvelope(
         goal=message,
         normalized_goal=normalized_goal or message,

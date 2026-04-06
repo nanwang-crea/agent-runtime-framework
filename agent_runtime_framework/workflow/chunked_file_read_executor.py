@@ -21,35 +21,16 @@ class ChunkedFileReadExecutor:
         runtime_context = dict(context or {})
         workspace_root = Path(get_workspace_root(runtime_context, ".")).resolve()
         read_plan = dict(run.shared_state.get("read_plan") or {})
-        target_path = str(node.metadata.get("target_path") or read_plan.get("target_path") or "").strip()
+        if not read_plan:
+            return NodeResult(status=NODE_STATUS_FAILED, error="Missing read_plan")
+        target_path = str(read_plan.get("target_path") or "").strip()
+        preferred_regions = [str(item).strip() for item in read_plan.get("preferred_regions", []) or [] if str(item).strip()]
+        if not preferred_regions:
+            return NodeResult(status=NODE_STATUS_FAILED, error="read_plan missing preferred_regions")
         matched_lines: list[int] = []
-        clarification_summary = ""
-
-        node_results = run.shared_state.get("node_results", {})
-        for result in node_results.values():
-            if not isinstance(result.output, dict):
-                continue
-            if bool(result.output.get("clarification_required")):
-                clarification_summary = str(result.output.get("summary") or result.output.get("text") or "Please clarify the target.")
-            for match in result.output.get("matches", []) or []:
-                if isinstance(match, dict) and match.get("line") is not None:
-                    matched_lines.append(int(match["line"]))
-                if not target_path and isinstance(match, dict) and match.get("path"):
-                    target_path = str(match["path"])
-            if not target_path:
-                ranked_targets = result.output.get("ranked_targets", []) or []
-                if ranked_targets and isinstance(ranked_targets[0], dict) and ranked_targets[0].get("path"):
-                    target_path = str(ranked_targets[0]["path"])
-
-        if clarification_summary:
-            return NodeResult(
-                status=NODE_STATUS_COMPLETED,
-                output={"summary": clarification_summary, "chunks": [], "evidence_items": [], "clarification_required": True, "facts": []},
-                references=[],
-            )
 
         if not target_path:
-            return NodeResult(status=NODE_STATUS_FAILED, error="Missing target_path")
+            return NodeResult(status=NODE_STATUS_FAILED, error="read_plan missing target_path")
 
         path = Path(target_path)
         if not path.is_absolute():
@@ -95,7 +76,7 @@ class ChunkedFileReadExecutor:
             )
 
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        chunks, has_more = self._build_chunks(lines, matched_lines, preferred_regions=[str(item).strip() for item in read_plan.get("preferred_regions", []) or [] if str(item).strip()])
+        chunks, has_more = self._build_chunks(lines, matched_lines, preferred_regions=preferred_regions)
         evidence_items = [
             {
                 "kind": "file_chunk",

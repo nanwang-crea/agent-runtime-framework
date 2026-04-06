@@ -24,8 +24,13 @@ class TargetResolutionExecutor:
 
         tool = application_context.tools.require("resolve_workspace_target")
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
-        query = str(node.metadata.get("query") or interpreted_target.get("preferred_path") or run.goal)
-        target_hint = str(node.metadata.get("target_hint") or interpreted_target.get("preferred_path") or "")
+        if not interpreted_target:
+            return NodeResult(status=NODE_STATUS_FAILED, error="Missing interpreted_target")
+        preferred_path = str(interpreted_target.get("preferred_path") or "").strip()
+        if not preferred_path:
+            return NodeResult(status=NODE_STATUS_FAILED, error="interpreted_target missing preferred_path")
+        query = preferred_path
+        target_hint = preferred_path
         task = SimpleNamespace(task_id=node.node_id, goal=run.goal, state=TaskState())
         execution_context = workspace_context or SimpleNamespace(application_context=application_context, services={})
         result = execute_tool_call(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
@@ -9,27 +8,6 @@ from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec
 from agent_runtime_framework.workflow.planner_prompts import build_goal_analysis_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
-
-
-README_PATTERN = re.compile(r"readme(?:\.md)?", re.IGNORECASE)
-CHANGE_PATTERN = re.compile(r"(修改|编辑|更新|重构|重写|创建|新增|补充|修复)", re.IGNORECASE)
-DESTRUCTIVE_PATTERN = re.compile(r"(删除|移除|清空|卸载)", re.IGNORECASE)
-VERIFY_PATTERN = re.compile(r"(验证|校验|检查|确认|测试)", re.IGNORECASE)
-READ_PATTERN = re.compile(r"(读取|查看|看看|总结|概括|解释|讲解|分析)", re.IGNORECASE)
-PATH_FRAGMENT_PATTERN = re.compile(
-    r"([A-Za-z0-9_\-./]+\.[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]+/[A-Za-z0-9_\-./]+)"
-)
-
-
-def _extract_target_hint(user_input: str) -> str:
-    for match in PATH_FRAGMENT_PATTERN.finditer(user_input):
-        candidate = match.group(1).strip('`"，。,. ')
-        if not candidate:
-            continue
-        if candidate.endswith(".") or candidate.startswith("."):
-            continue
-        return candidate
-    return ""
 
 
 def analyze_goal(user_input: str, context: Any | None = None) -> GoalSpec:
@@ -80,13 +58,12 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[G
     primary_intent = str(parsed.get("primary_intent") or "").strip()
     if not primary_intent:
         return None, "invalid model response"
-    target_paths = [str(item).strip() for item in parsed.get("target_paths") or [] if str(item).strip()]
     return GoalSpec(
         original_goal=user_input,
         primary_intent=primary_intent,
-        requires_repository_overview=bool(parsed.get("requires_repository_overview")),
-        requires_file_read=bool(parsed.get("requires_file_read")),
-        requires_final_synthesis=bool(parsed.get("requires_final_synthesis")),
-        target_paths=target_paths,
+        requires_target_interpretation=bool(parsed.get("requires_target_interpretation")),
+        requires_search=bool(parsed.get("requires_search")),
+        requires_read=bool(parsed.get("requires_read")),
+        requires_verification=bool(parsed.get("requires_verification")),
         metadata=dict(parsed.get("metadata") or {}),
     ), None

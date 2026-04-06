@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
+from agent_runtime_framework.workflow.memory_views import build_planner_memory_view
 from agent_runtime_framework.workflow.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
@@ -24,6 +25,7 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "verification_step",
     "aggregate_results",
     "evidence_synthesis",
+    "final_response",
     *GRAPH_NATIVE_WRITE_NODE_TYPES,
 }
 
@@ -161,12 +163,65 @@ def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGrap
         "iteration": graph_state.current_iteration + 1,
         "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
         "execution_summary": _compact_execution_summary(graph_state),
-        "open_issues": list(graph_state.open_issues),
-        "attempted_strategies": _compact_attempted_strategies(graph_state),
-        "failure_history": _compact_failure_history(graph_state),
-        "iteration_summaries": _compact_iteration_summaries(graph_state),
-        "ineffective_actions": _ineffective_actions(graph_state),
+        "planner_memory_view": build_planner_memory_view(graph_state),
     }
+
+
+def _resolved_target_payload(graph_state: AgentGraphState) -> dict[str, Any]:
+    payload = dict(graph_state.aggregated_payload or {})
+    artifacts = dict(payload.get("artifacts") or {})
+    resolved_targets = artifacts.get("resolved_target") or []
+    if resolved_targets and isinstance(resolved_targets[-1], dict):
+        return dict(resolved_targets[-1])
+    return {}
+
+
+def _should_use_constrained_read_path(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> bool:
+    if str(goal_envelope.intent or "").strip() != "file_read":
+        return False
+    semantic_memory = dict(graph_state.memory_state.semantic_memory or {})
+    interpreted_target = dict(semantic_memory.get("interpreted_target") or {})
+    if bool(interpreted_target.get("confirmed")) and str(interpreted_target.get("preferred_path") or "").strip():
+        return True
+    confirmed_targets = [str(item).strip() for item in semantic_memory.get("confirmed_targets", []) or [] if str(item).strip()]
+    if len(confirmed_targets) == 1:
+        return True
+    resolved_target = _resolved_target_payload(graph_state)
+    return str(resolved_target.get("resolution_status") or "").strip() == "resolved"
+
+
+def _constrained_read_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> PlannedSubgraph:
+    iteration = graph_state.current_iteration + 1
+    nodes = [
+        PlannedNode(
+            node_id=f"plan_read_{iteration}",
+            node_type="plan_read",
+            reason="Confirmed file target allows direct read planning",
+            success_criteria=["define read plan for the confirmed target"],
+        ),
+        PlannedNode(
+            node_id=f"chunked_file_read_{iteration}",
+            node_type="chunked_file_read",
+            reason="Read the confirmed file directly",
+            depends_on=[f"plan_read_{iteration}"],
+            success_criteria=["collect grounded evidence from the confirmed file"],
+        ),
+        PlannedNode(
+            node_id=f"final_response_{iteration}",
+            node_type="final_response",
+            reason="Respond after reading the confirmed file",
+            depends_on=[f"chunked_file_read_{iteration}"],
+            success_criteria=["deliver grounded final response"],
+        ),
+    ]
+    edges = [WorkflowEdge(source=node.depends_on[0], target=node.node_id) for node in nodes if node.depends_on]
+    return PlannedSubgraph(
+        iteration=iteration,
+        planner_summary=f"Constrained confirmed-file read path for iteration {iteration}",
+        nodes=nodes,
+        edges=edges,
+        metadata={"planner": "constrained_file_read_v1", "max_dynamic_nodes": len(nodes)},
+    )
 
 
 def _max_dynamic_nodes(goal_envelope: GoalEnvelope, context: Any | None) -> int:
@@ -250,6 +305,8 @@ def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_
 
 
 def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> PlannedSubgraph:
+    if _should_use_constrained_read_path(goal_envelope, graph_state):
+        return _constrained_read_subgraph(goal_envelope, graph_state)
     payload = _call_model_planner(goal_envelope, graph_state, context)
     if payload is None:
         raise ValueError("model planner unavailable")

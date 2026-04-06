@@ -78,6 +78,12 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
         "planned_subgraphs": [{"iteration": 1, "planner_summary": "p", "nodes": [], "edges": [], "metadata": {}}],
         "judge_history": [{"status": "accepted", "reason": "ok", "missing_evidence": [], "coverage_report": {}, "replan_hint": {}}],
         "appended_node_ids": ["content_search_1"],
+        "memory_state": {
+            "clarification_memory": {"active_question": "which readme", "candidate_items": ["README.md"]},
+            "semantic_memory": {"confirmed_targets": ["README.md"]},
+            "execution_memory": {"ineffective_actions": ["search readme broadly"]},
+            "preference_memory": {"path_preferences": ["README.md"]},
+        },
     }
 
     store.save(run)
@@ -85,4 +91,5 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
 
     assert restored.metadata["agent_graph_state"]["current_iteration"] == 1
     assert restored.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
+    assert restored.metadata["agent_graph_state"]["memory_state"]["semantic_memory"]["confirmed_targets"] == ["README.md"]
     assert restored.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"

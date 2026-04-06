@@ -16,6 +16,7 @@ from agent_runtime_framework.workflow import (
     new_agent_graph_state,
     normalize_aggregated_workflow_payload,
 )
+from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 import pytest
 from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
@@ -68,6 +69,16 @@ class NoDirectExecuteRuntime:
 
     def _execute(self, executor, node, run):
         raise AssertionError("AgentGraphRuntime should not call _execute directly")
+
+
+class RecordingGraphExecutionRuntime(GraphExecutionRuntime):
+    def __init__(self, executors, context=None):
+        super().__init__(executors=executors, context=context or {})
+        self.calls: list[list[str]] = []
+
+    def run(self, run):
+        self.calls.append([node.node_type for node in run.graph.nodes])
+        return super().run(run)
 
 
 def test_scheduler_only_returns_nodes_with_completed_dependencies():
@@ -242,6 +253,17 @@ def test_target_resolution_executor_prefers_interpreted_target_constraints(tmp_p
     assert result.output["resolved_path"] == "README.md"
 
 
+def test_target_resolution_executor_fails_without_interpreted_target(tmp_path):
+    result = TargetResolutionExecutor().execute(
+        WorkflowNode(node_id="resolve", node_type="target_resolution"),
+        WorkflowRun(goal="看 README", shared_state={}),
+        context=_make_workspace_runtime_context(tmp_path),
+    )
+
+    assert result.status == NODE_STATUS_FAILED
+    assert "interpreted_target" in result.error
+
+
 def test_content_search_executor_uses_search_plan_queries(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
@@ -265,6 +287,21 @@ def test_content_search_executor_uses_search_plan_queries(monkeypatch, tmp_path)
 
     assert result.status == NODE_STATUS_COMPLETED
     assert result.output["artifacts"]["search_terms"] == ["agent runtime"]
+
+
+def test_content_search_executor_fails_without_search_plan(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "search summary",
+    )
+    result = ContentSearchExecutor().execute(
+        WorkflowNode(node_id="search", node_type="content_search", metadata={}),
+        WorkflowRun(goal="随便一句话", shared_state={"node_results": {}}),
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.status == NODE_STATUS_FAILED
+    assert "search_plan" in result.error
 
 
 def test_chunked_file_read_executor_uses_read_plan_target_and_region(monkeypatch, tmp_path):
@@ -294,6 +331,127 @@ def test_chunked_file_read_executor_uses_read_plan_target_and_region(monkeypatch
     assert result.status == NODE_STATUS_COMPLETED
     assert result.output["path"] == "README.md"
     assert result.output["chunks"][0]["start_line"] == 1
+
+
+def test_chunked_file_read_executor_fails_without_read_plan(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
+    )
+    result = ChunkedFileReadExecutor().execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={}),
+        WorkflowRun(goal="读 README", shared_state={"node_results": {}}),
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.status == NODE_STATUS_FAILED
+    assert "read_plan" in result.error
+
+
+def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(monkeypatch, tmp_path):
+    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "search summary",
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "read summary",
+    )
+
+    def _fake_semantic_plan(context, payload, system_prompt, max_tokens=400):
+        if "target request" in system_prompt:
+            return {
+                "target_kind": "file",
+                "preferred_path": "README.md",
+                "scope_preference": "workspace_root",
+                "exclude_paths": ["frontend-shell/README.md"],
+                "confirmed": True,
+                "confidence": 0.96,
+                "rationale": "clarification indicates the outermost workspace README",
+            }
+        if "search strategy" in system_prompt:
+            return {
+                "search_goal": "find the root readme",
+                "semantic_queries": ["README.md", "project overview"],
+                "must_avoid": ["frontend-shell"],
+                "path_bias": ["README.md"],
+                "confidence": 0.88,
+                "rationale": "search only the root readme candidate",
+            }
+        return {
+            "read_goal": "summarize the project overview",
+            "target_path": "README.md",
+            "preferred_regions": ["head"],
+            "confidence": 0.9,
+            "rationale": "the introduction is likely near the top of the file",
+        }
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        _fake_semantic_plan,
+    )
+
+    (tmp_path / "README.md").write_text("Project overview\nMore details\n", encoding="utf-8")
+    (tmp_path / "frontend-shell").mkdir()
+    (tmp_path / "frontend-shell" / "README.md").write_text("Frontend shell overview\n", encoding="utf-8")
+    runtime_context = _make_workspace_runtime_context(tmp_path)
+    run = WorkflowRun(
+        goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
+        shared_state={
+            "clarification_response": "当前工作区的README文件，在最外层的",
+            "clarification_request": {"items": ["README.md", "frontend-shell/README.md"]},
+            "node_results": {},
+        },
+    )
+
+    interpret_result = InterpretTargetExecutor().execute(
+        WorkflowNode(node_id="interpret", node_type="interpret_target", metadata={"target_hints": ["README"]}),
+        run,
+        context=runtime_context,
+    )
+    run.shared_state["node_results"]["interpret"] = interpret_result
+
+    resolve_result = TargetResolutionExecutor().execute(
+        WorkflowNode(node_id="resolve", node_type="target_resolution"),
+        run,
+        context=runtime_context,
+    )
+    run.shared_state["node_results"]["resolve"] = resolve_result
+
+    search_plan_result = PlanSearchExecutor().execute(
+        WorkflowNode(node_id="search_plan", node_type="plan_search"),
+        run,
+        context=runtime_context,
+    )
+    run.shared_state["node_results"]["search_plan"] = search_plan_result
+
+    search_result = ContentSearchExecutor().execute(
+        WorkflowNode(node_id="search", node_type="content_search"),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+    run.shared_state["node_results"]["search"] = search_result
+
+    read_plan_result = PlanReadExecutor().execute(
+        WorkflowNode(node_id="read_plan", node_type="plan_read"),
+        run,
+        context=runtime_context,
+    )
+    run.shared_state["node_results"]["read_plan"] = read_plan_result
+
+    read_result = ChunkedFileReadExecutor().execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read"),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert run.shared_state["interpreted_target"]["preferred_path"] == "README.md"
+    assert resolve_result.output["resolved_path"] == "README.md"
+    assert search_result.references == [str(tmp_path / "README.md")]
+    assert read_result.output["path"] == "README.md"
+    assert "Project overview" in read_result.output["chunks"][0]["text"]
 
 
 def test_runtime_executes_move_path_node_with_workspace_tool(tmp_path):
@@ -505,8 +663,19 @@ def test_content_search_executor_emits_quality_signals(monkeypatch, tmp_path):
     )
     target = tmp_path / "README.md"
     target.write_text("agent graph runtime\nplanner\njudge\n", encoding="utf-8")
-    run = WorkflowRun(goal="读取 README.md", shared_state={"node_results": {}})
-    node = WorkflowNode(node_id="search", node_type="content_search", metadata={"target_path": "README.md"})
+    run = WorkflowRun(
+        goal="读取 README.md",
+        shared_state={
+            "node_results": {},
+            "search_plan": {
+                "search_goal": "find readme",
+                "semantic_queries": ["agent graph"],
+                "must_avoid": [],
+                "path_bias": ["README.md"],
+            },
+        },
+    )
+    node = WorkflowNode(node_id="search", node_type="content_search", metadata={})
 
     result = ContentSearchExecutor().execute(node, run, context={"workspace_root": str(tmp_path)})
 
@@ -523,8 +692,17 @@ def test_chunked_file_read_executor_emits_quality_signals(monkeypatch, tmp_path)
     )
     target = tmp_path / "README.md"
     target.write_text("line1\nline2\nline3\n", encoding="utf-8")
-    run = WorkflowRun(goal="读取 README.md", shared_state={"node_results": {}})
-    node = WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={"target_path": "README.md"})
+    run = WorkflowRun(
+        goal="读取 README.md",
+        shared_state={
+            "node_results": {},
+            "read_plan": {
+                "target_path": "README.md",
+                "preferred_regions": ["head"],
+            },
+        },
+    )
+    node = WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={})
 
     result = ChunkedFileReadExecutor().execute(node, run, context={"workspace_root": str(tmp_path)})
 
@@ -537,67 +715,207 @@ def test_chunked_file_read_executor_emits_quality_signals(monkeypatch, tmp_path)
 def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
     from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor
 
-    monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
-        lambda context, payload, system_prompt, max_tokens=400: {
+    seen_payload = {}
+
+    def _fake_plan(context, payload, system_prompt, max_tokens=400):
+        seen_payload["payload"] = payload
+        return {
             "target_kind": "file",
             "preferred_path": "README.md",
             "scope_preference": "workspace_root",
             "exclude_paths": ["frontend-shell/README.md"],
+            "confirmed": True,
             "confidence": 0.93,
             "rationale": "user clarified the outermost readme",
+        }
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        _fake_plan,
+    )
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "clarification_response": "最外层那个 README",
+            "clarification_request": {"items": ["README.md", "frontend-shell/README.md"]},
+            "failure_history": [{"iteration": 1, "status": "needs_clarification"}],
         },
     )
-    run = WorkflowRun(goal="看根目录 README", shared_state={"clarification_response": "最外层那个 README"})
 
     result = InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["interpreted_target"]["preferred_path"] == "README.md"
     assert result.output["quality_signals"][0]["progress_contribution"] == "target_constraints_defined"
+    assert seen_payload["payload"]["prior_candidates"] == ["README.md", "frontend-shell/README.md"]
+    assert seen_payload["payload"]["failure_history"][0]["status"] == "needs_clarification"
+    assert run.shared_state["memory_state"]["semantic_memory"]["interpreted_target"]["preferred_path"] == "README.md"
+
+
+def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_kind": "file",
+            "scope_preference": "workspace_root",
+            "exclude_paths": [],
+            "confidence": 0.9,
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={})
+
+    with pytest.raises(ValueError, match="preferred_path"):
+        InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
 
 
 def test_plan_search_executor_stores_search_plan(monkeypatch):
     from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
 
-    monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
-        lambda context, payload, system_prompt, max_tokens=400: {
+    seen_payload = {}
+
+    def _fake_plan(context, payload, system_prompt, max_tokens=400):
+        seen_payload["payload"] = payload
+        return {
             "search_goal": "find backend readme",
             "semantic_queries": ["README", "agent runtime"],
             "must_avoid": ["frontend-shell"],
             "path_bias": ["README.md"],
             "confidence": 0.81,
+        }
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        _fake_plan,
+    )
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "interpreted_target": {"preferred_path": "README.md"},
+            "failure_history": [{"iteration": 2, "status": "needs_more_evidence"}],
+            "attempted_strategies": ["search readme broadly"],
         },
     )
-    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
 
     result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
     assert result.output["reasoning_trace"][0]["kind"] == "search_plan"
+    assert seen_payload["payload"]["attempted_strategies"] == ["search readme broadly"]
+    assert run.shared_state["memory_state"]["semantic_memory"]["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
+
+
+def test_plan_search_executor_requires_semantic_queries(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "search_goal": "find backend readme",
+            "path_bias": ["README.md"],
+            "must_avoid": [],
+            "confidence": 0.81,
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    with pytest.raises(ValueError, match="semantic_queries"):
+        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
 
 
 def test_plan_read_executor_stores_read_plan(monkeypatch):
     from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
 
-    monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
-        lambda context, payload, system_prompt, max_tokens=400: {
+    seen_payload = {}
+
+    def _fake_plan(context, payload, system_prompt, max_tokens=400):
+        seen_payload["payload"] = payload
+        return {
             "read_goal": "summarize project overview",
             "target_path": "README.md",
             "preferred_regions": ["head"],
             "confidence": 0.84,
+        }
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        _fake_plan,
+    )
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "interpreted_target": {"preferred_path": "README.md"},
+            "search_plan": {"search_goal": "find backend readme"},
+            "failure_history": [{"iteration": 3, "status": "needs_more_evidence"}],
         },
     )
-    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
 
     result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["read_plan"]["preferred_regions"] == ["head"]
     assert result.output["quality_signals"][0]["progress_contribution"] == "read_strategy_defined"
+    assert seen_payload["payload"]["search_plan"]["search_goal"] == "find backend readme"
+    assert run.shared_state["memory_state"]["semantic_memory"]["read_plan"]["target_path"] == "README.md"
+
+
+def test_plan_read_executor_requires_target_path(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "read_goal": "summarize project overview",
+            "preferred_regions": ["head"],
+            "confidence": 0.84,
+        },
+    )
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "interpreted_target": {"preferred_path": "README.md"},
+            "search_plan": {"search_goal": "find backend readme"},
+        },
+    )
+
+    with pytest.raises(ValueError, match="target_path"):
+        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+
+
+def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "semantic_queries": "README.md",
+            "path_bias": "README.md",
+            "must_avoid": None,
+        },
+    )
+    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    with pytest.raises(ValueError, match="search_goal"):
+        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+
+
+def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_path": "README.md",
+            "preferred_regions": "head",
+            "confidence": "0.6",
+        },
+    )
+    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    with pytest.raises(ValueError, match="read_goal"):
+        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
 
 
 def test_aggregate_node_results_deduplicates_facts_evidence_and_references():
@@ -1091,6 +1409,76 @@ def test_judge_progress_detects_conflicting_evidence():
     assert decision.strategy_guidance["recommended_strategy"] == "resolve_conflict_before_answering"
 
 
+def test_judge_progress_uses_memory_excluded_targets_as_conflicts():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    state = new_agent_graph_state(run_id="judge-memory-1", goal_envelope=goal)
+    state.memory_state.semantic_memory = {"excluded_targets": ["frontend-shell/README.md"]}
+
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["found excluded candidate"],
+                "evidence_items": [{"kind": "path", "relative_path": "frontend-shell/README.md"}],
+            }
+        ),
+        state,
+    )
+
+    assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
+
+
+def test_judge_progress_rejects_evidence_when_confirmed_target_differs():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    state = new_agent_graph_state(run_id="judge-memory-2", goal_envelope=goal)
+    state.memory_state.semantic_memory = {
+        "confirmed_targets": ["README.md"],
+        "read_plan": {"target_path": "README.md"},
+    }
+
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["read docs readme"],
+                "evidence_items": [{"kind": "path", "path": "docs/README.md"}],
+                "chunks": [{"path": "docs/README.md", "start_line": 1, "end_line": 3}],
+            }
+        ),
+        state,
+    )
+
+    assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
+
+
+def test_judge_progress_rejects_read_plan_path_mismatch():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    state = new_agent_graph_state(run_id="judge-memory-3", goal_envelope=goal)
+    state.memory_state.semantic_memory = {"read_plan": {"target_path": "README.md"}}
+
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["read docs readme"],
+                "chunks": [{"path": "docs/README.md", "start_line": 1, "end_line": 3}],
+            }
+        ),
+        state,
+    )
+
+    assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
+
+
 def test_final_response_executor_rejects_execution_when_judge_has_not_accepted():
     executor = FinalResponseExecutor()
     run = WorkflowRun(goal="demo", shared_state={"judge_decision": {"status": "needs_more_evidence", "reason": "need more"}})
@@ -1152,6 +1540,71 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
     assert result.status == RUN_STATUS_COMPLETED
     assert result.shared_state["clarification_request"]["clarification_required"] is True
     assert "多个可能目标" in result.final_output
+
+
+def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarification(monkeypatch):
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
+
+    class PlanReadExecutor:
+        def execute(self, node, run, context=None):
+            return NodeResult(status=NODE_STATUS_COMPLETED, output={"summary": "read plan ready"})
+
+    class ReadExecutor:
+        def execute(self, node, run, context=None):
+            return NodeResult(
+                status=NODE_STATUS_COMPLETED,
+                output={
+                    "summary": "read readme",
+                    "evidence_items": [{"kind": "file_chunk", "path": "README.md", "summary": "readme chunk"}],
+                    "chunks": [{"path": "README.md", "start_line": 1, "end_line": 3, "text": "hello"}],
+                    "quality_signals": [
+                        {
+                            "source": "chunked_file_read",
+                            "relevance": "high",
+                            "confidence": 0.9,
+                            "progress_contribution": "grounded_evidence_collected",
+                            "verification_needed": False,
+                            "recoverable_error": False,
+                        }
+                    ],
+                },
+                references=["README.md"],
+            )
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.node_executors.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "final response",
+    )
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    runtime = RecordingGraphExecutionRuntime(
+        executors={
+            "plan_read": PlanReadExecutor(),
+            "chunked_file_read": ReadExecutor(),
+            "final_response": FinalResponseExecutor(),
+        }
+    )
+    agent_runtime = AgentGraphRuntime(workflow_runtime=runtime, planner=plan_next_subgraph, max_iterations=1)
+    prior_state = {
+        "run_id": "confirmed-read-run",
+        "goal_envelope": goal.as_payload(),
+        "memory_state": {
+            "clarification_memory": {},
+            "semantic_memory": {
+                "confirmed_targets": ["README.md"],
+                "interpreted_target": {"confirmed": True, "preferred_path": "README.md"},
+            },
+            "execution_memory": {},
+            "preference_memory": {},
+        },
+    }
+
+    result = agent_runtime.run(goal, prior_state=prior_state, context={})
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.final_output == "final response"
+    assert runtime.calls[0] == ["plan_read", "chunked_file_read"]
 
 
 def test_agent_graph_runtime_records_execution_summary_for_replanning():
@@ -1445,6 +1898,34 @@ def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtim
     assert result.status == RUN_STATUS_COMPLETED
     assert runtime.workflow_runtime.calls[-1] == ["clarification"]
     assert result.shared_state["clarification_request"]["clarification_required"] is True
+
+
+def test_routing_runtime_does_not_rewrite_clarification_reply_into_target_explainer():
+    from agent_runtime_framework.workflow.routing_runtime import RootGraphRuntime
+
+    captured = {}
+
+    runtime = RootGraphRuntime(
+        analyze_goal_fn=lambda message, context: SimpleNamespace(
+            original_goal=message,
+            primary_intent="file_read",
+            requires_target_interpretation=False,
+            requires_search=False,
+            requires_read=True,
+            requires_verification=False,
+            metadata={},
+        ),
+        context={},
+        mark_route_decision=lambda route, source: None,
+        has_pending_clarification=lambda: True,
+        run_conversation=lambda message, graph, root_graph: {"status": "completed"},
+        run_agent=lambda message, goal, root_graph: (captured.__setitem__("goal", goal) or {"status": "completed"}),
+    )
+
+    runtime.run("需要的是README.md这个文档")
+
+    assert captured["goal"].primary_intent == "file_read"
+    assert captured["goal"].requires_read is True
 
 
 def test_agent_graph_runtime_fails_when_planner_emits_unsupported_node_type():

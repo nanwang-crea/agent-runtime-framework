@@ -166,6 +166,10 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.open_issues == []
     assert state.attempted_strategies == []
     assert state.recovery_history == []
+    assert state.memory_state.clarification_memory == {}
+    assert state.memory_state.semantic_memory == {}
+    assert state.memory_state.execution_memory == {}
+    assert state.memory_state.preference_memory == {}
 
     payload = serialize_agent_graph_state(state)
 
@@ -178,6 +182,12 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert payload["open_issues"] == []
     assert payload["attempted_strategies"] == []
     assert payload["recovery_history"] == []
+    assert payload["memory_state"] == {
+        "clarification_memory": {},
+        "semantic_memory": {},
+        "execution_memory": {},
+        "preference_memory": {},
+    }
 
     serialized_subgraph = subgraph.as_payload()
     serialized_judge = judge.as_payload()
@@ -210,10 +220,98 @@ def test_subgraph_planner_prompt_mentions_strategy_change_and_failure_history():
 
     prompt = build_subgraph_planner_system_prompt()
 
-    assert "failure_history" in prompt
-    assert "open_issues" in prompt
-    assert "attempted_strategies" in prompt
+    assert "planner_memory_view" in prompt
+    assert "canonical compact memory context" in prompt
     assert "change strategy" in prompt.lower()
+
+
+def test_agent_graph_state_store_restores_workflow_memory_state():
+    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
+    state = AgentGraphStateStore().restore_state(
+        goal,
+        run_id="run-memory",
+        prior_state={
+            "run_id": "run-memory",
+            "goal_envelope": goal.as_payload(),
+            "memory_state": {
+                "clarification_memory": {"active_question": "which readme"},
+                "semantic_memory": {"confirmed_targets": ["README.md"]},
+                "execution_memory": {"ineffective_actions": ["search broadly"]},
+                "preference_memory": {"path_preferences": ["README.md"]},
+            },
+        },
+    )
+
+    assert state.memory_state.clarification_memory["active_question"] == "which readme"
+    assert state.memory_state.semantic_memory["confirmed_targets"] == ["README.md"]
+    assert state.memory_state.execution_memory["ineffective_actions"] == ["search broadly"]
+    assert state.memory_state.preference_memory["path_preferences"] == ["README.md"]
+
+
+def test_memory_views_compact_structured_workflow_memory():
+    from agent_runtime_framework.workflow.memory_views import build_planner_memory_view, build_semantic_memory_view
+    from agent_runtime_framework.workflow.models import new_agent_graph_state
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
+    state = new_agent_graph_state(run_id="run-memory-view", goal_envelope=goal)
+    state.open_issues = ["verification"]
+    state.failure_history = [
+        {"iteration": 1, "status": "needs_more_evidence", "reason": "a"},
+        {"iteration": 2, "status": "needs_verification", "reason": "b"},
+        {"iteration": 3, "status": "needs_clarification", "reason": "c"},
+    ]
+    state.recovery_history = [
+        {"trigger": "needs_more_evidence", "action": "replan"},
+        {"trigger": "needs_verification", "action": "replan"},
+        {"trigger": "needs_clarification", "action": "request_clarification"},
+    ]
+    state.memory_state.semantic_memory = {
+        "confirmed_targets": ["README.md"],
+        "excluded_targets": ["frontend-shell/README.md"],
+        "search_plan": {"semantic_queries": ["README"]},
+        "read_plan": {"target_path": "README.md"},
+    }
+    state.memory_state.execution_memory = {
+        "ineffective_actions": ["search broadly", "search broadly", "inspect docs"],
+    }
+    state.memory_state.clarification_memory = {
+        "candidate_items": ["README.md", "frontend-shell/README.md"],
+        "clarification_history": [{"question": "which readme"}],
+    }
+
+    planner_view = build_planner_memory_view(state)
+    semantic_view = build_semantic_memory_view(state)
+
+    assert planner_view["confirmed_targets"] == ["README.md"]
+    assert planner_view["excluded_targets"] == ["frontend-shell/README.md"]
+    assert planner_view["open_issues"] == ["verification"]
+    assert planner_view["ineffective_actions"] == ["search broadly", "inspect docs"]
+    assert len(planner_view["recent_failures"]) == 2
+    assert len(planner_view["recent_recovery"]) == 2
+    assert semantic_view["clarification_memory"]["candidate_items"] == ["README.md", "frontend-shell/README.md"]
+
+
+def test_memory_updates_write_semantic_and_execution_memory():
+    from agent_runtime_framework.workflow.memory_updates import remember_execution_feedback, remember_semantic_plan
+    from agent_runtime_framework.workflow.models import new_agent_graph_state
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
+    state = new_agent_graph_state(run_id="run-memory-update", goal_envelope=goal)
+
+    remember_semantic_plan(state, interpreted_target={"preferred_path": "README.md"}, search_plan={"semantic_queries": ["README"]})
+    remember_execution_feedback(
+        state,
+        ineffective_actions=["search broadly", "inspect docs"],
+        conflicts=["multiple readmes"],
+        quality_summary={"coverage": "partial"},
+    )
+
+    assert state.memory_state.semantic_memory["interpreted_target"]["preferred_path"] == "README.md"
+    assert state.memory_state.semantic_memory["search_plan"]["semantic_queries"] == ["README"]
+    assert state.memory_state.execution_memory["ineffective_actions"] == ["search broadly", "inspect docs"]
+    assert state.memory_state.execution_memory["conflicts"] == ["multiple readmes"]
 
 
 def test_workflow_prompt_helpers_extract_json_and_build_context_block():

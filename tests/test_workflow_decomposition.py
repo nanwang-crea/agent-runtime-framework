@@ -88,16 +88,17 @@ def _workflow_context(model_payload: str):
 
 def test_analyze_goal_prefers_model_output_when_available():
     context = _workflow_context(
-        '{"primary_intent":"compound","requires_repository_overview":true,"requires_file_read":true,'
-        '"requires_final_synthesis":true,"target_paths":["README.md"]}'
+        '{"primary_intent":"file_read","requires_target_interpretation":true,"requires_search":false,'
+        '"requires_read":true,"requires_verification":false}'
     )
 
     goal = analyze_goal("随便一句话", context=context)
 
-    assert goal.primary_intent == "compound"
-    assert goal.requires_repository_overview is True
-    assert goal.requires_file_read is True
-    assert goal.target_paths == ["README.md"]
+    assert goal.primary_intent == "file_read"
+    assert goal.requires_target_interpretation is True
+    assert goal.requires_search is False
+    assert goal.requires_read is True
+    assert goal.requires_verification is False
 
 
 def test_decompose_goal_prefers_model_output_when_available():
@@ -110,10 +111,11 @@ def test_decompose_goal_prefers_model_output_when_available():
     goal = GoalSpec(
         original_goal="demo",
         primary_intent="compound",
-        requires_repository_overview=True,
-        requires_file_read=True,
-        requires_final_synthesis=True,
-        target_paths=["README.md"],
+        requires_target_interpretation=True,
+        requires_search=True,
+        requires_read=True,
+        requires_verification=False,
+        metadata={"target_hint": "README.md"},
     )
 
     subtasks = decompose_goal(goal, context=context)
@@ -190,9 +192,9 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     assert '"latest_judge_decision"' in request_body
     assert '"needs_verification"' in request_body
     assert '"execution_summary"' in request_body
-    assert '"open_issues"' in request_body
-    assert '"attempted_strategies"' in request_body
-    assert '"failure_history"' in request_body
+    assert '"planner_memory_view"' in request_body
+    assert '"confirmed_targets"' in request_body
+    assert '"ineffective_actions"' in request_body
     assert '"verification_missing"' in request_body
 
 
@@ -232,6 +234,29 @@ def test_plan_next_subgraph_accepts_semantic_planning_node_types():
     subgraph = plan_next_subgraph(envelope, state, context=context)
 
     assert [node.node_type for node in subgraph.nodes] == ["interpret_target", "plan_search", "plan_read"]
+
+
+def test_plan_next_subgraph_uses_constrained_read_path_for_confirmed_file_read():
+    context = _workflow_context(
+        '{"planner_summary":"model wanted search","nodes":[{"node_id":"search","node_type":"content_search","reason":"broad search","inputs":{},"depends_on":[],"success_criteria":["find candidate"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="看根目录 README",
+        normalized_goal="看根目录 README",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-constrained-read", goal_envelope=envelope)
+    state.memory_state.semantic_memory = {
+        "confirmed_targets": ["README.md"],
+        "interpreted_target": {"confirmed": True, "preferred_path": "README.md"},
+    }
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes] == ["plan_read", "chunked_file_read", "final_response"]
 
 
 def test_plan_next_subgraph_ignores_non_mapping_inputs_payload():
@@ -318,20 +343,20 @@ def test_planner_context_payload_compacts_histories_and_surfaces_ineffective_act
     payload = _planner_context_payload(envelope, state)
 
     assert payload["iteration"] == 5
-    assert payload["attempted_strategies"] == [
+    assert payload["planner_memory_view"]["ineffective_actions"] == [
+        "compare entrypoints",
+        "verify answer",
+    ]
+    assert payload["planner_memory_view"]["open_issues"] == ["grounded evidence", "resolved conflict"]
+    assert payload["planner_memory_view"]["recent_failures"][0]["iteration"] == 3
+    assert payload["planner_memory_view"]["recent_failures"][-1]["diagnosis"]["primary_gap"] == "verification_missing"
+    assert payload["execution_summary"]["attempted_strategies"] == [
         "search service",
         "read service file",
         "summarize candidate",
         "compare entrypoints",
     ]
-    assert len(payload["failure_history"]) == 2
-    assert payload["failure_history"][0]["iteration"] == 3
-    assert payload["failure_history"][-1]["diagnosis"]["primary_gap"] == "verification_missing"
-    assert payload["ineffective_actions"] == [
-        "compare entrypoints",
-        "verify answer",
-    ]
-    assert len(payload["iteration_summaries"]) == 2
+    assert "recent_recovery" in payload["planner_memory_view"]
 
 
 def test_plan_next_subgraph_request_body_uses_compacted_context():
@@ -375,5 +400,6 @@ def test_plan_next_subgraph_request_body_uses_compacted_context():
     assert client is not None
     request_body = client.completions.last_kwargs["messages"][1]["content"]
     assert request_body.count('"iteration"') < 7
+    assert '"planner_memory_view"' in request_body
     assert '"ineffective_actions"' in request_body
     assert '"workspace scan"' not in request_body

@@ -44,18 +44,25 @@ class AgentGraphRuntime:
     state_store: AgentGraphStateStore = field(default_factory=AgentGraphStateStore)
     system_node_manager: SystemNodeManager = field(default_factory=SystemNodeManager)
 
-    def run(self, goal_envelope: GoalEnvelope, *, run_id: str | None = None, context: Any | None = None, prior_state: dict[str, Any] | None = None, prior_graph: WorkflowGraph | None = None, clarification_response: str | None = None) -> WorkflowRun:
+    def run(self, goal_envelope: GoalEnvelope, *, run_id: str | None = None, context: Any | None = None, prior_state: dict[str, Any] | None = None, prior_graph: WorkflowGraph | None = None, clarification_response: str | None = None, clarification_resolution: dict[str, Any] | None = None) -> WorkflowRun:
         runtime_context = context if context is not None else self.context
         state = self._restore_state(goal_envelope, run_id=run_id, prior_state=prior_state)
         graph = prior_graph or self._initial_graph(state)
         run = WorkflowRun(goal=goal_envelope.goal, run_id=state.run_id, graph=graph)
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
+        run.shared_state["agent_graph_state_ref"] = state
+        run.shared_state["memory_state"] = state.memory_state.as_payload()
+        run.shared_state["open_issues"] = list(state.open_issues)
+        run.shared_state["failure_history"] = list(state.failure_history)
+        run.shared_state["attempted_strategies"] = list(state.attempted_strategies)
         self._seed_system_nodes(run, goal_envelope, runtime_context)
         if clarification_response:
             run.shared_state["clarification_response"] = clarification_response
             state.aggregated_payload["open_questions"] = []
             state.aggregated_payload["artifacts"] = dict(state.aggregated_payload.get("artifacts") or {})
             state.aggregated_payload["artifacts"]["clarification_response"] = [clarification_response]
+        if clarification_resolution:
+            run.shared_state["clarification_resolution"] = dict(clarification_resolution)
         return self._execute_iterations(goal_envelope, state, run, runtime_context)
 
     def resume(self, run: WorkflowRun, *, resume_token: Any, approved: bool, context: Any | None = None) -> WorkflowRun:
@@ -331,18 +338,24 @@ class AgentGraphRuntime:
         )
 
     def _execution_graph(self, subgraph: PlannedSubgraph) -> WorkflowGraph:
+        executable_nodes = [node for node in subgraph.nodes if node.node_type != "final_response"]
+        executable_node_ids = {node.node_id for node in executable_nodes}
         return WorkflowGraph(
             nodes=[
                 WorkflowNode(
                     node_id=node.node_id,
                     node_type=node.node_type,
-                    dependencies=list(node.depends_on),
+                    dependencies=[dependency for dependency in node.depends_on if dependency in executable_node_ids],
                     requires_approval=node.requires_approval,
                     metadata=dict(node.inputs or {}),
                 )
-                for node in subgraph.nodes
+                for node in executable_nodes
             ],
-            edges=list(subgraph.edges),
+            edges=[
+                edge
+                for edge in subgraph.edges
+                if edge.source in executable_node_ids and edge.target in executable_node_ids
+            ],
         )
 
     def _anchor_node_id(self, graph: WorkflowGraph, state: AgentGraphState) -> str:

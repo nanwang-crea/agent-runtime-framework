@@ -10,6 +10,7 @@ from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.conversation import build_conversation_messages
 from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context, get_workspace_root
 from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
+from agent_runtime_framework.workflow.memory_views import build_response_memory_view_from_payload
 from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike, WorkflowNodeExecutor
 
@@ -287,6 +288,7 @@ class FinalResponseExecutor:
             facts = aggregated.output.get("facts", []) if aggregated and isinstance(aggregated.output, dict) else []
             evidence_items = aggregated.output.get("evidence_items", []) if aggregated and isinstance(aggregated.output, dict) else []
             verification = aggregated.output.get("verification") if aggregated and isinstance(aggregated.output, dict) else None
+            response_memory_view = build_response_memory_view_from_payload(run.shared_state.get("memory_state"))
             final_response = synthesize_text(
                 context,
                 role="composer",
@@ -301,6 +303,7 @@ class FinalResponseExecutor:
                     "evidence_items": evidence_items,
                     "verification": verification,
                     "references": list(aggregated.references if aggregated else []),
+                    "response_memory_view": response_memory_view,
                 },
                 max_tokens=320,
             ) or ""

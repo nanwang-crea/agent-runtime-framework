@@ -183,10 +183,10 @@ class WorkflowRun:
 class GoalSpec:
     original_goal: str
     primary_intent: str
-    requires_repository_overview: bool = False
-    requires_file_read: bool = False
-    requires_final_synthesis: bool = False
-    target_paths: list[str] = field(default_factory=list)
+    requires_target_interpretation: bool = False
+    requires_search: bool = False
+    requires_read: bool = False
+    requires_verification: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -262,6 +262,22 @@ class JudgeDecision:
 
 
 @dataclass(slots=True)
+class WorkflowMemoryState:
+    clarification_memory: dict[str, Any] = field(default_factory=dict)
+    semantic_memory: dict[str, Any] = field(default_factory=dict)
+    execution_memory: dict[str, Any] = field(default_factory=dict)
+    preference_memory: dict[str, Any] = field(default_factory=dict)
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "clarification_memory": dict(self.clarification_memory),
+            "semantic_memory": dict(self.semantic_memory),
+            "execution_memory": dict(self.execution_memory),
+            "preference_memory": dict(self.preference_memory),
+        }
+
+
+@dataclass(slots=True)
 class AgentGraphState:
     run_id: str
     goal_envelope: GoalEnvelope
@@ -276,6 +292,7 @@ class AgentGraphState:
     open_issues: list[str] = field(default_factory=list)
     attempted_strategies: list[str] = field(default_factory=list)
     recovery_history: list[dict[str, Any]] = field(default_factory=list)
+    memory_state: WorkflowMemoryState = field(default_factory=WorkflowMemoryState)
 
     def as_payload(self) -> dict[str, Any]:
         return serialize_agent_graph_state(self)
@@ -300,4 +317,5 @@ def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
         "open_issues": list(state.open_issues),
         "attempted_strategies": list(state.attempted_strategies),
         "recovery_history": [dict(item) for item in state.recovery_history],
+        "memory_state": state.memory_state.as_payload(),
     }
