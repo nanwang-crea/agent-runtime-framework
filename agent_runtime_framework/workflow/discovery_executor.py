@@ -96,6 +96,22 @@ class WorkspaceDiscoveryExecutor:
                 "facts": facts,
                 "evidence_items": evidence_items,
                 "artifacts": {"tree_sample": tree_sample},
+                "quality_signals": [
+                    {
+                        "source": "workspace_discovery",
+                        "relevance": "high" if facts or evidence_items else "low",
+                        "confidence": 0.85 if facts or evidence_items else 0.3,
+                        "progress_contribution": "workspace_context_collected" if facts or evidence_items else "workspace_context_missing",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+                "reasoning_trace": [
+                    {
+                        "kind": "workspace_scan",
+                        "summary": f"Scanned {len(root_entries)} root entries and sampled common code directories",
+                    }
+                ],
             },
             references=references,
         )

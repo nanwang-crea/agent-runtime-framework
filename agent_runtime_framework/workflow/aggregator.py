@@ -10,6 +10,9 @@ def aggregate_node_results(results: list[NodeResult]) -> NodeResult:
     chunks: list[dict] = []
     open_questions: list[str] = []
     verification_events: list[dict] = []
+    quality_signals: list[dict] = []
+    reasoning_trace: list[dict] = []
+    conflicts: list[str] = []
     artifacts: dict[str, list] = {}
     references: list[str] = []
     for result in results:
@@ -29,6 +32,15 @@ def aggregate_node_results(results: list[NodeResult]) -> NodeResult:
         for question in output.get("open_questions", []) or []:
             if question and question not in open_questions:
                 open_questions.append(str(question))
+        for signal in output.get("quality_signals", []) or []:
+            if isinstance(signal, dict) and signal not in quality_signals:
+                quality_signals.append(signal)
+        for item in output.get("reasoning_trace", []) or []:
+            if isinstance(item, dict) and item not in reasoning_trace:
+                reasoning_trace.append(item)
+        for conflict in output.get("conflicts", []) or []:
+            if conflict and str(conflict) not in conflicts:
+                conflicts.append(str(conflict))
         verification = output.get("verification")
         if isinstance(verification, dict):
             verification_events.append(verification)
@@ -54,6 +66,9 @@ def aggregate_node_results(results: list[NodeResult]) -> NodeResult:
                 "open_questions": open_questions,
                 "verification": verification_events[-1] if verification_events else None,
                 "verification_events": verification_events,
+                "quality_signals": quality_signals,
+                "reasoning_trace": reasoning_trace,
+                "conflicts": conflicts,
             }
         ),
         references=references,

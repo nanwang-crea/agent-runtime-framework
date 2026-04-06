@@ -12,7 +12,7 @@ from agent_runtime_framework.tools import ToolRegistry
 from agent_runtime_framework.workflow.decomposition import decompose_goal
 from agent_runtime_framework.workflow.goal_analysis import analyze_goal
 from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision, SubTaskSpec, new_agent_graph_state
-from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
+from agent_runtime_framework.workflow.subgraph_planner import _planner_context_payload, plan_next_subgraph
 
 
 class _FakeCompletions:
@@ -158,12 +158,26 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     state = new_agent_graph_state(run_id="run-feedback-2", goal_envelope=envelope)
     state.aggregated_payload["summaries"] = ["created tet.txt"]
     state.aggregated_payload["evidence_items"] = [{"kind": "path", "path": "tet.txt"}]
+    state.open_issues = ["verification"]
+    state.attempted_strategies = ["create file", "summarize write result"]
+    state.failure_history.append(
+        {
+            "iteration": 1,
+            "status": "needs_verification",
+            "reason": "Verification coverage is missing",
+            "missing_evidence": ["verification"],
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "strategy_guidance": {"recommended_strategy": "verify_existing_changes"},
+        }
+    )
     state.judge_history.append(
         JudgeDecision(
             status="needs_verification",
             reason="Verification coverage is missing",
             missing_evidence=["verification"],
             replan_hint={"next_node_type": "verification", "verification_type": "post_write"},
+            diagnosis={"primary_gap": "verification_missing"},
+            strategy_guidance={"recommended_strategy": "verify_existing_changes"},
         )
     )
 
@@ -176,6 +190,10 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     assert '"latest_judge_decision"' in request_body
     assert '"needs_verification"' in request_body
     assert '"execution_summary"' in request_body
+    assert '"open_issues"' in request_body
+    assert '"attempted_strategies"' in request_body
+    assert '"failure_history"' in request_body
+    assert '"verification_missing"' in request_body
 
 
 def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_mode():
@@ -197,6 +215,25 @@ def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_
     assert subgraph.nodes[0].node_type == "verification"
 
 
+def test_plan_next_subgraph_accepts_semantic_planning_node_types():
+    context = _workflow_context(
+        '{"planner_summary":"interpret then search","nodes":[{"node_id":"interpret","node_type":"interpret_target","reason":"resolve target semantics","inputs":{},"depends_on":[],"success_criteria":["capture target constraints"]},{"node_id":"search_plan","node_type":"plan_search","reason":"plan search strategy","inputs":{},"depends_on":["interpret"],"success_criteria":["define search plan"]},{"node_id":"read_plan","node_type":"plan_read","reason":"plan reading strategy","inputs":{},"depends_on":["search_plan"],"success_criteria":["define read plan"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="看根目录 README",
+        normalized_goal="看根目录 README",
+        intent="file_read",
+        target_hints=["README"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-semantic-nodes", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes] == ["interpret_target", "plan_search", "plan_read"]
+
+
 def test_plan_next_subgraph_ignores_non_mapping_inputs_payload():
     context = _workflow_context(
         '{"planner_summary":"model plan","nodes":[{"node_id":"verify","node_type":"verification","reason":"model picked verification","inputs":["post_write_input"],"depends_on":[],"success_criteria":["produce verification result"]}]}'
@@ -215,3 +252,128 @@ def test_plan_next_subgraph_ignores_non_mapping_inputs_payload():
 
     assert subgraph.nodes[0].node_type == "verification"
     assert subgraph.nodes[0].inputs == {}
+
+
+def test_planner_context_payload_compacts_histories_and_surfaces_ineffective_actions():
+    envelope = SimpleNamespace(
+        goal="解释 service 模块",
+        normalized_goal="解释 service 模块",
+        intent="compound",
+        target_hints=["service"],
+        success_criteria=["ground answer"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-compact", goal_envelope=envelope)
+    state.current_iteration = 4
+    state.open_issues = ["grounded evidence", "resolved conflict"]
+    state.attempted_strategies = [
+        "workspace scan",
+        "search service",
+        "read service file",
+        "summarize candidate",
+        "search service",
+        "compare entrypoints",
+    ]
+    state.failure_history = [
+        {
+            "iteration": 1,
+            "status": "needs_more_evidence",
+            "reason": "missing grounded evidence",
+            "missing_evidence": ["grounded evidence"],
+            "diagnosis": {"primary_gap": "grounded_evidence_missing"},
+            "strategy_guidance": {"recommended_strategy": "gather_grounded_evidence"},
+        },
+        {
+            "iteration": 2,
+            "status": "needs_more_evidence",
+            "reason": "still missing grounded evidence",
+            "missing_evidence": ["grounded evidence"],
+            "diagnosis": {"primary_gap": "grounded_evidence_missing"},
+            "strategy_guidance": {"recommended_strategy": "gather_grounded_evidence"},
+        },
+        {
+            "iteration": 3,
+            "status": "needs_more_evidence",
+            "reason": "conflicting candidates",
+            "missing_evidence": ["resolved conflict"],
+            "diagnosis": {"primary_gap": "conflicting_evidence"},
+            "strategy_guidance": {"recommended_strategy": "resolve_conflict_before_answering"},
+        },
+        {
+            "iteration": 4,
+            "status": "needs_verification",
+            "reason": "verification missing",
+            "missing_evidence": ["verification"],
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "strategy_guidance": {"recommended_strategy": "verify_existing_changes"},
+        },
+    ]
+    state.iteration_summaries = [
+        {"iteration": 1, "planner_summary": "workspace scan", "judge_status": "needs_more_evidence"},
+        {"iteration": 2, "planner_summary": "search service", "judge_status": "needs_more_evidence"},
+        {"iteration": 3, "planner_summary": "compare entrypoints", "judge_status": "needs_more_evidence"},
+        {"iteration": 4, "planner_summary": "verify answer", "judge_status": "needs_verification"},
+    ]
+
+    payload = _planner_context_payload(envelope, state)
+
+    assert payload["iteration"] == 5
+    assert payload["attempted_strategies"] == [
+        "search service",
+        "read service file",
+        "summarize candidate",
+        "compare entrypoints",
+    ]
+    assert len(payload["failure_history"]) == 2
+    assert payload["failure_history"][0]["iteration"] == 3
+    assert payload["failure_history"][-1]["diagnosis"]["primary_gap"] == "verification_missing"
+    assert payload["ineffective_actions"] == [
+        "compare entrypoints",
+        "verify answer",
+    ]
+    assert len(payload["iteration_summaries"]) == 2
+
+
+def test_plan_next_subgraph_request_body_uses_compacted_context():
+    context = _workflow_context(
+        '{"planner_summary":"model plan","nodes":[{"node_id":"verify","node_type":"verification","reason":"model picked verification","inputs":{"verification_type":"post_write"},"depends_on":[],"success_criteria":["produce verification result"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="创建 tet.txt 并写入内容",
+        normalized_goal="创建 tet.txt 并写入内容",
+        intent="change_and_verify",
+        target_hints=["tet.txt"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-model-compact", goal_envelope=envelope)
+    state.attempted_strategies = [
+        "workspace scan",
+        "search tet",
+        "read tet",
+        "summarize tet",
+        "search tet",
+        "verify tet",
+    ]
+    state.failure_history = [
+        {"iteration": 1, "status": "needs_more_evidence", "reason": "a", "diagnosis": {"primary_gap": "grounded_evidence_missing"}},
+        {"iteration": 2, "status": "needs_more_evidence", "reason": "b", "diagnosis": {"primary_gap": "grounded_evidence_missing"}},
+        {"iteration": 3, "status": "needs_verification", "reason": "c", "diagnosis": {"primary_gap": "verification_missing"}},
+        {"iteration": 4, "status": "needs_verification", "reason": "d", "diagnosis": {"primary_gap": "verification_missing"}},
+    ]
+    state.iteration_summaries = [
+        {"iteration": 1, "planner_summary": "workspace scan", "judge_status": "needs_more_evidence"},
+        {"iteration": 2, "planner_summary": "search tet", "judge_status": "needs_more_evidence"},
+        {"iteration": 3, "planner_summary": "read tet", "judge_status": "needs_verification"},
+        {"iteration": 4, "planner_summary": "verify tet", "judge_status": "needs_verification"},
+    ]
+
+    plan_next_subgraph(envelope, state, context=SimpleNamespace(application_context=context.application_context, services={}))
+
+    instance = context.application_context.services["model_registry"].instance("fake")
+    client = instance.last_client
+    assert client is not None
+    request_body = client.completions.last_kwargs["messages"][1]["content"]
+    assert request_body.count('"iteration"') < 7
+    assert '"ineffective_actions"' in request_body
+    assert '"workspace scan"' not in request_body

@@ -44,6 +44,7 @@ class AgentGraphStateStore:
             failure_history=[dict(item) for item in prior_state.get("failure_history", []) or [] if isinstance(item, dict)],
             open_issues=[str(item) for item in prior_state.get("open_issues", []) or [] if str(item).strip()],
             attempted_strategies=[str(item) for item in prior_state.get("attempted_strategies", []) or [] if str(item).strip()],
+            recovery_history=[dict(item) for item in prior_state.get("recovery_history", []) or [] if isinstance(item, dict)],
         )
         for item in prior_state.get("planned_subgraphs", []) or []:
             nodes = [

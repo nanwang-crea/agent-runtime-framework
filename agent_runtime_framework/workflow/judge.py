@@ -19,6 +19,22 @@ def _verification_status(payload: dict[str, Any], goal_envelope: GoalEnvelope) -
     return "not_required"
 
 
+def _quality_signals(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in (payload.get("quality_signals", []) or []) if isinstance(item, dict)]
+
+
+def _has_grounded_progress(signals: list[dict[str, Any]]) -> bool:
+    grounded_contributions = {
+        "grounded_evidence_collected",
+        "workspace_context_collected",
+        "verification_completed",
+        "workspace_updated",
+        "target_resolved",
+        "tool_result_collected",
+    }
+    return any(str(item.get("progress_contribution") or "").strip() in grounded_contributions for item in signals)
+
+
 def judge_progress(
     goal_envelope: GoalEnvelope,
     aggregated_payload: dict[str, Any] | None,
@@ -61,13 +77,40 @@ def judge_progress(
             },
         )
 
+    conflicts = [str(item) for item in payload.get("conflicts", []) or [] if str(item).strip()]
+    quality_signals = _quality_signals(payload)
+    if conflicts:
+        return JudgeDecision(
+            status="needs_more_evidence",
+            reason="Conflicting evidence needs to be resolved before answering",
+            missing_evidence=["resolved conflict"],
+            coverage_report={"conflicts": conflicts, "quality_signals": quality_signals},
+            replan_hint={
+                "goal_gap": "conflicting_evidence",
+                "recommended_next_actions": ["target_resolution", "chunked_file_read"],
+                "must_include": ["conflict resolution"],
+                "must_avoid": ["final_response"],
+            },
+            diagnosis={
+                "primary_gap": "conflicting_evidence",
+                "goal_status": "conflicted",
+                "verification_status": _verification_status(payload, goal_envelope),
+            },
+            strategy_guidance={
+                "recommended_strategy": "resolve_conflict_before_answering",
+                "focus": ["target_resolution", "compare evidence"],
+                "avoid": ["final_response"],
+            },
+        )
+
     evidence_count = len(payload.get("evidence_items", []) or []) + len(payload.get("chunks", []) or []) + len(payload.get("facts", []) or [])
-    if evidence_count <= 0 and not (payload.get("summaries") or []):
+    summaries = payload.get("summaries") or []
+    if (evidence_count <= 0 and not summaries) or (evidence_count <= 0 and summaries and not _has_grounded_progress(quality_signals)):
         return JudgeDecision(
             status="needs_more_evidence",
             reason="Not enough evidence collected yet",
             missing_evidence=["grounded evidence"],
-            coverage_report={"evidence_count": evidence_count},
+            coverage_report={"evidence_count": evidence_count, "quality_signals": quality_signals},
             replan_hint={
                 "goal_gap": "grounded_evidence_missing",
                 "recommended_next_actions": ["content_search", "chunked_file_read"],

@@ -93,7 +93,22 @@ class VerificationExecutor:
             verification = {"status": "failed", "success": False, "summary": summary}
             return NodeResult(
                 status=NODE_STATUS_FAILED,
-                output={"summary": summary, "verification": verification, "verification_events": []},
+                output={
+                    "summary": summary,
+                    "verification": verification,
+                    "verification_events": [],
+                    "quality_signals": [
+                        {
+                            "source": "verification",
+                            "relevance": "high",
+                            "confidence": 0.9,
+                            "progress_contribution": "verification_blocked",
+                            "verification_needed": False,
+                            "recoverable_error": True,
+                        }
+                    ],
+                    "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+                },
                 references=references,
                 error=summary,
             )
@@ -115,7 +130,23 @@ class VerificationExecutor:
             verification = {"status": "failed", "success": False, "summary": summary}
             return NodeResult(
                 status=NODE_STATUS_FAILED,
-                output={"summary": summary, "verification": verification, "verification_events": verification_events, "verification_by_type": verification_by_type},
+                output={
+                    "summary": summary,
+                    "verification": verification,
+                    "verification_events": verification_events,
+                    "verification_by_type": verification_by_type,
+                    "quality_signals": [
+                        {
+                            "source": "verification",
+                            "relevance": "high",
+                            "confidence": 0.95,
+                            "progress_contribution": "verification_failed",
+                            "verification_needed": False,
+                            "recoverable_error": True,
+                        }
+                    ],
+                    "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+                },
                 references=references,
                 error=summary,
             )
@@ -125,7 +156,23 @@ class VerificationExecutor:
         verification = {"status": "passed", "success": True, "summary": summary}
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={"summary": summary, "verification": verification, "verification_events": verification_events, "verification_by_type": verification_by_type},
+            output={
+                "summary": summary,
+                "verification": verification,
+                "verification_events": verification_events,
+                "verification_by_type": verification_by_type,
+                "quality_signals": [
+                    {
+                        "source": "verification",
+                        "relevance": "high",
+                        "confidence": 0.95,
+                        "progress_contribution": "verification_completed",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+                "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+            },
             references=references,
             error=None,
         )

@@ -165,6 +165,7 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.failure_history == []
     assert state.open_issues == []
     assert state.attempted_strategies == []
+    assert state.recovery_history == []
 
     payload = serialize_agent_graph_state(state)
 
@@ -176,6 +177,7 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert payload["failure_history"] == []
     assert payload["open_issues"] == []
     assert payload["attempted_strategies"] == []
+    assert payload["recovery_history"] == []
 
     serialized_subgraph = subgraph.as_payload()
     serialized_judge = judge.as_payload()
@@ -201,6 +203,17 @@ def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
         source = path.read_text(encoding="utf-8")
         assert "agents.workspace_backend.prompting" not in source
         assert "agents.workspace_backend.run_context" not in source
+
+
+def test_subgraph_planner_prompt_mentions_strategy_change_and_failure_history():
+    from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
+
+    prompt = build_subgraph_planner_system_prompt()
+
+    assert "failure_history" in prompt
+    assert "open_issues" in prompt
+    assert "attempted_strategies" in prompt
+    assert "change strategy" in prompt.lower()
 
 
 def test_workflow_prompt_helpers_extract_json_and_build_context_block():

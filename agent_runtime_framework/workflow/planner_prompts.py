@@ -32,11 +32,15 @@ def build_subgraph_planner_system_prompt() -> str:
     return (
         "You plan a workflow subgraph. Return JSON only with keys: planner_summary, nodes. "
         "Each node must contain node_id, node_type, reason, inputs, depends_on, success_criteria. "
-        "Allowed node types include target_resolution, workspace_discovery, content_search, chunked_file_read, "
+        "Allowed node types include interpret_target, plan_search, plan_read, target_resolution, workspace_discovery, content_search, chunked_file_read, "
         "tool_call, clarification, verification, verification_step, aggregate_results, evidence_synthesis, "
         "create_path, move_path, delete_path, apply_patch, write_file, append_text. "
         "Prefer graph-native nodes first. Use target_resolution when the target is ambiguous. "
-        "You will also receive latest_judge_decision and execution_summary from prior iterations. "
+        "You will also receive latest_judge_decision, execution_summary, open_issues, attempted_strategies, "
+        "failure_history, iteration_summaries, and ineffective_actions from prior iterations. "
         "Plan against those feedback signals instead of repeating a prior insufficient node. "
+        "Treat those histories as compact recent context, not exhaustive logs. "
+        "You must change strategy when failure_history or open_issues show the prior plan was insufficient. "
+        "Do not repeat a previously ineffective action unless the new node explicitly addresses the diagnosed gap. "
         "If the judge requests verification, include a verification-oriented node in the next subgraph."
     )

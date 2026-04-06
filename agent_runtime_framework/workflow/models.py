@@ -48,6 +48,9 @@ class AggregatedWorkflowPayload(TypedDict):
     open_questions: list[str]
     verification: VerificationPayload | None
     verification_events: list[VerificationPayload]
+    quality_signals: list[dict[str, Any]]
+    reasoning_trace: list[dict[str, Any]]
+    conflicts: list[str]
 
 
 def normalize_aggregated_workflow_payload(output: dict[str, Any] | None = None) -> AggregatedWorkflowPayload:
@@ -82,6 +85,9 @@ def normalize_aggregated_workflow_payload(output: dict[str, Any] | None = None) 
         "open_questions": [str(item) for item in (data.get("open_questions", []) or []) if str(item).strip()],
         "verification": verification if isinstance(verification, dict) else None,
         "verification_events": verification_events,
+        "quality_signals": [item for item in (data.get("quality_signals", []) or []) if isinstance(item, dict)],
+        "reasoning_trace": [item for item in (data.get("reasoning_trace", []) or []) if isinstance(item, dict)],
+        "conflicts": [str(item) for item in (data.get("conflicts", []) or []) if str(item).strip()],
     }
 
 
@@ -269,6 +275,7 @@ class AgentGraphState:
     failure_history: list[dict[str, Any]] = field(default_factory=list)
     open_issues: list[str] = field(default_factory=list)
     attempted_strategies: list[str] = field(default_factory=list)
+    recovery_history: list[dict[str, Any]] = field(default_factory=list)
 
     def as_payload(self) -> dict[str, Any]:
         return serialize_agent_graph_state(self)
@@ -292,4 +299,5 @@ def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
         "failure_history": [dict(item) for item in state.failure_history],
         "open_issues": list(state.open_issues),
         "attempted_strategies": list(state.attempted_strategies),
+        "recovery_history": [dict(item) for item in state.recovery_history],
     }

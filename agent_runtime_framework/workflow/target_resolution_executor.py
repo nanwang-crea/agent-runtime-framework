@@ -23,13 +23,23 @@ class TargetResolutionExecutor:
             return NodeResult(status=NODE_STATUS_FAILED, error="Missing application_context for target_resolution executor")
 
         tool = application_context.tools.require("resolve_workspace_target")
-        query = str(node.metadata.get("query") or run.goal)
-        target_hint = str(node.metadata.get("target_hint") or "")
+        interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
+        query = str(node.metadata.get("query") or interpreted_target.get("preferred_path") or run.goal)
+        target_hint = str(node.metadata.get("target_hint") or interpreted_target.get("preferred_path") or "")
         task = SimpleNamespace(task_id=node.node_id, goal=run.goal, state=TaskState())
         execution_context = workspace_context or SimpleNamespace(application_context=application_context, services={})
         result = execute_tool_call(
             tool,
-            ToolCall(tool_name="resolve_workspace_target", arguments={"query": query, "target_hint": target_hint}),
+            ToolCall(
+                tool_name="resolve_workspace_target",
+                arguments={
+                    "query": query,
+                    "target_hint": target_hint,
+                    "preferred_path": interpreted_target.get("preferred_path"),
+                    "scope_preference": interpreted_target.get("scope_preference"),
+                    "exclude_paths": list(interpreted_target.get("exclude_paths") or []),
+                },
+            ),
             task=task,
             context=execution_context,
         )
@@ -45,4 +55,19 @@ class TargetResolutionExecutor:
             }
         run.shared_state["resolved_target"] = output
         references = [value for value in [str(output.get("resolved_path") or "").strip(), str(output.get("path") or "").strip()] if value]
+        resolution_status = str(output.get("resolution_status") or "").strip()
+        output["quality_signals"] = [{
+            "source": "target_resolution",
+            "relevance": "high",
+            "confidence": 0.9 if resolution_status == "resolved" else 0.6,
+            "progress_contribution": "target_resolved" if resolution_status == "resolved" else "target_clarification_required",
+            "verification_needed": False,
+            "recoverable_error": resolution_status in {"ambiguous", "unresolved"},
+        }]
+        output["reasoning_trace"] = [{
+            "kind": "target_resolution",
+            "summary": f"Target resolution status: {resolution_status or 'unknown'}",
+        }]
+        if resolution_status in {"ambiguous", "unresolved"}:
+            output["conflicts"] = [str(output.get("summary") or output.get("text") or "Target remains ambiguous.")]
         return NodeResult(status=NODE_STATUS_COMPLETED, output=output, references=references)

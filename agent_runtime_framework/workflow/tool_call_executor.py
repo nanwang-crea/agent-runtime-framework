@@ -38,7 +38,21 @@ class ToolCallExecutor:
         if not result.success:
             return NodeResult(
                 status=NODE_STATUS_FAILED,
-                output={"tool_name": tool_name, "arguments": arguments, "tool_error": result.error, "tool_metadata": dict(result.metadata or {})},
+                output={
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "tool_error": result.error,
+                    "tool_metadata": dict(result.metadata or {}),
+                    "quality_signals": [{
+                        "source": "tool_call",
+                        "relevance": "medium",
+                        "confidence": 0.75,
+                        "progress_contribution": "tool_call_failed",
+                        "verification_needed": False,
+                        "recoverable_error": True,
+                    }],
+                    "reasoning_trace": [{"kind": "tool_call", "summary": f"Tool {tool_name} failed"}],
+                },
                 error=str(result.error or "tool execution failed"),
             )
 
@@ -51,6 +65,20 @@ class ToolCallExecutor:
                 references.append(value)
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={"tool_name": tool_name, "arguments": arguments, "tool_output": output, "summary": summary},
+            output={
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "tool_output": output,
+                "summary": summary,
+                "quality_signals": [{
+                    "source": "tool_call",
+                    "relevance": "medium",
+                    "confidence": 0.85,
+                    "progress_contribution": "tool_result_collected",
+                    "verification_needed": False,
+                    "recoverable_error": False,
+                }],
+                "reasoning_trace": [{"kind": "tool_call", "summary": f"Tool {tool_name} returned structured output"}],
+            },
             references=references,
         )

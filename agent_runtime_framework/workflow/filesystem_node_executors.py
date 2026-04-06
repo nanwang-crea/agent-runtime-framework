@@ -24,6 +24,23 @@ def _collect_references(output: dict[str, Any]) -> list[str]:
     return references
 
 
+def _workspace_quality_signal(tool_name: str, success: bool, summary: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    contribution = "workspace_updated" if success else "workspace_update_failed"
+    return (
+        [
+            {
+                "source": tool_name,
+                "relevance": "high",
+                "confidence": 0.95 if success else 0.8,
+                "progress_contribution": contribution,
+                "verification_needed": success,
+                "recoverable_error": not success,
+            }
+        ],
+        [{"kind": "workspace_change", "summary": summary}],
+    )
+
+
 @dataclass(slots=True)
 class WorkspaceToolNodeExecutor:
     tool_name: str
@@ -54,17 +71,33 @@ class WorkspaceToolNodeExecutor:
         execution_context = workspace_context or SimpleNamespace(application_context=application_context, services={})
         result = execute_tool_call(tool, ToolCall(tool_name=self.tool_name, arguments=arguments), task=task, context=execution_context)
         if not result.success:
+            quality_signals, reasoning_trace = _workspace_quality_signal(self.tool_name, False, str(result.error or "tool execution failed"))
             return NodeResult(
                 status=NODE_STATUS_FAILED,
-                output={"tool_name": self.tool_name, "arguments": arguments, "tool_error": result.error, "tool_metadata": dict(result.metadata or {})},
+                output={
+                    "tool_name": self.tool_name,
+                    "arguments": arguments,
+                    "tool_error": result.error,
+                    "tool_metadata": dict(result.metadata or {}),
+                    "quality_signals": quality_signals,
+                    "reasoning_trace": reasoning_trace,
+                },
                 error=str(result.error or "tool execution failed"),
             )
 
         output = dict(result.output or {})
         summary = str(output.get("summary") or output.get("text") or output.get("content") or output.get("stdout") or "")
+        quality_signals, reasoning_trace = _workspace_quality_signal(self.tool_name, True, summary)
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={"tool_name": self.tool_name, "arguments": arguments, "tool_output": output, "summary": summary},
+            output={
+                "tool_name": self.tool_name,
+                "arguments": arguments,
+                "tool_output": output,
+                "summary": summary,
+                "quality_signals": quality_signals,
+                "reasoning_trace": reasoning_trace,
+            },
             references=_collect_references(output),
         )
 

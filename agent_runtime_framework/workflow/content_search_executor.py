@@ -23,6 +23,7 @@ class ContentSearchExecutor:
         runtime_context = dict(context or {})
         workspace_root = Path(get_workspace_root(runtime_context, ".")).resolve()
         resolved_target = dict(run.shared_state.get("resolved_target") or {})
+        search_plan = dict(run.shared_state.get("search_plan") or {})
         if bool(resolved_target.get("clarification_required")):
             summary = str(resolved_target.get("text") or resolved_target.get("summary") or "Please clarify the target.")
             return NodeResult(
@@ -38,9 +39,13 @@ class ContentSearchExecutor:
                 references=[],
             )
 
-        terms = self._search_terms(run.goal, node.metadata)
+        terms = [str(item).strip() for item in search_plan.get("semantic_queries", []) or [] if str(item).strip()] or self._search_terms(run.goal, node.metadata)
         symbol_hint = str(node.metadata.get("symbol_hint") or "").strip()
         candidates = self._candidate_paths(run, node.metadata)
+        path_bias = [str(item).strip() for item in search_plan.get("path_bias", []) or [] if str(item).strip()]
+        if path_bias:
+            candidates = list(dict.fromkeys([*path_bias, *candidates]))
+        must_avoid = [str(item).strip() for item in search_plan.get("must_avoid", []) or [] if str(item).strip()]
         matches: list[dict[str, Any]] = []
         evidence_items: list[dict[str, Any]] = []
         references: list[str] = []
@@ -51,8 +56,10 @@ class ContentSearchExecutor:
                 path = (workspace_root / candidate).resolve()
             if not path.exists():
                 continue
-            path_text = str(path).lower()
             relative_path = self._relative_path(path, workspace_root)
+            if must_avoid and any(relative_path.startswith(item) for item in must_avoid):
+                continue
+            path_text = str(path).lower()
             if path.is_dir():
                 score = self._path_score(path, terms, prefer_code=bool(symbol_hint))
                 if score <= 0:
@@ -125,6 +132,32 @@ class ContentSearchExecutor:
                 "ranked_targets": matches,
                 "evidence_items": evidence_items,
                 "artifacts": {"search_terms": terms},
+                "quality_signals": [
+                    {
+                        "source": "content_search",
+                        "relevance": "high" if matches else "low",
+                        "confidence": 0.8 if matches else 0.2,
+                        "progress_contribution": "candidate_identified" if matches else "no_relevant_candidate",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+                "reasoning_trace": [
+                    {
+                        "kind": "search_strategy",
+                        "summary": f"Searched {len(candidates[: self.max_candidates])} candidate paths using {len(terms)} terms",
+                    },
+                    *(
+                        [
+                            {
+                                "kind": "top_match",
+                                "summary": f"Top ranked target is {matches[0]['relative_path']} with score {matches[0]['score']}",
+                            }
+                        ]
+                        if matches
+                        else []
+                    ),
+                ],
             },
             references=list(dict.fromkeys(references)),
         )

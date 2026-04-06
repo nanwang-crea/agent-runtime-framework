@@ -23,6 +23,7 @@ from agent_runtime_framework.workflow.filesystem_node_executors import (
     WriteFileExecutor,
 )
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FinalResponseExecutor, VerificationExecutor
+from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
 from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
@@ -36,6 +37,9 @@ class DemoRuntimeFactory:
         return GraphExecutionRuntime(
             executors={
                 "workspace_discovery": WorkspaceDiscoveryExecutor(),
+                "interpret_target": InterpretTargetExecutor(),
+                "plan_search": PlanSearchExecutor(),
+                "plan_read": PlanReadExecutor(),
                 "content_search": ContentSearchExecutor(),
                 "chunked_file_read": ChunkedFileReadExecutor(),
                 "evidence_synthesis": EvidenceSynthesisExecutor(),

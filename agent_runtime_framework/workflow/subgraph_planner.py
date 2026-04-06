@@ -11,6 +11,9 @@ from agent_runtime_framework.workflow.planner_prompts import build_subgraph_plan
 from agent_runtime_framework.workflow.prompting import extract_json_block
 
 ALLOWED_DYNAMIC_NODE_TYPES = {
+    "interpret_target",
+    "plan_search",
+    "plan_read",
     "target_resolution",
     "workspace_discovery",
     "content_search",
@@ -25,6 +28,9 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
 }
 
 _DEFAULT_MAX_DYNAMIC_NODES = 3
+_MAX_FAILURE_HISTORY = 2
+_MAX_ITERATION_SUMMARIES = 2
+_MAX_ATTEMPTED_STRATEGIES = 4
 
 
 def _normalize_node_inputs(value: Any) -> dict[str, Any]:
@@ -59,6 +65,107 @@ def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
         "summaries": list(payload.get("summaries", []) or []),
         "evidence_count": len(payload.get("evidence_items", []) or []) + len(payload.get("chunks", []) or []) + len(payload.get("facts", []) or []),
         "verification": dict(payload.get("verification") or {}) if isinstance(payload.get("verification"), dict) else None,
+        "open_issues": list(graph_state.open_issues),
+        "attempted_strategies": list(graph_state.attempted_strategies),
+        "latest_failure": dict(graph_state.failure_history[-1]) if graph_state.failure_history else None,
+    }
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        item = str(value).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _compact_attempted_strategies(graph_state: AgentGraphState) -> list[str]:
+    return _dedupe_preserve_order(list(graph_state.attempted_strategies))[-_MAX_ATTEMPTED_STRATEGIES:]
+
+
+def _compact_failure_history(graph_state: AgentGraphState) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in graph_state.failure_history[-_MAX_FAILURE_HISTORY:]:
+        if not isinstance(item, dict):
+            continue
+        compacted.append(
+            {
+                "iteration": int(item.get("iteration") or 0),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "missing_evidence": [str(value) for value in item.get("missing_evidence", []) or [] if str(value).strip()],
+                "diagnosis": dict(item.get("diagnosis") or {}),
+                "strategy_guidance": dict(item.get("strategy_guidance") or {}),
+            }
+        )
+    return compacted
+
+
+def _compact_iteration_summaries(graph_state: AgentGraphState) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in graph_state.iteration_summaries[-_MAX_ITERATION_SUMMARIES:]:
+        if not isinstance(item, dict):
+            continue
+        compacted.append(
+            {
+                "iteration": int(item.get("iteration") or 0),
+                "planner_summary": str(item.get("planner_summary") or ""),
+                "judge_status": str(item.get("judge_status") or ""),
+                "missing_evidence": [str(value) for value in item.get("missing_evidence", []) or [] if str(value).strip()],
+                "diagnosis": dict(item.get("diagnosis") or {}),
+            }
+        )
+    return compacted
+
+
+def _ineffective_actions(graph_state: AgentGraphState) -> list[str]:
+    actions: list[str] = []
+    iteration_lookup = {
+        int(item.get("iteration") or 0): str(item.get("planner_summary") or "").strip()
+        for item in graph_state.iteration_summaries
+        if isinstance(item, dict)
+    }
+    for failure in _compact_failure_history(graph_state):
+        if failure["status"] == "accepted":
+            continue
+        summary = iteration_lookup.get(int(failure.get("iteration") or 0), "")
+        if summary:
+            actions.append(summary)
+    return _dedupe_preserve_order(actions)
+
+
+def _compact_execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
+    summary = dict(_execution_summary(graph_state))
+    quality_signals = [dict(item) for item in summary.get("quality_signals", []) or [] if isinstance(item, dict)]
+    if quality_signals:
+        summary["quality_signals"] = quality_signals[:3]
+    if "attempted_strategies" in summary:
+        summary["attempted_strategies"] = _compact_attempted_strategies(graph_state)
+    latest_failure = summary.get("latest_failure")
+    if isinstance(latest_failure, dict):
+        compact_failures = _compact_failure_history(graph_state)
+        summary["latest_failure"] = compact_failures[-1] if compact_failures else latest_failure
+    return summary
+
+
+def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> dict[str, Any]:
+    return {
+        "goal": goal_envelope.goal,
+        "intent": goal_envelope.intent,
+        "target_hints": goal_envelope.target_hints,
+        "success_criteria": goal_envelope.success_criteria,
+        "iteration": graph_state.current_iteration + 1,
+        "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
+        "execution_summary": _compact_execution_summary(graph_state),
+        "open_issues": list(graph_state.open_issues),
+        "attempted_strategies": _compact_attempted_strategies(graph_state),
+        "failure_history": _compact_failure_history(graph_state),
+        "iteration_summaries": _compact_iteration_summaries(graph_state),
+        "ineffective_actions": _ineffective_actions(graph_state),
     }
 
 
@@ -93,18 +200,7 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
                 ),
                 ChatMessage(
                     role="user",
-                    content=json.dumps(
-                        {
-                            "goal": goal_envelope.goal,
-                            "intent": goal_envelope.intent,
-                            "target_hints": goal_envelope.target_hints,
-                            "success_criteria": goal_envelope.success_criteria,
-                            "iteration": graph_state.current_iteration + 1,
-                            "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
-                            "execution_summary": _execution_summary(graph_state),
-                        },
-                        ensure_ascii=False,
-                    ),
+                    content=json.dumps(_planner_context_payload(goal_envelope, graph_state), ensure_ascii=False),
                 ),
             ],
             temperature=0.0,

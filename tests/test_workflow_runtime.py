@@ -211,7 +211,89 @@ def test_runtime_executes_create_path_node_with_workspace_tool(tmp_path):
 
     assert result.status == RUN_STATUS_COMPLETED
     assert result.node_states["create"].result.output["tool_name"] == "create_workspace_path"
+    assert result.node_states["create"].result.output["quality_signals"][0]["progress_contribution"] == "workspace_updated"
     assert (tmp_path / "docs" / "notes.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_target_resolution_executor_prefers_interpreted_target_constraints(tmp_path):
+    from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
+
+    (tmp_path / "README.md").write_text("root\n", encoding="utf-8")
+    (tmp_path / "frontend-shell").mkdir()
+    (tmp_path / "frontend-shell" / "README.md").write_text("frontend\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="看 README",
+        shared_state={
+            "interpreted_target": {
+                "preferred_path": "README.md",
+                "scope_preference": "workspace_root",
+                "exclude_paths": ["frontend-shell/README.md"],
+            }
+        },
+    )
+
+    result = TargetResolutionExecutor().execute(
+        WorkflowNode(node_id="resolve", node_type="target_resolution"),
+        run,
+        context=_make_workspace_runtime_context(tmp_path),
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["resolved_path"] == "README.md"
+
+
+def test_content_search_executor_uses_search_plan_queries(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "search summary",
+    )
+    (tmp_path / "README.md").write_text("agent runtime framework\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="随便一句话",
+        shared_state={
+            "node_results": {},
+            "search_plan": {
+                "semantic_queries": ["agent runtime"],
+                "must_avoid": [],
+                "path_bias": ["README.md"],
+            },
+        },
+    )
+    node = WorkflowNode(node_id="search", node_type="content_search", metadata={})
+
+    result = ContentSearchExecutor().execute(node, run, context={"workspace_root": str(tmp_path)})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["artifacts"]["search_terms"] == ["agent runtime"]
+
+
+def test_chunked_file_read_executor_uses_read_plan_target_and_region(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
+    )
+    target = tmp_path / "README.md"
+    target.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="读 README",
+        shared_state={
+            "node_results": {},
+            "read_plan": {
+                "target_path": "README.md",
+                "preferred_regions": ["head"],
+            },
+        },
+    )
+
+    result = ChunkedFileReadExecutor().execute(
+        WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={}),
+        run,
+        context={"workspace_root": str(tmp_path)},
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["path"] == "README.md"
+    assert result.output["chunks"][0]["start_line"] == 1
 
 
 def test_runtime_executes_move_path_node_with_workspace_tool(tmp_path):
@@ -363,6 +445,9 @@ def test_aggregate_node_results_preserves_structured_output_fields():
                     "artifacts": {"tree_sample": ["README.md"]},
                     "open_questions": ["missing test root"],
                     "verification": {"status": "not_run", "summary": "not verified"},
+                    "quality_signals": [{"source": "workspace_discovery", "relevance": "medium", "confidence": 0.5}],
+                    "reasoning_trace": [{"kind": "observation", "summary": "workspace root detected"}],
+                    "conflicts": ["README path not confirmed"],
                 },
                 references=["README.md"],
             ),
@@ -374,6 +459,8 @@ def test_aggregate_node_results_preserves_structured_output_fields():
                     "evidence_items": [{"kind": "path", "path": "src", "summary": "Source root"}],
                     "artifacts": {"matched_paths": ["src/app.py"]},
                     "open_questions": ["need config path"],
+                    "quality_signals": [{"source": "content_search", "relevance": "high", "confidence": 0.8}],
+                    "reasoning_trace": [{"kind": "selection", "summary": "src looks like source root"}],
                 },
                 references=["src"],
             ),
@@ -398,8 +485,119 @@ def test_aggregate_node_results_preserves_structured_output_fields():
         "open_questions": ["missing test root", "need config path"],
         "verification": {"status": "not_run", "summary": "not verified"},
         "verification_events": [{"status": "not_run", "summary": "not verified"}],
+        "quality_signals": [
+            {"source": "workspace_discovery", "relevance": "medium", "confidence": 0.5},
+            {"source": "content_search", "relevance": "high", "confidence": 0.8},
+        ],
+        "reasoning_trace": [
+            {"kind": "observation", "summary": "workspace root detected"},
+            {"kind": "selection", "summary": "src looks like source root"},
+        ],
+        "conflicts": ["README path not confirmed"],
     }
     assert aggregated.references == ["README.md", "src"]
+
+
+def test_content_search_executor_emits_quality_signals(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "search summary",
+    )
+    target = tmp_path / "README.md"
+    target.write_text("agent graph runtime\nplanner\njudge\n", encoding="utf-8")
+    run = WorkflowRun(goal="读取 README.md", shared_state={"node_results": {}})
+    node = WorkflowNode(node_id="search", node_type="content_search", metadata={"target_path": "README.md"})
+
+    result = ContentSearchExecutor().execute(node, run, context={"workspace_root": str(tmp_path)})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["quality_signals"][0]["progress_contribution"] == "candidate_identified"
+    assert result.output["quality_signals"][0]["recoverable_error"] is False
+    assert result.output["reasoning_trace"][0]["kind"] == "search_strategy"
+
+
+def test_chunked_file_read_executor_emits_quality_signals(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
+    )
+    target = tmp_path / "README.md"
+    target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    run = WorkflowRun(goal="读取 README.md", shared_state={"node_results": {}})
+    node = WorkflowNode(node_id="read", node_type="chunked_file_read", metadata={"target_path": "README.md"})
+
+    result = ChunkedFileReadExecutor().execute(node, run, context={"workspace_root": str(tmp_path)})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["quality_signals"][0]["progress_contribution"] == "grounded_evidence_collected"
+    assert result.output["quality_signals"][0]["verification_needed"] is False
+    assert result.output["reasoning_trace"][0]["kind"] == "read_strategy"
+
+
+def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_kind": "file",
+            "preferred_path": "README.md",
+            "scope_preference": "workspace_root",
+            "exclude_paths": ["frontend-shell/README.md"],
+            "confidence": 0.93,
+            "rationale": "user clarified the outermost readme",
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={"clarification_response": "最外层那个 README"})
+
+    result = InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["interpreted_target"]["preferred_path"] == "README.md"
+    assert result.output["quality_signals"][0]["progress_contribution"] == "target_constraints_defined"
+
+
+def test_plan_search_executor_stores_search_plan(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "search_goal": "find backend readme",
+            "semantic_queries": ["README", "agent runtime"],
+            "must_avoid": ["frontend-shell"],
+            "path_bias": ["README.md"],
+            "confidence": 0.81,
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
+    assert result.output["reasoning_trace"][0]["kind"] == "search_plan"
+
+
+def test_plan_read_executor_stores_read_plan(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "read_goal": "summarize project overview",
+            "target_path": "README.md",
+            "preferred_regions": ["head"],
+            "confidence": 0.84,
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["read_plan"]["preferred_regions"] == ["head"]
+    assert result.output["quality_signals"][0]["progress_contribution"] == "read_strategy_defined"
 
 
 def test_aggregate_node_results_deduplicates_facts_evidence_and_references():
@@ -499,6 +697,8 @@ def test_verification_executor_returns_passed_only_for_explicit_success_events()
         "success": True,
         "summary": "lint ok；tests ok",
     }
+    assert result.output["quality_signals"][0]["progress_contribution"] == "verification_completed"
+    assert result.output["reasoning_trace"][0]["kind"] == "verification_summary"
 
 
 def test_verification_executor_actively_verifies_post_write_nodes(tmp_path):
@@ -831,6 +1031,66 @@ def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
     assert decision.status == "stop_due_to_cost"
 
 
+def test_judge_progress_rejects_candidate_only_progress_without_grounded_evidence():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="解释 service 模块职责", normalized_goal="解释 service 模块职责", intent="compound", success_criteria=["collect evidence"])
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["found some likely files"],
+                "quality_signals": [
+                    {
+                        "source": "content_search",
+                        "relevance": "medium",
+                        "confidence": 0.6,
+                        "progress_contribution": "candidate_identified",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+                "reasoning_trace": [{"kind": "search_strategy", "summary": "search only"}],
+            }
+        ),
+        new_agent_graph_state(run_id="judge-6", goal_envelope=goal),
+    )
+
+    assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "grounded_evidence_missing"
+
+
+def test_judge_progress_detects_conflicting_evidence():
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    goal = GoalEnvelope(goal="确认主入口文件", normalized_goal="确认主入口文件", intent="file_read", success_criteria=["resolve target"])
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["found conflicting candidates"],
+                "evidence_items": [{"kind": "path", "path": "README.md"}],
+                "quality_signals": [
+                    {
+                        "source": "content_search",
+                        "relevance": "high",
+                        "confidence": 0.8,
+                        "progress_contribution": "candidate_identified",
+                        "verification_needed": True,
+                        "recoverable_error": False,
+                    }
+                ],
+                "conflicts": ["multiple entrypoints disagree"],
+            }
+        ),
+        new_agent_graph_state(run_id="judge-7", goal_envelope=goal),
+    )
+
+    assert decision.status == "needs_more_evidence"
+    assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
+    assert decision.strategy_guidance["recommended_strategy"] == "resolve_conflict_before_answering"
+
+
 def test_final_response_executor_rejects_execution_when_judge_has_not_accepted():
     executor = FinalResponseExecutor()
     run = WorkflowRun(goal="demo", shared_state={"judge_decision": {"status": "needs_more_evidence", "reason": "need more"}})
@@ -959,6 +1219,59 @@ def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
     assert result.metadata["agent_graph_state"]["failure_history"][0]["status"] == "needs_more_evidence"
     assert result.metadata["agent_graph_state"]["failure_history"][0]["diagnosis"]["primary_gap"] == "grounded_evidence_missing"
     assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure"]["status"] == "needs_more_evidence"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "replan"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_recovery_decision"]["action"] == "replan"
+
+
+def test_agent_graph_runtime_records_clarification_recovery_decision():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor(), "clarification": ClarificationExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="probe target",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="probe", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {
+            "status": "needs_clarification",
+            "reason": "多个可能目标，请先明确路径",
+            "missing_evidence": ["target path"],
+            "diagnosis": {"primary_gap": "clarification_missing"},
+            "strategy_guidance": {"recommended_strategy": "request_target_clarification"},
+        },
+    )
+
+    result = runtime.run(goal)
+
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "request_clarification"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "needs_clarification"
+
+
+def test_agent_graph_runtime_records_execution_failure_recovery_decision():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": FailExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="collect evidence",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        max_iterations=1,
+    )
+
+    result = runtime.run(goal)
+
+    assert result.status == RUN_STATUS_FAILED
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "diagnose_and_replan"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "execution_failed"
 
 
 def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesis():

@@ -179,8 +179,17 @@ def resolve_workspace_target(task: Any, context: Any, arguments: dict[str, Any])
             pass
     scored: list[tuple[int, int, str, Path]] = []
     match_query = target_hint or query
+    preferred_path = str(arguments.get("preferred_path") or "").strip()
+    scope_preference = str(arguments.get("scope_preference") or "").strip()
+    exclude_paths = {str(item).strip() for item in arguments.get("exclude_paths", []) or [] if str(item).strip()}
     for path in candidate_paths(root):
         score_value, depth_score, relative = score_match(path, match_query, root)
+        if exclude_paths and relative_workspace_path(context, path) in exclude_paths:
+            continue
+        if scope_preference == "workspace_root" and path.parent != root:
+            continue
+        if preferred_path and relative_workspace_path(context, path) == preferred_path:
+            score_value += 100
         if score_value > 0:
             scored.append((score_value, depth_score, relative, path))
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))

@@ -114,6 +114,32 @@ class AgentGraphRuntime:
         if executed.status == RUN_STATUS_FAILED:
             run.status = RUN_STATUS_FAILED
             run.error = executed.error
+            state.recovery_history.append(
+                self._recovery_decision(
+                    trigger="execution_failed",
+                    action="diagnose_and_replan",
+                    reason=str(executed.error or "workflow execution failed"),
+                    details={
+                        "iteration": subgraph.iteration,
+                        "planner_summary": subgraph.planner_summary,
+                    },
+                )
+            )
+            state.execution_summary = {
+                "current_iteration": state.current_iteration,
+                "last_judge_status": "execution_failed",
+                "last_judge_reason": str(executed.error or "workflow execution failed"),
+                "missing_evidence": list(state.open_issues),
+                "appended_node_ids": list(state.appended_node_ids),
+                "summaries": list(state.aggregated_payload.get("summaries", []) or []),
+                "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
+                "open_issues": list(state.open_issues),
+                "attempted_strategies": list(state.attempted_strategies),
+                "latest_diagnosis": {},
+                "latest_strategy_guidance": {},
+                "latest_failure": dict(state.failure_history[-1]) if state.failure_history else None,
+                "latest_recovery_decision": dict(state.recovery_history[-1]),
+            }
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
             run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
@@ -176,6 +202,8 @@ class AgentGraphRuntime:
                     "strategy_guidance": dict(last_decision.strategy_guidance),
                 }
             )
+        if last_decision.status != "accepted":
+            state.recovery_history.append(self._recovery_for_decision(last_decision, state.current_iteration))
         state.execution_summary = {
             "current_iteration": state.current_iteration,
             "last_judge_status": last_decision.status,
@@ -184,11 +212,14 @@ class AgentGraphRuntime:
             "appended_node_ids": list(state.appended_node_ids),
             "summaries": list(state.aggregated_payload.get("summaries", []) or []),
             "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
+            "quality_signals": [dict(item) for item in state.aggregated_payload.get("quality_signals", []) or [] if isinstance(item, dict)],
+            "conflicts": [str(item) for item in state.aggregated_payload.get("conflicts", []) or [] if str(item).strip()],
             "open_issues": list(state.open_issues),
             "attempted_strategies": list(state.attempted_strategies),
             "latest_diagnosis": dict(last_decision.diagnosis),
             "latest_strategy_guidance": dict(last_decision.strategy_guidance),
             "latest_failure": dict(state.failure_history[-1]) if state.failure_history else None,
+            "latest_recovery_decision": dict(state.recovery_history[-1]) if state.recovery_history else None,
         }
         run.shared_state["judge_decision"] = last_decision.as_payload()
         judge_node_id = f"judge_{state.current_iteration}"
@@ -235,6 +266,32 @@ class AgentGraphRuntime:
 
     def _restore_workflow_run(self, payload: dict[str, Any]) -> WorkflowRun:
         return self.state_store.restore_workflow_run(payload)
+
+    def _recovery_for_decision(self, decision: JudgeDecision, iteration: int) -> dict[str, Any]:
+        action = "replan"
+        if decision.status == "needs_clarification":
+            action = "request_clarification"
+        elif decision.status == "stop_due_to_cost":
+            action = "summarize_and_stop"
+        return self._recovery_decision(
+            trigger=decision.status,
+            action=action,
+            reason=decision.reason,
+            details={
+                "iteration": iteration,
+                "missing_evidence": list(decision.missing_evidence),
+                "diagnosis": dict(decision.diagnosis),
+                "strategy_guidance": dict(decision.strategy_guidance),
+            },
+        )
+
+    def _recovery_decision(self, *, trigger: str, action: str, reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "trigger": trigger,
+            "action": action,
+            "reason": reason,
+            "details": dict(details or {}),
+        }
 
     def _initial_graph(self, state: AgentGraphState) -> WorkflowGraph:
         next_iteration = state.current_iteration + 1

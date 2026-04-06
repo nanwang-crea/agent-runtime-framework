@@ -20,7 +20,8 @@ class ChunkedFileReadExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         runtime_context = dict(context or {})
         workspace_root = Path(get_workspace_root(runtime_context, ".")).resolve()
-        target_path = str(node.metadata.get("target_path") or "").strip()
+        read_plan = dict(run.shared_state.get("read_plan") or {})
+        target_path = str(node.metadata.get("target_path") or read_plan.get("target_path") or "").strip()
         matched_lines: list[int] = []
         clarification_summary = ""
 
@@ -73,12 +74,28 @@ class ChunkedFileReadExecutor:
                     }],
                     "artifacts": {"read_mode": "directory_listing"},
                     "facts": [{"kind": "directory", "path": self._relative_path(path, workspace_root)}],
+                    "quality_signals": [
+                        {
+                            "source": "chunked_file_read",
+                            "relevance": "medium",
+                            "confidence": 0.75,
+                            "progress_contribution": "grounded_evidence_collected",
+                            "verification_needed": False,
+                            "recoverable_error": False,
+                        }
+                    ],
+                    "reasoning_trace": [
+                        {
+                            "kind": "read_strategy",
+                            "summary": f"Read directory listing for {self._relative_path(path, workspace_root)}",
+                        }
+                    ],
                 },
                 references=[str(path)],
             )
 
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        chunks, has_more = self._build_chunks(lines, matched_lines)
+        chunks, has_more = self._build_chunks(lines, matched_lines, preferred_regions=[str(item).strip() for item in read_plan.get("preferred_regions", []) or [] if str(item).strip()])
         evidence_items = [
             {
                 "kind": "file_chunk",
@@ -115,16 +132,45 @@ class ChunkedFileReadExecutor:
                     "has_more": has_more,
                 },
                 "facts": [],
+                "quality_signals": [
+                    {
+                        "source": "chunked_file_read",
+                        "relevance": "high" if chunks else "low",
+                        "confidence": 0.85 if chunks else 0.3,
+                        "progress_contribution": "grounded_evidence_collected" if chunks else "no_grounded_evidence",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+                "reasoning_trace": [
+                    {
+                        "kind": "read_strategy",
+                        "summary": (
+                            f"Read {len(chunks)} chunk(s) from {self._relative_path(path, workspace_root)} "
+                            f"using {'matched line windows' if matched_lines else 'default chunking'}"
+                        ),
+                    }
+                ],
             },
             references=[str(path)],
         )
 
-    def _build_chunks(self, lines: list[str], matched_lines: list[int]) -> tuple[list[dict[str, Any]], bool]:
+    def _build_chunks(self, lines: list[str], matched_lines: list[int], *, preferred_regions: list[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
         total_text = "\n".join(lines)
+        preferred_regions = preferred_regions or []
         if len(total_text) <= self.max_chars:
+            if "head" in preferred_regions and len(lines) > 0:
+                end_line = min(len(lines), max(1, self.window_radius))
+                return [self._chunk(lines, 1, end_line)], len(lines) > end_line
             return [self._chunk(lines, 1, len(lines))], False
         if len(lines) == 1:
             return [{"start_line": 1, "end_line": 1, "text": f"{total_text[: self.max_chars].rstrip()}\n...[已截断]"}], True
+        if "head" in preferred_regions:
+            end_line = min(len(lines), max(1, self.window_radius))
+            return [self._chunk(lines, 1, end_line)], len(lines) > end_line
+        if "tail" in preferred_regions:
+            start_line = max(1, len(lines) - self.window_radius + 1)
+            return [self._chunk(lines, start_line, len(lines))], start_line > 1
         if matched_lines:
             windows: list[tuple[int, int]] = []
             for center in sorted(set(matched_lines)):
