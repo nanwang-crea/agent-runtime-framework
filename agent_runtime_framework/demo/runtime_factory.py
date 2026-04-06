@@ -16,7 +16,14 @@ from agent_runtime_framework.workflow.clarification_executor import Clarificatio
 from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
 from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
 from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.filesystem_node_executors import CreatePathExecutor, DeletePathExecutor, MovePathExecutor
+from agent_runtime_framework.workflow.filesystem_node_executors import (
+    AppendTextExecutor,
+    ApplyPatchExecutor,
+    CreatePathExecutor,
+    DeletePathExecutor,
+    MovePathExecutor,
+    WriteFileExecutor,
+)
 from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FinalResponseExecutor, VerificationExecutor
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
 from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
@@ -52,6 +59,9 @@ class DemoRuntimeFactory:
                 "create_path": CreatePathExecutor(),
                 "move_path": MovePathExecutor(),
                 "delete_path": DeletePathExecutor(),
+                "apply_patch": ApplyPatchExecutor(),
+                "write_file": WriteFileExecutor(),
+                "append_text": AppendTextExecutor(),
                 "verification": VerificationExecutor(),
                 "approval_gate": ApprovalGateExecutor(),
                 "final_response": FinalResponseExecutor(),

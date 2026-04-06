@@ -213,13 +213,13 @@ def test_analyze_goal_treats_modify_and_verify_request_as_change_intent():
     assert goal.metadata["requires_verification"] is True
 
 
-def test_plan_next_subgraph_marks_workspace_subtask_as_compatibility_fallback():
-    goal = GoalSpec(original_goal="编辑 README.md 并提交", primary_intent="change_and_verify")
+def test_plan_next_subgraph_emits_apply_patch_for_targeted_replace_request():
+    goal = GoalSpec(original_goal="把 README.md 中的 hello 替换成 hi，并验证结果", primary_intent="change_and_verify")
     envelope = SimpleNamespace(
         goal=goal.original_goal,
         normalized_goal=goal.original_goal,
         intent=goal.primary_intent,
-        target_hints=[],
+        target_hints=["README.md"],
         success_criteria=[],
         constraints={},
     )
@@ -227,11 +227,66 @@ def test_plan_next_subgraph_marks_workspace_subtask_as_compatibility_fallback():
 
     subgraph = plan_next_subgraph(envelope, state, context=None)
 
-    workspace_node = subgraph.nodes[0]
-    assert workspace_node.node_type == "workspace_subtask"
-    assert workspace_node.inputs["fallback_reason"] == "unsupported_intent"
-    assert workspace_node.inputs["compatibility_mode"] is True
-    assert workspace_node.inputs["source_loop"] == "workspace_backend"
+    write_node = subgraph.nodes[0]
+    assert write_node.node_type == "apply_patch"
+    assert write_node.inputs["path"] == "README.md"
+
+
+def test_plan_next_subgraph_emits_write_file_for_full_rewrite_request():
+    goal = GoalSpec(original_goal="重写 README.md 为新的项目介绍，并验证结果", primary_intent="change_and_verify")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=["README.md"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-1b", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    write_node = subgraph.nodes[0]
+    assert write_node.node_type == "write_file"
+    assert write_node.inputs["path"] == "README.md"
+
+
+def test_plan_next_subgraph_emits_append_text_for_append_request():
+    goal = GoalSpec(original_goal="向 README.md 追加一行发布说明，并验证结果", primary_intent="change_and_verify")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=["README.md"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-1c", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    write_node = subgraph.nodes[0]
+    assert write_node.node_type == "append_text"
+    assert write_node.inputs["path"] == "README.md"
+
+
+def test_plan_next_subgraph_prefers_clarification_for_underspecified_modify_request():
+    goal = GoalSpec(original_goal="编辑 README.md 并提交", primary_intent="change_and_verify")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=["README.md"],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-1d", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    clarification_node = subgraph.nodes[0]
+    assert clarification_node.node_type == "clarification"
+    assert "workspace_subtask" not in [node.node_type for node in subgraph.nodes]
 
 
 def test_plan_next_subgraph_keeps_native_file_read_without_compatibility_fallback():

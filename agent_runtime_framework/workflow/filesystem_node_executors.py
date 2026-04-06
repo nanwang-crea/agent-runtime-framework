@@ -82,3 +82,18 @@ class MovePathExecutor(WorkspaceToolNodeExecutor):
 class DeletePathExecutor(WorkspaceToolNodeExecutor):
     def __init__(self) -> None:
         super().__init__(tool_name="delete_workspace_path", argument_keys=("path",))
+
+
+class ApplyPatchExecutor(WorkspaceToolNodeExecutor):
+    def __init__(self) -> None:
+        super().__init__(tool_name="apply_text_patch", argument_keys=("path", "search_text", "replace_text"))
+
+
+class WriteFileExecutor(WorkspaceToolNodeExecutor):
+    def __init__(self) -> None:
+        super().__init__(tool_name="edit_workspace_text", argument_keys=("path", "content"))
+
+
+class AppendTextExecutor(WorkspaceToolNodeExecutor):
+    def __init__(self) -> None:
+        super().__init__(tool_name="append_workspace_text", argument_keys=("path", "content"))

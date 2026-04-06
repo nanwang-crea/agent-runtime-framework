@@ -381,6 +381,81 @@ def test_runtime_executes_delete_path_node_with_workspace_tool(tmp_path):
     assert not target.exists()
 
 
+def test_runtime_executes_apply_patch_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import ApplyPatchExecutor
+
+    target = tmp_path / "README.md"
+    target.write_text("before line\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="把 before 改成 after",
+        graph=WorkflowGraph(
+            nodes=[
+                WorkflowNode(
+                    node_id="patch",
+                    node_type="apply_patch",
+                    metadata={"path": "README.md", "search_text": "before", "replace_text": "after"},
+                )
+            ]
+        ),
+    )
+
+    result = GraphExecutionRuntime(executors={"apply_patch": ApplyPatchExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["patch"].result.output["tool_name"] == "apply_text_patch"
+    assert target.read_text(encoding="utf-8") == "after line\n"
+
+
+def test_runtime_executes_write_file_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import WriteFileExecutor
+
+    target = tmp_path / "README.md"
+    target.write_text("old\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="重写 README.md",
+        graph=WorkflowGraph(
+            nodes=[
+                WorkflowNode(
+                    node_id="write",
+                    node_type="write_file",
+                    metadata={"path": "README.md", "content": "new body\n"},
+                )
+            ]
+        ),
+    )
+
+    result = GraphExecutionRuntime(executors={"write_file": WriteFileExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["write"].result.output["tool_name"] == "edit_workspace_text"
+    assert target.read_text(encoding="utf-8") == "new body\n"
+
+
+def test_runtime_executes_append_text_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import AppendTextExecutor
+
+    target = tmp_path / "README.md"
+    target.write_text("line one\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="追加内容到 README.md",
+        graph=WorkflowGraph(
+            nodes=[
+                WorkflowNode(
+                    node_id="append",
+                    node_type="append_text",
+                    metadata={"path": "README.md", "content": "line two\n"},
+                )
+            ]
+        ),
+    )
+
+    result = GraphExecutionRuntime(executors={"append_text": AppendTextExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["append"].result.output["tool_name"] == "append_workspace_text"
+    assert target.read_text(encoding="utf-8") == "line one\nline two\n"
+
+
 def test_aggregate_node_results_preserves_structured_output_fields():
     aggregated = aggregate_node_results(
         [

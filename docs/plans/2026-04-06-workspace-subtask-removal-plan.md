@@ -119,7 +119,7 @@ git commit -m "feat: add graph-native filesystem nodes"
 
 ### Task 3: Add graph-native text-edit nodes
 
-Status: in_progress
+Status: completed
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`
@@ -172,6 +172,8 @@ git commit -m "feat: add graph-native text edit nodes"
 ```
 
 ### Task 4: Move modify requests fully off `workspace_subtask`
+
+Status: in_progress
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`

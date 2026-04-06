@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
-from agent_runtime_framework.workflow.models import AgentGraphState, FILESYSTEM_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
 
@@ -17,15 +17,19 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "chunked_file_read",
     "workspace_subtask",
     "tool_call",
+    "clarification",
     "verification_step",
     "aggregate_results",
     "evidence_synthesis",
-    *FILESYSTEM_WRITE_NODE_TYPES,
+    *GRAPH_NATIVE_WRITE_NODE_TYPES,
 }
 
 _DEFAULT_MAX_DYNAMIC_NODES = 3
 _DEFAULT_PLANNER_MODE = "model_with_fallback"
 _PATH_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./-]+")
+_REWRITE_PATTERN = re.compile(r"重写.*?为(?P<content>.+?)(?:[，,。]|并|$)")
+_APPEND_PATTERN = re.compile(r"追加(?P<content>.+?)(?:[，,。]|并|$)")
+_REPLACE_PATTERN = re.compile(r"把.*?中的\s*(?P<search>.+?)\s*替换(?:成|为)\s*(?P<replace>.+?)(?:[，,。]|并|$)")
 
 
 def _extract_goal_paths(goal: str) -> list[str]:
@@ -92,6 +96,64 @@ def _build_filesystem_node(goal_envelope: GoalEnvelope) -> PlannedNode | None:
     return None
 
 
+def _build_text_edit_node(goal_envelope: GoalEnvelope) -> PlannedNode | None:
+    if goal_envelope.intent != "change_and_verify":
+        return None
+
+    goal = goal_envelope.goal
+    target_hint = goal_envelope.target_hints[0] if goal_envelope.target_hints else ""
+    if not target_hint:
+        return PlannedNode(
+            node_id="clarification",
+            node_type="clarification",
+            reason="Need a specific target before performing a text edit",
+            inputs={"prompt": "请明确要修改的文件路径以及修改方式。"},
+            success_criteria=["collect the missing edit details"],
+        )
+
+    replace_match = _REPLACE_PATTERN.search(goal)
+    if replace_match is not None:
+        return PlannedNode(
+            node_id="apply_patch",
+            node_type="apply_patch",
+            reason="Need a targeted replacement for this text-edit request",
+            inputs={
+                "path": target_hint,
+                "search_text": replace_match.group("search").strip(),
+                "replace_text": replace_match.group("replace").strip(),
+            },
+            success_criteria=["apply the requested targeted text replacement"],
+        )
+
+    rewrite_match = _REWRITE_PATTERN.search(goal)
+    if rewrite_match is not None or "重写" in goal or "全文改写" in goal:
+        return PlannedNode(
+            node_id="write_file",
+            node_type="write_file",
+            reason="Need a full rewrite for this text-edit request",
+            inputs={"path": target_hint, "content": (rewrite_match.group("content").strip() if rewrite_match is not None else "")},
+            success_criteria=["rewrite the target file with the requested content"],
+        )
+
+    append_match = _APPEND_PATTERN.search(goal)
+    if append_match is not None or "append" in goal.lower():
+        return PlannedNode(
+            node_id="append_text",
+            node_type="append_text",
+            reason="Need to append text for this text-edit request",
+            inputs={"path": target_hint, "content": (append_match.group("content").strip() if append_match is not None else "")},
+            success_criteria=["append the requested text to the target file"],
+        )
+
+    return PlannedNode(
+        node_id="clarification",
+        node_type="clarification",
+        reason="Need a more specific edit instruction before changing text",
+        inputs={"prompt": "请说明是重写、替换指定文本，还是追加内容。"},
+        success_criteria=["collect the missing edit details"],
+    )
+
+
 def _max_dynamic_nodes(goal_envelope: GoalEnvelope, context: Any | None) -> int:
     configured = goal_envelope.constraints.get("max_dynamic_nodes", _DEFAULT_MAX_DYNAMIC_NODES)
     if context is not None:
@@ -117,6 +179,9 @@ def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
     filesystem_node = _build_filesystem_node(goal_envelope)
     if filesystem_node is not None:
         return [filesystem_node]
+    text_edit_node = _build_text_edit_node(goal_envelope)
+    if text_edit_node is not None:
+        return [text_edit_node]
     if goal_envelope.intent in {"file_read", "workspace_read"}:
         return [
             PlannedNode(
