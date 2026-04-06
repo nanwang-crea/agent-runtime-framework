@@ -64,7 +64,16 @@ class WorkflowPayloadBuilder:
         if resume_token is None:
             return None
         state = run.node_states.get(resume_token.node_id)
+        node = next((candidate for candidate in run.graph.nodes if candidate.node_id == resume_token.node_id), None)
         if state is None or state.result is None:
+            if node is not None and node.node_type == "delete_path":
+                target = str(node.metadata.get("path") or node.node_id)
+                return {
+                    "capability_name": "delete_path",
+                    "instruction": f"删除 {target}",
+                    "reason": "删除文件需要审批",
+                    "risk_class": "destructive",
+                }
             return {"capability_name": "approval_gate", "instruction": "Review workflow step", "reason": "需要审批后继续执行工作流。", "risk_class": "medium"}
         approval_data = dict(state.result.approval_data or {})
         request = approval_data.get("approval_request")

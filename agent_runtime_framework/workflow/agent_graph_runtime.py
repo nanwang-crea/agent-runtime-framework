@@ -236,6 +236,7 @@ class AgentGraphRuntime:
                     node_id=node.node_id,
                     node_type=node.node_type,
                     dependencies=list(node.depends_on),
+                    requires_approval=node.requires_approval,
                     metadata=dict(node.inputs or {}),
                 )
                 for node in subgraph.nodes

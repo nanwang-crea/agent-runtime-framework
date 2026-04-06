@@ -62,7 +62,7 @@ git commit -m "docs: define graph-native write node taxonomy"
 
 ### Task 2: Add graph-native filesystem operation nodes
 
-Status: in_progress
+Status: completed
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/models.py`
@@ -118,6 +118,8 @@ git commit -m "feat: add graph-native filesystem nodes"
 ```
 
 ### Task 3: Add graph-native text-edit nodes
+
+Status: in_progress
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`

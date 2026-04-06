@@ -282,6 +282,105 @@ def test_runtime_executes_target_explainer_node_chain_with_workspace_tools(tmp_p
     assert "src/service.py" in result.final_output
 
 
+@pytest.mark.parametrize(
+    ("goal", "intent", "target_hints", "expected_node_type"),
+    [
+        ("创建 docs/notes.md", "change_and_verify", ["docs/notes.md"], "create_path"),
+        ("把 docs/notes.md 移动到 docs/archive/notes.md", "change_and_verify", ["docs/notes.md"], "move_path"),
+        ("删除 docs/notes.md", "dangerous_change", ["docs/notes.md"], "delete_path"),
+    ],
+)
+def test_plan_next_subgraph_emits_graph_native_filesystem_nodes(goal, intent, target_hints, expected_node_type):
+    from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
+
+    envelope = GoalEnvelope(
+        goal=goal,
+        normalized_goal=goal,
+        intent=intent,
+        target_hints=target_hints,
+        success_criteria=["complete filesystem change"],
+    )
+
+    planned = plan_next_subgraph(
+        envelope,
+        new_agent_graph_state(run_id="fs-plan", goal_envelope=envelope),
+        context={"services": {"planner_mode": "deterministic"}},
+    )
+
+    assert planned.nodes[0].node_type == expected_node_type
+    assert planned.nodes[0].node_type != "workspace_subtask"
+
+
+def _make_workspace_runtime_context(tmp_path):
+    from agent_runtime_framework.agents.workspace_backend import WorkspaceContext, build_default_workspace_tools
+    from agent_runtime_framework.applications import ApplicationContext
+
+    app_context = ApplicationContext(
+        resource_repository=LocalFileResourceRepository([tmp_path]),
+        config={"default_directory": str(tmp_path)},
+    )
+    for tool in build_default_workspace_tools():
+        app_context.tools.register(tool)
+    workspace_context = WorkspaceContext(application_context=app_context)
+    return {
+        "application_context": app_context,
+        "workspace_context": workspace_context,
+        "workspace_root": str(tmp_path),
+    }
+
+
+def test_runtime_executes_create_path_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import CreatePathExecutor
+
+    run = WorkflowRun(
+        goal="创建 docs/notes.md",
+        graph=WorkflowGraph(nodes=[WorkflowNode(node_id="create", node_type="create_path", metadata={"path": "docs/notes.md", "kind": "file", "content": "hello\n"})]),
+    )
+
+    result = GraphExecutionRuntime(executors={"create_path": CreatePathExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["create"].result.output["tool_name"] == "create_workspace_path"
+    assert (tmp_path / "docs" / "notes.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_runtime_executes_move_path_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import MovePathExecutor
+
+    source = tmp_path / "docs" / "notes.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("hello\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="移动 docs/notes.md",
+        graph=WorkflowGraph(nodes=[WorkflowNode(node_id="move", node_type="move_path", metadata={"path": "docs/notes.md", "destination_path": "docs/archive/notes.md"})]),
+    )
+
+    result = GraphExecutionRuntime(executors={"move_path": MovePathExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["move"].result.output["tool_name"] == "move_workspace_path"
+    assert not source.exists()
+    assert (tmp_path / "docs" / "archive" / "notes.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_runtime_executes_delete_path_node_with_workspace_tool(tmp_path):
+    from agent_runtime_framework.workflow.filesystem_node_executors import DeletePathExecutor
+
+    target = tmp_path / "docs" / "notes.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("hello\n", encoding="utf-8")
+    run = WorkflowRun(
+        goal="删除 docs/notes.md",
+        graph=WorkflowGraph(nodes=[WorkflowNode(node_id="delete", node_type="delete_path", metadata={"path": "docs/notes.md"})]),
+    )
+
+    result = GraphExecutionRuntime(executors={"delete_path": DeletePathExecutor()}, context=_make_workspace_runtime_context(tmp_path)).run(run)
+
+    assert result.status == RUN_STATUS_COMPLETED
+    assert result.node_states["delete"].result.output["tool_name"] == "delete_workspace_path"
+    assert not target.exists()
+
+
 def test_aggregate_node_results_preserves_structured_output_fields():
     aggregated = aggregate_node_results(
         [

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm_access import get_application_context
-from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.models import AgentGraphState, FILESYSTEM_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
 from agent_runtime_framework.workflow.prompting import extract_json_block
 
@@ -19,10 +20,78 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "verification_step",
     "aggregate_results",
     "evidence_synthesis",
+    *FILESYSTEM_WRITE_NODE_TYPES,
 }
 
 _DEFAULT_MAX_DYNAMIC_NODES = 3
 _DEFAULT_PLANNER_MODE = "model_with_fallback"
+_PATH_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def _extract_goal_paths(goal: str) -> list[str]:
+    paths: list[str] = []
+    for match in _PATH_TOKEN_PATTERN.findall(goal):
+        candidate = match.strip("./")
+        if not candidate:
+            continue
+        if "/" not in candidate and "." not in candidate:
+            continue
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _build_filesystem_node(goal_envelope: GoalEnvelope) -> PlannedNode | None:
+    goal = goal_envelope.goal
+    goal_lower = goal.lower()
+    target_hint = goal_envelope.target_hints[0] if goal_envelope.target_hints else ""
+    paths = _extract_goal_paths(goal)
+
+    if goal_envelope.intent == "dangerous_change":
+        path = target_hint or (paths[0] if paths else "")
+        if path:
+            return PlannedNode(
+                node_id="delete_path",
+                node_type="delete_path",
+                reason="Need an explicit graph-native delete step for this filesystem request",
+                inputs={"path": path},
+                success_criteria=["delete the requested workspace path"],
+                requires_approval=True,
+            )
+        return None
+
+    if goal_envelope.intent != "change_and_verify":
+        return None
+
+    is_move = any(token in goal for token in ("移动", "移到", "迁移", "重命名", "rename", "move"))
+    is_create = any(token in goal for token in ("创建", "新建", "新增", "建立", "create"))
+
+    if is_move:
+        source_path = target_hint or (paths[0] if paths else "")
+        destination_path = paths[1] if len(paths) > 1 else ""
+        if source_path and destination_path:
+            return PlannedNode(
+                node_id="move_path",
+                node_type="move_path",
+                reason="Need an explicit graph-native move step for this filesystem request",
+                inputs={"path": source_path, "destination_path": destination_path},
+                success_criteria=["move the requested workspace path"],
+            )
+
+    if is_create and (target_hint or paths):
+        path = target_hint or paths[0]
+        kind = "directory" if any(token in goal_lower for token in ("目录", "文件夹", "directory", "folder")) else "file"
+        return PlannedNode(
+            node_id="create_path",
+            node_type="create_path",
+            reason="Need an explicit graph-native create step for this filesystem request",
+            inputs={"path": path, "kind": kind},
+            success_criteria=["create the requested workspace path"],
+        )
+
+    return None
+
+
 def _max_dynamic_nodes(goal_envelope: GoalEnvelope, context: Any | None) -> int:
     configured = goal_envelope.constraints.get("max_dynamic_nodes", _DEFAULT_MAX_DYNAMIC_NODES)
     if context is not None:
@@ -45,6 +114,9 @@ def _planner_mode(goal_envelope: GoalEnvelope, context: Any | None) -> str:
 
 def _candidate_nodes(goal_envelope: GoalEnvelope) -> list[PlannedNode]:
     target_hint = goal_envelope.target_hints[0] if goal_envelope.target_hints else ""
+    filesystem_node = _build_filesystem_node(goal_envelope)
+    if filesystem_node is not None:
+        return [filesystem_node]
     if goal_envelope.intent in {"file_read", "workspace_read"}:
         return [
             PlannedNode(
@@ -238,6 +310,7 @@ def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_
                 inputs=dict(item.get("inputs") or {}),
                 depends_on=[node_id_map[dep] for dep in depends_on],
                 success_criteria=success_criteria,
+                requires_approval=bool(item.get("requires_approval")),
             )
         )
 
@@ -274,6 +347,7 @@ def _plan_next_subgraph_deterministically(goal_envelope: GoalEnvelope, graph_sta
             inputs=dict(node.inputs),
             depends_on=[node_id_map.get(dep, dep) for dep in node.depends_on],
             success_criteria=list(node.success_criteria),
+            requires_approval=node.requires_approval,
         )
         for node in base_nodes
     ]

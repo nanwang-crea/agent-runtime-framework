@@ -97,6 +97,20 @@ NODE_STATUS_COMPLETED = "completed"
 NODE_STATUS_FAILED = "failed"
 NODE_STATUS_WAITING_APPROVAL = "waiting_approval"
 
+FILESYSTEM_WRITE_NODE_TYPES = (
+    "create_path",
+    "move_path",
+    "delete_path",
+)
+
+TEXT_EDIT_NODE_TYPES = (
+    "apply_patch",
+    "write_file",
+    "append_text",
+)
+
+GRAPH_NATIVE_WRITE_NODE_TYPES = FILESYSTEM_WRITE_NODE_TYPES + TEXT_EDIT_NODE_TYPES
+
 
 @dataclass(slots=True)
 class WorkflowEdge:
@@ -203,6 +217,7 @@ class PlannedNode:
     inputs: dict[str, Any] = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
     success_criteria: list[str] = field(default_factory=list)
+    requires_approval: bool = False
 
     def as_payload(self) -> dict[str, Any]:
         return asdict(self)

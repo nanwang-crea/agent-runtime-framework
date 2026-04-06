@@ -1056,6 +1056,18 @@ def test_demo_runtime_factory_injects_compat_subtask_runner(tmp_path: Path):
     assert not hasattr(app, "_run_workspace_subtask")
 
 
+def test_demo_runtime_factory_registers_graph_native_filesystem_executors(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = create_demo_assistant_app(workspace)
+
+    runtime = demo_app_module.DemoRuntimeFactory(app).build_graph_execution_runtime()
+
+    assert "create_path" in runtime.executors
+    assert "move_path" in runtime.executors
+    assert "delete_path" in runtime.executors
+
+
 def test_workflow_branch_orchestrator_no_longer_exposes_compat_graph_compiler(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1094,61 +1106,32 @@ def test_demo_assistant_app_runs_unsupported_workspace_goal_inside_workflow_runt
 
 
 
-def test_demo_assistant_app_preserves_workflow_approval_resume_for_workspace_subtask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_runtime_framework.agents.workspace_backend.models import WorkspaceTask, TaskState, VerificationResult
-    from agent_runtime_framework.assistant.approval import ApprovalRequest
-    from agent_runtime_framework.workflow.models import GoalSpec
-    from agent_runtime_framework.workflow.workspace_subtask import WorkspaceSubtaskResult
+def test_demo_assistant_app_preserves_workflow_approval_resume_for_delete_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_runtime_framework.workflow.models import JudgeDecision
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.agent_graph_runtime.judge_progress",
+        lambda goal_envelope, aggregated_payload, graph_state: JudgeDecision(status="accepted", reason="approved delete completed"),
+    )
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("line one\nline two\nline three", encoding="utf-8")
     app = create_demo_assistant_app(workspace)
 
-    def _fake_analyze_goal(_message: str, context=None):
-        return GoalSpec(
-            original_goal="直接删除 README.md",
-            primary_intent="dangerous_change",
-            metadata={"requires_approval": True},
-        )
-
-    def _fake_run_workspace_subtask(goal: str, *, task_profile: str, metadata: dict[str, object]):
-        task = WorkspaceTask(goal=goal, actions=[], task_profile=task_profile, state=TaskState())
-        if metadata.get("approved"):
-            task.summary = "dangerous change completed"
-            task.verification = VerificationResult(success=True, summary="verified after approval")
-            return WorkspaceSubtaskResult(status="completed", final_output="dangerous change completed", task=task, action_kind="workspace_subtask", run_id="approval-run")
-        task.summary = "dangerous change pending approval"
-        return WorkspaceSubtaskResult(
-            status="waiting_approval",
-            final_output="dangerous change pending approval",
-            task=task,
-            action_kind="workspace_subtask",
-            approval_request=ApprovalRequest(
-                capability_name="workspace_subtask",
-                instruction="删除 README.md",
-                reason="删除文件需要审批",
-                risk_class="destructive",
-            ),
-            resume_token="workspace-subtask-token",
-            run_id="approval-run",
-        )
-
-    monkeypatch.setattr("agent_runtime_framework.demo.app.analyze_goal", _fake_analyze_goal)
-    app._compat_subtask_runner = SimpleNamespace(run_subtask=_fake_run_workspace_subtask)
-
     first = app.chat("直接删除 README.md")
 
     assert first["status"] == "waiting_approval"
     assert first["runtime"] == "workflow"
     assert first["resume_token_id"]
+    assert any(step["name"] == "delete_path" for step in first["execution_trace"])
     assert first["approval_request"]["risk_class"] == "destructive"
 
     resumed = app.approve(first["resume_token_id"], approved=True)
 
     assert resumed["status"] == "completed"
     assert resumed["runtime"] == "workflow"
-    assert resumed["final_answer"] == "dangerous change completed"
+    assert not (workspace / "README.md").exists()
 
 
 
