@@ -46,10 +46,10 @@ def test_workspace_subtask_executor_exposes_bridge_metadata(tmp_path: Path):
     node = WorkflowNode(
         node_id="workspace_change",
         node_type="workspace_subtask",
-        task_profile="change_and_verify",
+        task_profile="generic",
         metadata={
-            "goal": "编辑 README.md 并验证修改结果",
-            "fallback_reason": "unsupported_primary_intent",
+            "goal": "帮我处理一个当前图里还不支持的复杂请求",
+            "fallback_reason": "unsupported_intent",
         },
     )
     run = WorkflowRun(goal="outer workflow")
@@ -62,6 +62,6 @@ def test_workspace_subtask_executor_exposes_bridge_metadata(tmp_path: Path):
 
     assert result.output["summary"] == "README summary"
     assert result.output["workspace_status"] == "completed"
-    assert result.output["fallback_reason"] == "unsupported_primary_intent"
+    assert result.output["fallback_reason"] == "unsupported_intent"
     assert result.output["compatibility_mode"] is True
     assert result.output["source_loop"] == "workspace_backend"

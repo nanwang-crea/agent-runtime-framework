@@ -173,7 +173,7 @@ git commit -m "feat: add graph-native text edit nodes"
 
 ### Task 4: Move modify requests fully off `workspace_subtask`
 
-Status: in_progress
+Status: completed
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`
@@ -211,6 +211,8 @@ git commit -m "refactor: remove modify flows from workspace_subtask"
 ```
 
 ### Task 5: Remove `workspace_subtask` runtime wiring
+
+Status: in_progress
 
 **Files:**
 - Delete or modify: `agent_runtime_framework/workflow/workspace_subtask.py`

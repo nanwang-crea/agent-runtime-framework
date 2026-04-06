@@ -289,6 +289,27 @@ def test_plan_next_subgraph_prefers_clarification_for_underspecified_modify_requ
     assert "workspace_subtask" not in [node.node_type for node in subgraph.nodes]
 
 
+def test_plan_next_subgraph_uses_workspace_subtask_only_for_unsupported_generic_request():
+    goal = GoalSpec(original_goal="帮我整理这个仓库的后续开发事项", primary_intent="generic")
+    envelope = SimpleNamespace(
+        goal=goal.original_goal,
+        normalized_goal=goal.original_goal,
+        intent=goal.primary_intent,
+        target_hints=[],
+        success_criteria=[],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-1e", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=None)
+
+    workspace_node = subgraph.nodes[0]
+    assert workspace_node.node_type == "workspace_subtask"
+    assert workspace_node.inputs["fallback_reason"] == "unsupported_intent"
+    assert workspace_node.inputs["compatibility_mode"] is True
+    assert workspace_node.inputs["source_loop"] == "workspace_backend"
+
+
 def test_plan_next_subgraph_keeps_native_file_read_without_compatibility_fallback():
     goal = GoalSpec(original_goal="读取 README.md", primary_intent="file_read")
     envelope = SimpleNamespace(
