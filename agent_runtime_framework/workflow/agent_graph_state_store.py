@@ -78,6 +78,10 @@ class AgentGraphStateStore:
                     replan_hint=dict(item.get("replan_hint") or {}),
                     diagnosis=dict(item.get("diagnosis") or {}),
                     strategy_guidance=dict(item.get("strategy_guidance") or {}),
+                    allowed_next_node_types=[str(v) for v in item.get("allowed_next_node_types", []) or [] if str(v).strip()],
+                    blocked_next_node_types=[str(v) for v in item.get("blocked_next_node_types", []) or [] if str(v).strip()],
+                    must_cover=[str(v) for v in item.get("must_cover", []) or [] if str(v).strip()],
+                    planner_instructions=str(item.get("planner_instructions") or ""),
                 )
             )
         return state

@@ -199,6 +199,30 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert serialized_judge["strategy_guidance"] == {}
 
 
+def test_judge_decision_serializes_route_constraints():
+    decision = JudgeDecision(
+        status="replan",
+        reason="Need grounded README content",
+        missing_evidence=["read README body"],
+        coverage_report={"evidence_gap": "missing_direct_read"},
+        replan_hint={"preferred_strategy": "direct_read_confirmed_target"},
+        diagnosis={"primary_gap": "missing_read_grounding"},
+        strategy_guidance={"recommended_strategy": "read_before_answering"},
+        allowed_next_node_types=["plan_read", "chunked_file_read"],
+        blocked_next_node_types=["final_response"],
+        must_cover=["read README body"],
+        planner_instructions="Read the README content before answering.",
+    )
+
+    payload = decision.as_payload()
+
+    assert payload["status"] == "replan"
+    assert payload["allowed_next_node_types"] == ["plan_read", "chunked_file_read"]
+    assert payload["blocked_next_node_types"] == ["final_response"]
+    assert payload["must_cover"] == ["read README body"]
+    assert payload["planner_instructions"] == "Read the README content before answering."
+
+
 def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
     root = Path(__file__).resolve().parents[1]
     workflow_files = [

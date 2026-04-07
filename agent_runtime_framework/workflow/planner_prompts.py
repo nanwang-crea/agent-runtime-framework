@@ -21,6 +21,20 @@ def build_goal_analysis_system_prompt() -> str:
     )
 
 
+def build_judge_system_prompt() -> str:
+    return (
+        "You are the workflow judge and routing controller. Return JSON only. "
+        "Allowed top-level keys are: status, reason, missing_evidence, coverage_report, replan_hint, "
+        "diagnosis, strategy_guidance, allowed_next_node_types, blocked_next_node_types, must_cover, planner_instructions. "
+        "Allowed status values are accept and replan. "
+        "Use accept only when the workflow has enough grounded evidence to produce a final response now. "
+        "Use replan when more work is needed, including clarification, target resolution, reading, searching, verification, or conflict resolution. "
+        "If you choose replan, explicitly constrain the next step with allowed_next_node_types, blocked_next_node_types, must_cover, and planner_instructions. "
+        "Do not output final_response in allowed_next_node_types unless status is accept. "
+        "Ground your decision in the supplied goal, aggregated evidence, execution summary, and judge memory view."
+    )
+
+
 def build_decomposition_system_prompt() -> str:
     return (
         "You decompose a workflow goal into ordered subtasks. "
@@ -40,6 +54,10 @@ def build_subgraph_planner_system_prompt() -> str:
         "create_path, move_path, delete_path, apply_patch, write_file, append_text. "
         "Prefer graph-native nodes first. Use target_resolution when the target is ambiguous. "
         "You will also receive latest_judge_decision, execution_summary, and planner_memory_view from prior iterations. "
+        "Treat latest_judge_decision as the routing contract for the next step. "
+        "If latest_judge_decision includes allowed_next_node_types, you must stay within that set. "
+        "If it includes blocked_next_node_types, you must not emit those node types. "
+        "If it includes must_cover or planner_instructions, your plan must satisfy them explicitly. "
         "Plan against those feedback signals instead of repeating a prior insufficient node. "
         "Treat planner_memory_view as the canonical compact memory context. "
         "You must change strategy when planner_memory_view shows prior insufficiency. "

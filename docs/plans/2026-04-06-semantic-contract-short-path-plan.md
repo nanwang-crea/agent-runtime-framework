@@ -10,6 +10,8 @@
 
 ### Task 1: Tighten semantic plan contracts and goal-analysis outputs
 
+Status: Completed
+
 **Files:**
 - Modify: `agent_runtime_framework/workflow/models.py`
 - Modify: `agent_runtime_framework/workflow/goal_analysis.py`
@@ -18,6 +20,8 @@
 - Test: `tests/test_workflow_runtime.py`
 
 **Step 1: Write the failing tests**
+
+Status: Completed
 
 Add tests that assert:
 
@@ -49,11 +53,15 @@ Add matching tests for `plan_search` missing `semantic_queries` and `plan_read` 
 
 **Step 2: Run tests to verify they fail**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_decomposition.py tests/test_workflow_runtime.py -k "analyze_goal_returns_only_routing_flags or requires_confirmed or missing semantic_queries or missing target_path" -v`
 
 Expected: FAIL because `GoalSpec` still exposes old fields and semantic planning still falls back to defaults.
 
 **Step 3: Write minimal implementation**
+
+Status: Completed
 
 Change `GoalSpec` to carry:
 
@@ -105,11 +113,15 @@ Reject missing required fields instead of silently filling them from `run.goal`,
 
 **Step 4: Run tests to verify they pass**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_decomposition.py tests/test_workflow_runtime.py -k "analyze_goal_returns_only_routing_flags or requires_confirmed or missing semantic_queries or missing target_path" -v`
 
 Expected: PASS
 
 **Step 5: Commit**
+
+Status: Completed
 
 ```bash
 git add agent_runtime_framework/workflow/models.py agent_runtime_framework/workflow/goal_analysis.py agent_runtime_framework/workflow/semantic_plan_executors.py tests/test_workflow_decomposition.py tests/test_workflow_runtime.py
@@ -118,11 +130,15 @@ git commit -m "refactor: tighten semantic planning contracts"
 
 ### Task 2: Add judge path-consistency checks
 
+Status: Completed
+
 **Files:**
 - Modify: `agent_runtime_framework/workflow/judge.py`
 - Test: `tests/test_workflow_runtime.py`
 
 **Step 1: Write the failing tests**
+
+Status: Completed
 
 Add tests that assert:
 
@@ -149,11 +165,15 @@ Add companion tests for excluded-target hits and mismatched `read_plan.target_pa
 
 **Step 2: Run tests to verify they fail**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_runtime.py -k "confirmed_target_differs or excluded_target or read_plan_target_path" -v`
 
 Expected: FAIL because judge currently only checks generic conflicts.
 
 **Step 3: Write minimal implementation**
+
+Status: Completed
 
 Add a helper in `judge.py` that compares normalized evidence/read paths against:
 - `confirmed_targets`
@@ -164,11 +184,15 @@ Convert any mismatch into `conflicts`, and let the existing conflict branch reje
 
 **Step 4: Run tests to verify they pass**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_runtime.py -k "confirmed_target_differs or excluded_target or read_plan_target_path" -v`
 
 Expected: PASS
 
 **Step 5: Commit**
+
+Status: Completed
 
 ```bash
 git add agent_runtime_framework/workflow/judge.py tests/test_workflow_runtime.py
@@ -176,6 +200,8 @@ git commit -m "feat: add semantic path consistency checks to judge"
 ```
 
 ### Task 3: Constrain planner after clarification or target resolution
+
+Status: Completed
 
 **Files:**
 - Modify: `agent_runtime_framework/workflow/subgraph_planner.py`
@@ -185,6 +211,8 @@ git commit -m "feat: add semantic path consistency checks to judge"
 - Test: `tests/test_workflow_continuation.py`
 
 **Step 1: Write the failing tests**
+
+Status: Completed
 
 Add tests that assert:
 
@@ -206,11 +234,15 @@ def test_agent_branch_orchestrator_marks_confirmed_target_after_unique_clarifica
 
 **Step 2: Run tests to verify they fail**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_decomposition.py tests/test_workflow_continuation.py -k "constrained_read_path or confirmed_target_after_unique_clarification" -v`
 
 Expected: FAIL because planner still relies entirely on model output and clarification does not force execution mode.
 
 **Step 3: Write minimal implementation**
+
+Status: Completed
 
 Add deterministic planner gating:
 - If `intent == "file_read"`
@@ -229,11 +261,15 @@ Do not generate another clarification node once the target is uniquely confirmed
 
 **Step 4: Run tests to verify they pass**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_decomposition.py tests/test_workflow_continuation.py -k "constrained_read_path or confirmed_target_after_unique_clarification" -v`
 
 Expected: PASS
 
 **Step 5: Commit**
+
+Status: Completed
 
 ```bash
 git add agent_runtime_framework/workflow/subgraph_planner.py agent_runtime_framework/workflow/clarification_interpreter.py agent_runtime_framework/demo/agent_branch_orchestrator.py tests/test_workflow_decomposition.py tests/test_workflow_continuation.py
@@ -242,6 +278,8 @@ git commit -m "feat: constrain confirmed file reads to short execution path"
 
 ### Task 4: Make tool executors consume only structured plans
 
+Status: Completed
+
 **Files:**
 - Modify: `agent_runtime_framework/workflow/target_resolution_executor.py`
 - Modify: `agent_runtime_framework/workflow/content_search_executor.py`
@@ -249,6 +287,8 @@ git commit -m "feat: constrain confirmed file reads to short execution path"
 - Test: `tests/test_workflow_runtime.py`
 
 **Step 1: Write the failing tests**
+
+Status: Completed
 
 Add tests that assert:
 
@@ -272,11 +312,15 @@ def test_chunked_file_read_executor_fails_without_read_plan(monkeypatch, tmp_pat
 
 **Step 2: Run tests to verify they fail**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_runtime.py -k "fails_without_interpreted_target or fails_without_search_plan or fails_without_read_plan" -v`
 
 Expected: FAIL because executors still infer data from goal text, node metadata, and prior search results.
 
 **Step 3: Write minimal implementation**
+
+Status: Completed
 
 Require:
 - `target_resolution` -> `run.shared_state["interpreted_target"]`
@@ -294,11 +338,15 @@ Keep only deterministic execution derived from the structured plan.
 
 **Step 4: Run tests to verify they pass**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_runtime.py -k "fails_without_interpreted_target or fails_without_search_plan or fails_without_read_plan or uses_search_plan_queries or uses_read_plan_target_and_region or prefers_interpreted_target_constraints" -v`
 
 Expected: PASS
 
 **Step 5: Commit**
+
+Status: Completed
 
 ```bash
 git add agent_runtime_framework/workflow/target_resolution_executor.py agent_runtime_framework/workflow/content_search_executor.py agent_runtime_framework/workflow/chunked_file_read_executor.py tests/test_workflow_runtime.py
@@ -307,11 +355,15 @@ git commit -m "refactor: make workflow tools consume semantic plans only"
 
 ### Task 5: End-to-end regression coverage for the short path
 
+Status: Completed
+
 **Files:**
 - Modify: `tests/test_workflow_runtime.py`
 - Modify: `tests/test_workflow_continuation.py`
 
 **Step 1: Write the failing tests**
+
+Status: Completed
 
 Add end-to-end tests that assert:
 
@@ -328,21 +380,29 @@ def test_clarification_to_unique_file_flows_into_read_and_judge_acceptance():
 
 **Step 2: Run tests to verify they fail**
 
+Status: Completed
+
 Run: `pytest tests/test_workflow_runtime.py tests/test_workflow_continuation.py -k "confirmed_read_does_not_reenter_search_or_clarification or clarification_to_unique_file" -v`
 
 Expected: FAIL because the current chain still allows search/clarification drift.
 
 **Step 3: Write minimal implementation**
 
+Status: Completed
+
 Only add the glue needed to make the new contracts work together. Do not add new abstractions unless required by repeated logic.
 
 **Step 4: Run tests to verify they pass**
+
+Status: Completed
 
 Run: `pytest tests/test_workflow_runtime.py tests/test_workflow_continuation.py -k "confirmed_read_does_not_reenter_search_or_clarification or clarification_to_unique_file" -v`
 
 Expected: PASS
 
 **Step 5: Commit**
+
+Status: Completed
 
 ```bash
 git add tests/test_workflow_runtime.py tests/test_workflow_continuation.py

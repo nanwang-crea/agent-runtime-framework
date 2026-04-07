@@ -1267,8 +1267,17 @@ def test_agent_graph_runtime_returns_limited_answer_when_iteration_budget_is_exh
     assert "final verification" in result.final_output
 
 
-def test_judge_progress_accepts_when_evidence_and_verification_are_sufficient():
+def test_judge_progress_accepts_when_model_returns_accept(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "accept",
+            "reason": "Collected sufficient evidence",
+            "allowed_next_node_types": ["final_response"],
+        },
+    )
 
     goal = GoalEnvelope(goal="读取 README.md", normalized_goal="读取 README.md", intent="file_read", success_criteria=["read file"])
     decision = judge_progress(
@@ -1289,20 +1298,45 @@ def test_judge_progress_accepts_when_evidence_and_verification_are_sufficient():
     assert decision.status == "accepted"
 
 
-def test_judge_progress_requests_more_evidence_when_payload_is_thin():
+def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Need grounded evidence first.",
+            "diagnosis": {"primary_gap": "grounded_evidence_missing", "goal_status": "insufficient_coverage"},
+            "strategy_guidance": {"recommended_strategy": "gather_grounded_evidence"},
+            "blocked_next_node_types": ["final_response"],
+        },
+    )
 
     goal = GoalEnvelope(goal="总结 docs", normalized_goal="总结 docs", intent="compound", success_criteria=["collect evidence"])
     decision = judge_progress(goal, normalize_aggregated_workflow_payload({}), new_agent_graph_state(run_id="judge-2", goal_envelope=goal))
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "grounded_evidence_missing"
     assert decision.diagnosis["goal_status"] == "insufficient_coverage"
     assert decision.strategy_guidance["recommended_strategy"] == "gather_grounded_evidence"
+    assert "final_response" in decision.blocked_next_node_types
 
 
-def test_judge_progress_requests_verification_when_evidence_exists_but_verification_is_missing():
+def test_judge_progress_uses_model_replan_for_missing_verification(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Verification is still missing.",
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "strategy_guidance": {"recommended_strategy": "verify_existing_changes"},
+            "allowed_next_node_types": ["verification"],
+            "blocked_next_node_types": ["final_response"],
+            "must_cover": ["verify current result"],
+        },
+    )
 
     goal = GoalEnvelope(goal="修改 README.md", normalized_goal="修改 README.md", intent="change_and_verify", success_criteria=["verify result"])
     decision = judge_progress(
@@ -1316,16 +1350,26 @@ def test_judge_progress_requests_verification_when_evidence_exists_but_verificat
         new_agent_graph_state(run_id="judge-3", goal_envelope=goal),
     )
 
-    assert decision.status == "needs_verification"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "verification_missing"
     assert decision.strategy_guidance["recommended_strategy"] == "verify_existing_changes"
-    assert decision.replan_hint["next_node_type"] == "verification"
-    assert decision.replan_hint["verification_type"] == "post_change"
-    assert "verification" in decision.replan_hint["must_include"]
+    assert "verification" in decision.allowed_next_node_types
+    assert "final_response" in decision.blocked_next_node_types
+    assert "verify current result" in decision.must_cover
 
 
-def test_judge_progress_requests_clarification_when_ambiguity_is_present():
+def test_judge_progress_uses_model_replan_for_ambiguity(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "The target is still ambiguous.",
+            "allowed_next_node_types": ["clarification"],
+            "blocked_next_node_types": ["final_response"],
+        },
+    )
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
     decision = judge_progress(
@@ -1334,7 +1378,9 @@ def test_judge_progress_requests_clarification_when_ambiguity_is_present():
         new_agent_graph_state(run_id="judge-4", goal_envelope=goal),
     )
 
-    assert decision.status == "needs_clarification"
+    assert decision.status == "replan"
+    assert "clarification" in decision.allowed_next_node_types
+    assert "final_response" in decision.blocked_next_node_types
 
 
 def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
@@ -1346,11 +1392,21 @@ def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
 
     decision = judge_progress(goal, normalize_aggregated_workflow_payload({}), state)
 
-    assert decision.status == "stop_due_to_cost"
+    assert decision.status == "replan"
+    assert "final_response" in decision.blocked_next_node_types
 
 
-def test_judge_progress_rejects_candidate_only_progress_without_grounded_evidence():
+def test_judge_progress_uses_model_replan_for_candidate_only_progress(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Candidate search results are not enough yet.",
+            "diagnosis": {"primary_gap": "grounded_evidence_missing"},
+        },
+    )
 
     goal = GoalEnvelope(goal="解释 service 模块职责", normalized_goal="解释 service 模块职责", intent="compound", success_criteria=["collect evidence"])
     decision = judge_progress(
@@ -1374,8 +1430,49 @@ def test_judge_progress_rejects_candidate_only_progress_without_grounded_evidenc
         new_agent_graph_state(run_id="judge-6", goal_envelope=goal),
     )
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "grounded_evidence_missing"
+
+
+def test_judge_progress_file_read_replans_when_model_requires_direct_read(monkeypatch):
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Search hits are not enough; read the file body next.",
+            "allowed_next_node_types": ["plan_read", "chunked_file_read"],
+            "blocked_next_node_types": ["final_response"],
+        },
+    )
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read", success_criteria=["read target"])
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload(
+            {
+                "summaries": ["found README candidate"],
+                "evidence_items": [{"kind": "search_hit", "path": "README.md", "summary": "matched search terms"}],
+                "quality_signals": [
+                    {
+                        "source": "content_search",
+                        "relevance": "high",
+                        "confidence": 0.8,
+                        "progress_contribution": "candidate_identified",
+                        "verification_needed": False,
+                        "recoverable_error": False,
+                    }
+                ],
+            }
+        ),
+        new_agent_graph_state(run_id="judge-read-routing", goal_envelope=goal),
+    )
+
+    assert decision.status == "replan"
+    assert "plan_read" in decision.allowed_next_node_types
+    assert "chunked_file_read" in decision.allowed_next_node_types
+    assert "final_response" in decision.blocked_next_node_types
 
 
 def test_judge_progress_detects_conflicting_evidence():
@@ -1404,7 +1501,7 @@ def test_judge_progress_detects_conflicting_evidence():
         new_agent_graph_state(run_id="judge-7", goal_envelope=goal),
     )
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
     assert decision.strategy_guidance["recommended_strategy"] == "resolve_conflict_before_answering"
 
@@ -1427,7 +1524,7 @@ def test_judge_progress_uses_memory_excluded_targets_as_conflicts():
         state,
     )
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
 
 
@@ -1453,7 +1550,7 @@ def test_judge_progress_rejects_evidence_when_confirmed_target_differs():
         state,
     )
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
 
 
@@ -1475,13 +1572,13 @@ def test_judge_progress_rejects_read_plan_path_mismatch():
         state,
     )
 
-    assert decision.status == "needs_more_evidence"
+    assert decision.status == "replan"
     assert decision.diagnosis["primary_gap"] == "conflicting_evidence"
 
 
 def test_final_response_executor_rejects_execution_when_judge_has_not_accepted():
     executor = FinalResponseExecutor()
-    run = WorkflowRun(goal="demo", shared_state={"judge_decision": {"status": "needs_more_evidence", "reason": "need more"}})
+    run = WorkflowRun(goal="demo", shared_state={"judge_decision": {"status": "replan", "reason": "need more"}})
 
     result = executor.execute(WorkflowNode(node_id="final", node_type="final_response"), run)
 
@@ -1489,7 +1586,7 @@ def test_final_response_executor_rejects_execution_when_judge_has_not_accepted()
     assert "judge" in str(result.error).lower()
 
 
-def test_agent_graph_runtime_limited_answer_contains_stop_reason_and_missing_items():
+def test_agent_graph_runtime_limited_answer_contains_replan_reason_and_missing_items():
     from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound")
@@ -1503,7 +1600,7 @@ def test_agent_graph_runtime_limited_answer_contains_stop_reason_and_missing_ite
             metadata={"parent_judge_id": "plan_1"},
         ),
         judge=lambda goal_envelope, aggregated_payload, state: {
-            "status": "stop_due_to_cost" if state.current_iteration >= 1 else "needs_more_evidence",
+            "status": "replan",
             "reason": "cost budget exhausted",
             "missing_evidence": ["verification", "more code evidence"],
         },
@@ -1518,7 +1615,7 @@ def test_agent_graph_runtime_limited_answer_contains_stop_reason_and_missing_ite
     assert "more code evidence" in result.final_output
 
 
-def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it():
+def test_agent_graph_runtime_returns_clarification_branch_when_graph_requests_it():
     from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
@@ -1527,11 +1624,11 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=state.current_iteration + 1,
             planner_summary="need clarification",
-            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="probe", success_criteria=["progress"])],
+            nodes=[PlannedNode(node_id="clarification_1", node_type="clarification", reason="ask follow-up", success_criteria=["request clarification"])],
             edges=[],
             metadata={"parent_judge_id": "plan_1"},
         ),
-        judge=lambda goal_envelope, aggregated_payload, state: {"status": "needs_clarification", "reason": "多个可能目标，请先明确路径"},
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "replan", "reason": "多个可能目标，请先明确路径"},
         max_iterations=2,
     )
 
@@ -1539,7 +1636,7 @@ def test_agent_graph_runtime_returns_clarification_branch_when_judge_requests_it
 
     assert result.status == RUN_STATUS_COMPLETED
     assert result.shared_state["clarification_request"]["clarification_required"] is True
-    assert "多个可能目标" in result.final_output
+    assert result.final_output
 
 
 def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarification(monkeypatch):
@@ -1575,6 +1672,14 @@ def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarific
     monkeypatch.setattr(
         "agent_runtime_framework.workflow.node_executors.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "final response",
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "accept",
+            "reason": "Collected sufficient evidence",
+            "allowed_next_node_types": ["final_response"],
+        },
     )
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
@@ -1657,7 +1762,7 @@ def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
             metadata={},
         ),
         judge=lambda goal_envelope, aggregated_payload, state: {
-            "status": "needs_more_evidence",
+            "status": "replan",
             "reason": "still missing grounded evidence",
             "missing_evidence": ["grounded evidence"],
             "diagnosis": {"primary_gap": "grounded_evidence_missing", "goal_status": "insufficient_coverage"},
@@ -1669,14 +1774,14 @@ def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
     result = runtime.run(goal, context={})
 
     assert result.metadata["agent_graph_state"]["open_issues"] == ["grounded evidence"]
-    assert result.metadata["agent_graph_state"]["failure_history"][0]["status"] == "needs_more_evidence"
+    assert result.metadata["agent_graph_state"]["failure_history"][0]["status"] == "replan"
     assert result.metadata["agent_graph_state"]["failure_history"][0]["diagnosis"]["primary_gap"] == "grounded_evidence_missing"
-    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure"]["status"] == "needs_more_evidence"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure"]["status"] == "replan"
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "replan"
     assert result.metadata["agent_graph_state"]["execution_summary"]["latest_recovery_decision"]["action"] == "replan"
 
 
-def test_agent_graph_runtime_records_clarification_recovery_decision():
+def test_agent_graph_runtime_records_replan_recovery_decision_for_clarification_route():
     from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
@@ -1685,12 +1790,12 @@ def test_agent_graph_runtime_records_clarification_recovery_decision():
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=1,
             planner_summary="probe target",
-            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="probe", success_criteria=["progress"])],
+            nodes=[PlannedNode(node_id="clarification_1", node_type="clarification", reason="ask user", success_criteria=["request clarification"])],
             edges=[],
             metadata={},
         ),
         judge=lambda goal_envelope, aggregated_payload, state: {
-            "status": "needs_clarification",
+            "status": "replan",
             "reason": "多个可能目标，请先明确路径",
             "missing_evidence": ["target path"],
             "diagnosis": {"primary_gap": "clarification_missing"},
@@ -1700,8 +1805,8 @@ def test_agent_graph_runtime_records_clarification_recovery_decision():
 
     result = runtime.run(goal)
 
-    assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "request_clarification"
-    assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "needs_clarification"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "replan"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "replan"
 
 
 def test_agent_graph_runtime_records_execution_failure_recovery_decision():
@@ -1879,18 +1984,17 @@ def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtim
     runtime = AgentGraphRuntime(
         workflow_runtime=NoDirectExecuteRuntime(
             executors={
-                "workspace_subtask": NoopExecutor(),
                 "clarification": ClarificationExecutor(),
             }
         ),
         planner=lambda goal_envelope, state, context: PlannedSubgraph(
             iteration=1,
             planner_summary="probe",
-            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            nodes=[PlannedNode(node_id="clarification_1", node_type="clarification", reason="ask user", success_criteria=["request clarification"])],
             edges=[],
             metadata={},
         ),
-        judge=lambda goal_envelope, aggregated_payload, state: {"status": "needs_clarification", "reason": "多个可能目标，请先明确路径"},
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "replan", "reason": "多个可能目标，请先明确路径"},
     )
 
     result = runtime.run(goal)

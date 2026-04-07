@@ -86,7 +86,7 @@ class AgentGraphRuntime:
         resumed = self.workflow_runtime.resume(subrun, resume_token=resume_token, approved=approved)
         run.metadata.pop("pending_subrun", None)
         run.metadata.pop("pending_subgraph", None)
-        outcome = self._consume_subrun(goal_envelope, state, run, resumed, subgraph)
+        outcome = self._consume_subrun(goal_envelope, state, run, resumed, subgraph, runtime_context)
         if outcome is not None:
             return outcome
         return self._execute_iterations(goal_envelope, state, run, runtime_context)
@@ -101,7 +101,7 @@ class AgentGraphRuntime:
             subrun = WorkflowRun(goal=goal_envelope.goal, graph=self._execution_graph(subgraph))
             subrun.shared_state["node_results"] = dict(run.shared_state.get("node_results") or {})
             executed = self.workflow_runtime.run(subrun)
-            outcome = self._consume_subrun(goal_envelope, state, run, executed, subgraph)
+            outcome = self._consume_subrun(goal_envelope, state, run, executed, subgraph, runtime_context)
             if outcome is not None:
                 return outcome
             graph = run.graph
@@ -112,7 +112,7 @@ class AgentGraphRuntime:
         run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
         return run
 
-    def _consume_subrun(self, goal_envelope: GoalEnvelope, state: AgentGraphState, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph) -> WorkflowRun | None:
+    def _consume_subrun(self, goal_envelope: GoalEnvelope, state: AgentGraphState, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph, runtime_context: Any | None = None) -> WorkflowRun | None:
         run.node_states.update(dict(executed.node_states or {}))
         run.shared_state.setdefault("node_results", {}).update(dict(executed.shared_state.get("node_results") or {}))
         for key in ("evidence_synthesis", "clarification_request", "resolved_target"):
@@ -175,15 +175,7 @@ class AgentGraphRuntime:
         )
         state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(evidence_result, "output", {}) or getattr(aggregated_result, "output", {}) or {})
 
-        if run.shared_state.get("clarification_request"):
-            request = dict(run.shared_state.get("clarification_request") or {})
-            last_decision = JudgeDecision(
-                status="needs_clarification",
-                reason=str(request.get("prompt") or request.get("summary") or "Please clarify the request."),
-                missing_evidence=[str(request.get("prompt") or "")],
-            )
-        else:
-            last_decision = self._judge(goal_envelope, state)
+        last_decision = self._judge(goal_envelope, state, runtime_context)
         state.judge_history.append(last_decision)
         state.open_issues = list(last_decision.missing_evidence)
         state.iteration_summaries.append(
@@ -240,21 +232,8 @@ class AgentGraphRuntime:
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
             run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
-        if last_decision.status == "stop_due_to_cost":
-            run.status = RUN_STATUS_COMPLETED
-            run.final_output = self._finalize(run, last_decision, limited=True)
-            run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-            run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
-            return run
-        if last_decision.status == "needs_clarification":
-            prompt = last_decision.reason or "Please clarify the request."
-            clarification_node = WorkflowNode(node_id=f"clarification_{state.current_iteration}", node_type="clarification", metadata={"prompt": prompt})
-            run.graph.nodes.append(clarification_node)
-            run.graph.edges.append(WorkflowEdge(source=f"judge_{state.current_iteration}", target=clarification_node.node_id))
-            if "clarification" in self.workflow_runtime.executors:
-                self._execute_system_graph(run, [WorkflowNode(node_id=clarification_node.node_id, node_type="clarification", metadata={"prompt": prompt})])
-            else:
-                run.shared_state["clarification_request"] = {"prompt": prompt, "summary": prompt, "clarification_required": True}
+        if run.shared_state.get("clarification_request"):
+            prompt = str((run.shared_state.get("clarification_request") or {}).get("prompt") or last_decision.reason or "Please clarify the request.")
             run.status = RUN_STATUS_COMPLETED
             run.final_output = prompt
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
@@ -276,10 +255,6 @@ class AgentGraphRuntime:
 
     def _recovery_for_decision(self, decision: JudgeDecision, iteration: int) -> dict[str, Any]:
         action = "replan"
-        if decision.status == "needs_clarification":
-            action = "request_clarification"
-        elif decision.status == "stop_due_to_cost":
-            action = "summarize_and_stop"
         return self._recovery_decision(
             trigger=decision.status,
             action=action,
@@ -321,20 +296,28 @@ class AgentGraphRuntime:
     def _materialize_iteration_system_nodes(self, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph, last_decision: JudgeDecision) -> tuple[NodeResult, NodeResult]:
         return self.system_node_manager.materialize_iteration_system_nodes(run, executed, subgraph)
 
-    def _judge(self, goal_envelope: GoalEnvelope, state: AgentGraphState) -> JudgeDecision:
+    def _judge(self, goal_envelope: GoalEnvelope, state: AgentGraphState, runtime_context: Any | None = None) -> JudgeDecision:
         if self.judge is None:
-            return judge_progress(goal_envelope, state.aggregated_payload, state)
+            return judge_progress(goal_envelope, state.aggregated_payload, state, context=runtime_context)
         decision = self.judge(goal_envelope, state.aggregated_payload, state)
         if isinstance(decision, JudgeDecision):
+            if decision.status != "accepted":
+                decision.status = "replan"
             return decision
+        status = str(decision.get("status") or "accepted")
+        normalized_status = "accepted" if status == "accepted" else "replan"
         return JudgeDecision(
-            status=str(decision.get("status") or "accepted"),
+            status=normalized_status,
             reason=str(decision.get("reason") or "completed"),
             missing_evidence=[str(item) for item in decision.get("missing_evidence", []) or []],
             coverage_report=dict(decision.get("coverage_report") or {}),
             replan_hint=dict(decision.get("replan_hint") or {}),
             diagnosis=dict(decision.get("diagnosis") or {}),
             strategy_guidance=dict(decision.get("strategy_guidance") or {}),
+            allowed_next_node_types=[str(item) for item in decision.get("allowed_next_node_types", []) or [] if str(item).strip()],
+            blocked_next_node_types=[str(item) for item in decision.get("blocked_next_node_types", []) or [] if str(item).strip()],
+            must_cover=[str(item) for item in decision.get("must_cover", []) or [] if str(item).strip()],
+            planner_instructions=str(decision.get("planner_instructions") or ""),
         )
 
     def _execution_graph(self, subgraph: PlannedSubgraph) -> WorkflowGraph:

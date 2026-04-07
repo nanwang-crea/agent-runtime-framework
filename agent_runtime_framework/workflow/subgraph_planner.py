@@ -33,6 +33,7 @@ _DEFAULT_MAX_DYNAMIC_NODES = 3
 _MAX_FAILURE_HISTORY = 2
 _MAX_ITERATION_SUMMARIES = 2
 _MAX_ATTEMPTED_STRATEGIES = 4
+_SEMANTIC_FOUNDATION_ORDER = ("interpret_target", "plan_search", "plan_read")
 
 
 def _normalize_node_inputs(value: Any) -> dict[str, Any]:
@@ -55,6 +56,118 @@ def _judge_feedback_payload(decision: Any | None) -> dict[str, Any] | None:
     if isinstance(decision, dict):
         return dict(decision)
     return None
+
+
+def _enforce_judge_route_contract(nodes: list[PlannedNode], decision: Any | None) -> None:
+    payload = _judge_feedback_payload(decision) or {}
+    allowed = {str(item).strip() for item in payload.get("allowed_next_node_types", []) or [] if str(item).strip()}
+    blocked = {str(item).strip() for item in payload.get("blocked_next_node_types", []) or [] if str(item).strip()}
+    if not allowed and not blocked:
+        return
+    semantic_foundation = set(_SEMANTIC_FOUNDATION_ORDER)
+    node_types = [str(node.node_type).strip() for node in nodes]
+    if allowed:
+        invalid = [node_type for node_type in node_types if node_type not in semantic_foundation and node_type not in allowed]
+        if invalid:
+            raise ValueError(f"planned node types violate judge allowed_next_node_types: {', '.join(invalid)}")
+    if blocked:
+        forbidden = [node_type for node_type in node_types if node_type in blocked]
+        if forbidden:
+            raise ValueError(f"planned node types violate judge blocked_next_node_types: {', '.join(forbidden)}")
+
+
+def _has_semantic_value(memory: dict[str, Any], key: str, required_field: str | None = None) -> bool:
+    value = dict(memory.get(key) or {})
+    if not value:
+        return False
+    if required_field is None:
+        return True
+    return bool(str(value.get(required_field) or "").strip())
+
+
+def _semantic_foundation_targets(nodes: list[PlannedNode]) -> dict[str, bool]:
+    node_types = {node.node_type for node in nodes}
+    needs_interpret = bool(node_types & {"target_resolution", "plan_search", "content_search", "plan_read", "chunked_file_read"})
+    needs_search = bool(node_types & {"content_search", "plan_read", "chunked_file_read"})
+    needs_read = bool(node_types & {"chunked_file_read"})
+    return {
+        "interpret_target": needs_interpret,
+        "plan_search": needs_search,
+        "plan_read": needs_read,
+    }
+
+
+def _inject_semantic_foundation(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, nodes: list[PlannedNode], iteration: int) -> list[PlannedNode]:
+    semantic_memory = dict(graph_state.memory_state.semantic_memory or {})
+    existing_by_type = {node.node_type: node for node in nodes}
+    required = _semantic_foundation_targets(nodes)
+    foundation_nodes: list[PlannedNode] = []
+
+    def add_foundation(node_type: str, *, depends_on: list[str]) -> str | None:
+        if node_type in existing_by_type:
+            node = existing_by_type[node_type]
+            for dependency in depends_on:
+                if dependency and dependency not in node.depends_on:
+                    node.depends_on.append(dependency)
+            return node.node_id
+        if node_type == "interpret_target" and _has_semantic_value(semantic_memory, "interpreted_target", "preferred_path"):
+            return None
+        if node_type == "plan_search" and _has_semantic_value(semantic_memory, "search_plan", "search_goal"):
+            return None
+        if node_type == "plan_read" and _has_semantic_value(semantic_memory, "read_plan", "target_path"):
+            return None
+        node_id = f"{node_type}_{iteration}"
+        if any(existing.node_id == node_id for existing in [*foundation_nodes, *nodes]):
+            node_id = f"{node_type}_foundation_{iteration}"
+        reason_map = {
+            "interpret_target": "Prepare target semantics before execution",
+            "plan_search": "Prepare search semantics before execution",
+            "plan_read": "Prepare read semantics before execution",
+        }
+        success_map = {
+            "interpret_target": ["capture target constraints"],
+            "plan_search": ["define search plan"],
+            "plan_read": ["define read plan"],
+        }
+        node = PlannedNode(
+            node_id=node_id,
+            node_type=node_type,
+            reason=reason_map[node_type],
+            depends_on=[dependency for dependency in depends_on if dependency],
+            success_criteria=success_map[node_type],
+        )
+        foundation_nodes.append(node)
+        existing_by_type[node_type] = node
+        return node_id
+
+    interpret_id = None
+    search_id = None
+    read_id = None
+    if required["interpret_target"]:
+        interpret_id = add_foundation("interpret_target", depends_on=[])
+    if required["plan_search"]:
+        search_id = add_foundation("plan_search", depends_on=[interpret_id] if interpret_id else [])
+    if required["plan_read"]:
+        prior = search_id or interpret_id
+        read_id = add_foundation("plan_read", depends_on=[prior] if prior else [])
+
+    for node in nodes:
+        if node.node_type == "target_resolution" and interpret_id and interpret_id not in node.depends_on:
+            node.depends_on.append(interpret_id)
+        if node.node_type == "content_search":
+            prerequisite = search_id or interpret_id
+            if prerequisite and prerequisite not in node.depends_on:
+                node.depends_on.append(prerequisite)
+        if node.node_type == "plan_read":
+            prerequisite = search_id or interpret_id
+            if prerequisite and prerequisite not in node.depends_on:
+                node.depends_on.append(prerequisite)
+        if node.node_type == "chunked_file_read":
+            prerequisite = read_id or search_id or interpret_id
+            if prerequisite and prerequisite not in node.depends_on:
+                node.depends_on.append(prerequisite)
+
+    return [*foundation_nodes, *nodes]
 
 
 def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
@@ -313,6 +426,9 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
     max_dynamic_nodes = _max_dynamic_nodes(goal_envelope, context)
     iteration = graph_state.current_iteration + 1
     nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
+    nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
+    _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
+    edges = [WorkflowEdge(source=dependency, target=node.node_id) for node in nodes for dependency in node.depends_on]
     return PlannedSubgraph(
         iteration=iteration,
         planner_summary=str(payload.get("planner_summary") or f"Model plan iteration {iteration} for {goal_envelope.intent}"),

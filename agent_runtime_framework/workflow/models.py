@@ -256,6 +256,10 @@ class JudgeDecision:
     replan_hint: dict[str, Any] = field(default_factory=dict)
     diagnosis: dict[str, Any] = field(default_factory=dict)
     strategy_guidance: dict[str, Any] = field(default_factory=dict)
+    allowed_next_node_types: list[str] = field(default_factory=list)
+    blocked_next_node_types: list[str] = field(default_factory=list)
+    must_cover: list[str] = field(default_factory=list)
+    planner_instructions: str = ""
 
     def as_payload(self) -> dict[str, Any]:
         return asdict(self)

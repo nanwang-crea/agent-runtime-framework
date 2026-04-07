@@ -28,8 +28,8 @@ class WorkflowPayloadBuilder:
         ]
         approval_request = self._workflow_approval_request(run) if run.status == "waiting_approval" else None
         clarification_request = run.shared_state.get("clarification_request")
-        payload_status = "needs_clarification" if clarification_request is not None and run.status == "completed" else run.status
-        pending_clarification = ({**dict(clarification_request or {}), "run_id": run.run_id} if payload_status == "needs_clarification" else None)
+        payload_status = run.status
+        pending_clarification = ({**dict(clarification_request or {}), "run_id": run.run_id} if clarification_request is not None and run.status == "completed" else None)
         final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         evidence = self._workflow_evidence_payload(run)
         graph_state = dict(run.metadata.get("agent_graph_state") or {})

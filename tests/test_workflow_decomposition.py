@@ -198,6 +198,125 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     assert '"verification_missing"' in request_body
 
 
+def test_plan_next_subgraph_prompt_includes_judge_route_constraints():
+    instance = _FakeInstance(
+        client_content='{"planner_summary":"read before answer","nodes":[{"node_id":"plan_read","node_type":"plan_read","reason":"prepare direct read","inputs":{},"depends_on":[],"success_criteria":["define read plan"]}]}'
+    )
+    workspace = LocalFileResourceRepository(["."])
+    app_context = ApplicationContext(
+        resource_repository=workspace,
+        session_memory=InMemorySessionMemory(),
+        policy=SimpleDesktopPolicy(),
+        tools=ToolRegistry(),
+        config={"default_directory": "."},
+    )
+    registry = ModelRegistry(credential_store=InMemoryCredentialStore())
+    registry.register_instance(instance)
+    registry.authenticate("fake", {"api_key": "secret"})
+    router = ModelRouter(registry)
+    router.set_route("planner", instance_id="fake", model_name="planner-model")
+    app_context.services["model_registry"] = registry
+    app_context.services["model_router"] = router
+    context = SimpleNamespace(application_context=app_context, services={})
+    envelope = SimpleNamespace(
+        goal="解释根目录 README",
+        normalized_goal="解释根目录 README",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-judge-routes", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="replan",
+            reason="Search hits are not enough; read the file body next.",
+            missing_evidence=["read README body"],
+            allowed_next_node_types=["plan_read", "chunked_file_read"],
+            blocked_next_node_types=["final_response", "content_search"],
+            must_cover=["read README body"],
+            planner_instructions="Avoid another broad search; plan a direct read.",
+        )
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes[:3]] == ["interpret_target", "plan_search", "plan_read"]
+    client = instance.last_client
+    assert client is not None
+    request_body = client.completions.last_kwargs["messages"][1]["content"]
+    assert '"allowed_next_node_types"' in request_body
+    assert '"blocked_next_node_types"' in request_body
+    assert '"must_cover"' in request_body
+
+
+def test_plan_next_subgraph_rejects_nodes_blocked_by_judge_contract():
+    context = _workflow_context(
+        '{"planner_summary":"wrongly finalizes","nodes":[{"node_id":"finalize","node_type":"final_response","reason":"answer immediately","inputs":{},"depends_on":[],"success_criteria":["deliver final answer"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="解释根目录 README",
+        normalized_goal="解释根目录 README",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-judge-blocks-final", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="replan",
+            reason="Need grounded README content before answering.",
+            blocked_next_node_types=["final_response"],
+        )
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="blocked_next_node_types"):
+        plan_next_subgraph(envelope, state, context=context)
+
+
+def test_plan_next_subgraph_prepends_semantic_foundation_before_search():
+    context = _workflow_context(
+        '{"planner_summary":"search directly","nodes":[{"node_id":"search","node_type":"content_search","reason":"find target","inputs":{},"depends_on":[],"success_criteria":["collect search evidence"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="解释 README",
+        normalized_goal="解释 README",
+        intent="file_read",
+        target_hints=["README"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-semantic-search", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes[:3]] == ["interpret_target", "plan_search", "content_search"]
+    assert subgraph.nodes[2].depends_on == [subgraph.nodes[1].node_id]
+
+
+def test_plan_next_subgraph_prepends_semantic_foundation_before_read():
+    context = _workflow_context(
+        '{"planner_summary":"read directly","nodes":[{"node_id":"read","node_type":"chunked_file_read","reason":"read file","inputs":{},"depends_on":[],"success_criteria":["collect file evidence"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="解释 README",
+        normalized_goal="解释 README",
+        intent="file_read",
+        target_hints=["README"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-semantic-read", goal_envelope=envelope)
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes[:4]] == ["interpret_target", "plan_search", "plan_read", "chunked_file_read"]
+    assert subgraph.nodes[3].depends_on == [subgraph.nodes[2].node_id]
+
+
 def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_mode():
     context = _workflow_context(
         '{"planner_summary":"model plan","nodes":[{"node_id":"verify","node_type":"verification","reason":"model picked verification","inputs":{"verification_type":"post_write"},"depends_on":[],"success_criteria":["produce verification result"]}]}'
