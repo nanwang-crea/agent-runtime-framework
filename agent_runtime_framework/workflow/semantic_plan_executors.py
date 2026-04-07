@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.contract_repair import repair_structured_output
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.memory_updates import remember_clarification, remember_semantic_plan
 from agent_runtime_framework.workflow.memory_views import build_semantic_memory_view
@@ -99,15 +100,20 @@ def _normalize_read_plan(payload: dict[str, Any], *, interpreted_target: dict[st
         raise ValueError("semantic read planning missing read_goal")
     if not target_path:
         raise ValueError("semantic read planning missing target_path")
+    preferred_regions = _as_string_list(payload.get("preferred_regions"))
+    if not preferred_regions:
+        normalized_target = target_path.lower()
+        if normalized_target.endswith(("readme.md", ".md", ".rst", ".txt")):
+            preferred_regions = ["head"]
+        else:
+            preferred_regions = ["head", "tail"]
     normalized = {
         "read_goal": read_goal,
         "target_path": target_path,
-        "preferred_regions": _as_string_list(payload.get("preferred_regions")),
+        "preferred_regions": preferred_regions,
         "confidence": _as_float(payload.get("confidence"), 0.8),
         "rationale": str(payload.get("rationale") or "Prepared read plan.").strip() or "Prepared read plan.",
     }
-    if not normalized["preferred_regions"]:
-        raise ValueError("semantic read planning missing preferred_regions")
     return normalized
 
 
@@ -118,6 +124,36 @@ def _shared_memory_state(run: WorkflowRun) -> dict[str, Any]:
     memory_state.setdefault("execution_memory", {})
     memory_state.setdefault("preference_memory", {})
     return memory_state
+
+
+def _normalize_with_repair(
+    context: RuntimeContextLike,
+    *,
+    role: str,
+    contract_kind: str,
+    required_fields: list[str],
+    request_payload: dict[str, Any],
+    original_output: dict[str, Any],
+    normalizer,
+    extra_instructions: str = "",
+    **normalizer_kwargs: Any,
+) -> dict[str, Any]:
+    try:
+        return normalizer(original_output, **normalizer_kwargs)
+    except ValueError as exc:
+        repaired = repair_structured_output(
+            context,
+            role=role,
+            contract_kind=contract_kind,
+            required_fields=required_fields,
+            original_output=original_output,
+            validation_error=str(exc),
+            request_payload=request_payload,
+            extra_instructions=extra_instructions,
+        )
+        if not isinstance(repaired, dict):
+            raise
+        return normalizer(repaired, **normalizer_kwargs)
 
 
 class InterpretTargetExecutor:
@@ -133,17 +169,25 @@ class InterpretTargetExecutor:
             "failure_history": list(run.shared_state.get("failure_history") or []),
             "memory_view": semantic_view,
         }
-        interpreted = _normalize_interpreted_target(
-            _structured_semantic_plan(
-                context,
-                payload,
-                (
-                    "Interpret the user's target request for a workspace agent. "
-                    "Use clarification_response and prior_candidates when present. "
-                    "Return JSON only with keys: target_kind, preferred_path, scope_preference, "
-                    "exclude_paths, confirmed, confidence, rationale."
-                ),
+        raw_interpreted = _structured_semantic_plan(
+            context,
+            payload,
+            (
+                "Interpret the user's target request for a workspace agent. "
+                "Use clarification_response and prior_candidates when present. "
+                "Return JSON only with keys: target_kind, preferred_path, scope_preference, "
+                "exclude_paths, confirmed, confidence, rationale."
             ),
+        )
+        interpreted = _normalize_with_repair(
+            context,
+            role="planner",
+            contract_kind="interpreted_target",
+            required_fields=["preferred_path", "scope_preference", "confirmed"],
+            request_payload=payload,
+            original_output=raw_interpreted,
+            normalizer=_normalize_interpreted_target,
+            extra_instructions="preferred_path must be concrete and scope_preference must be non-empty.",
             fallback_hint=str((node.metadata.get("target_hints") or [""])[0] or ""),
         )
         run.shared_state["interpreted_target"] = interpreted
@@ -193,16 +237,24 @@ class PlanSearchExecutor:
             "attempted_strategies": list(run.shared_state.get("attempted_strategies") or []),
             "memory_view": semantic_view,
         }
-        search_plan = _normalize_search_plan(
-            _structured_semantic_plan(
-                context,
-                payload,
-                (
-                    "Plan a search strategy for a workspace agent. "
-                    "Use interpreted_target and failure_history to avoid repeating ineffective search behavior. "
-                    "Return JSON only with keys: search_goal, semantic_queries, must_avoid, path_bias, confidence, rationale."
-                ),
+        raw_search_plan = _structured_semantic_plan(
+            context,
+            payload,
+            (
+                "Plan a search strategy for a workspace agent. "
+                "Use interpreted_target and failure_history to avoid repeating ineffective search behavior. "
+                "Return JSON only with keys: search_goal, semantic_queries, must_avoid, path_bias, confidence, rationale."
             ),
+        )
+        search_plan = _normalize_with_repair(
+            context,
+            role="planner",
+            contract_kind="search_plan",
+            required_fields=["search_goal", "semantic_queries"],
+            request_payload=payload,
+            original_output=raw_search_plan,
+            normalizer=_normalize_search_plan,
+            extra_instructions="semantic_queries must be a non-empty array of strings.",
             interpreted_target=interpreted_target,
         )
         run.shared_state["search_plan"] = search_plan
@@ -245,16 +297,26 @@ class PlanReadExecutor:
             "failure_history": list(run.shared_state.get("failure_history") or []),
             "memory_view": semantic_view,
         }
-        read_plan = _normalize_read_plan(
-            _structured_semantic_plan(
-                context,
-                payload,
-                (
-                    "Plan a file-reading strategy for a workspace agent. "
-                    "Use interpreted_target and search_plan to choose the exact file and the most relevant regions. "
-                    "Return JSON only with keys: read_goal, target_path, preferred_regions, confidence, rationale."
-                ),
+        raw_read_plan = _structured_semantic_plan(
+            context,
+            payload,
+            (
+                "Plan a file-reading strategy for a workspace agent. "
+                "Use interpreted_target and search_plan to choose the exact file and the most relevant regions. "
+                "Return JSON only with keys: read_goal, target_path, preferred_regions, confidence, rationale. "
+                "preferred_regions must be a non-empty array using values such as head or tail. "
+                "For README or overview documents, default preferred_regions to [\"head\"]."
             ),
+        )
+        read_plan = _normalize_with_repair(
+            context,
+            role="planner",
+            contract_kind="read_plan",
+            required_fields=["read_goal", "target_path", "preferred_regions"],
+            request_payload=payload,
+            original_output=raw_read_plan,
+            normalizer=_normalize_read_plan,
+            extra_instructions="preferred_regions must be a non-empty array; for README or overview documents use [\"head\"].",
             interpreted_target=interpreted_target,
             search_plan=search_plan,
         )

@@ -901,6 +901,32 @@ def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
         PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
 
 
+def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "semantic_queries": "README.md",
+            "path_bias": "README.md",
+        },
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors.repair_structured_output",
+        lambda *args, **kwargs: {
+            "search_goal": "find the root readme",
+            "semantic_queries": ["README.md"],
+            "path_bias": ["README.md"],
+        },
+    )
+    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+
+    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["search_plan"]["search_goal"] == "find the root readme"
+
+
 def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
     from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
 
@@ -916,6 +942,34 @@ def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
 
     with pytest.raises(ValueError, match="read_goal"):
         PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+
+
+def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
+    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_path": "README.md",
+            "preferred_regions": "head",
+            "confidence": "0.6",
+        },
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.semantic_plan_executors.repair_structured_output",
+        lambda *args, **kwargs: {
+            "read_goal": "summarize the readme",
+            "target_path": "README.md",
+            "preferred_regions": ["head"],
+            "confidence": 0.6,
+        },
+    )
+    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}, "search_plan": {"search_goal": "find readme"}})
+
+    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["read_plan"]["read_goal"] == "summarize the readme"
 
 
 def test_aggregate_node_results_deduplicates_facts_evidence_and_references():
@@ -1298,6 +1352,35 @@ def test_judge_progress_accepts_when_model_returns_accept(monkeypatch):
     assert decision.status == "accepted"
 
 
+def test_judge_progress_repairs_invalid_model_contract(monkeypatch):
+    from agent_runtime_framework.workflow.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.chat_json",
+        lambda *args, **kwargs: {"status": "maybe", "reason": ""},
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.judge.repair_structured_output",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Need a direct file read before answering.",
+            "allowed_next_node_types": ["plan_read", "chunked_file_read"],
+            "blocked_next_node_types": ["final_response"],
+        },
+    )
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload({"summaries": ["candidate only"]}),
+        new_agent_graph_state(run_id="judge-repair-1", goal_envelope=goal),
+        context={},
+    )
+
+    assert decision.status == "replan"
+    assert "plan_read" in decision.allowed_next_node_types
+
+
 def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
     from agent_runtime_framework.workflow.judge import judge_progress
 
@@ -1308,6 +1391,7 @@ def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
             "reason": "Need grounded evidence first.",
             "diagnosis": {"primary_gap": "grounded_evidence_missing", "goal_status": "insufficient_coverage"},
             "strategy_guidance": {"recommended_strategy": "gather_grounded_evidence"},
+            "allowed_next_node_types": ["content_search", "plan_read"],
             "blocked_next_node_types": ["final_response"],
         },
     )
@@ -1405,6 +1489,7 @@ def test_judge_progress_uses_model_replan_for_candidate_only_progress(monkeypatc
             "status": "replan",
             "reason": "Candidate search results are not enough yet.",
             "diagnosis": {"primary_gap": "grounded_evidence_missing"},
+            "allowed_next_node_types": ["content_search", "plan_read"],
         },
     )
 

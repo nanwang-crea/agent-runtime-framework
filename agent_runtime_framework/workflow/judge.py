@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_runtime_framework.workflow.contract_repair import repair_structured_output
 from agent_runtime_framework.workflow.llm_access import chat_json
 from agent_runtime_framework.workflow.memory_views import build_judge_memory_view
 from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, JudgeDecision, normalize_aggregated_workflow_payload
@@ -123,6 +124,19 @@ def _normalize_model_judge_decision(raw: dict[str, Any]) -> JudgeDecision:
     )
 
 
+def _judge_contract_error(raw: dict[str, Any] | None) -> str | None:
+    if not isinstance(raw, dict) or not raw:
+        return "judge contract missing"
+    status = str(raw.get("status") or "").strip().lower()
+    if status not in {"accept", "accepted", "replan"}:
+        return "judge contract missing valid status"
+    if not str(raw.get("reason") or "").strip():
+        return "judge contract missing reason"
+    if status == "replan" and not [str(item).strip() for item in raw.get("allowed_next_node_types", []) or [] if str(item).strip()]:
+        return "judge contract missing allowed_next_node_types"
+    return None
+
+
 def _guardrail_decision(
     goal_envelope: GoalEnvelope,
     payload: dict[str, Any],
@@ -193,8 +207,22 @@ def judge_progress(
         max_tokens=600,
         temperature=0.0,
     )
-    if isinstance(model_payload, dict) and model_payload:
+    contract_error = _judge_contract_error(model_payload if isinstance(model_payload, dict) else None)
+    if contract_error is None and isinstance(model_payload, dict):
         return _normalize_model_judge_decision(model_payload)
+    if contract_error is not None:
+        repaired = repair_structured_output(
+            context,
+            role="judge",
+            contract_kind="judge_contract",
+            required_fields=["status", "reason", "allowed_next_node_types"],
+            original_output=model_payload,
+            validation_error=contract_error,
+            request_payload=_judge_context_payload(goal_envelope, payload, graph_state),
+            extra_instructions="status must be either accept or replan. replan requires allowed_next_node_types.",
+        )
+        if isinstance(repaired, dict) and _judge_contract_error(repaired) is None:
+            return _normalize_model_judge_decision(repaired)
     return JudgeDecision(
         status="replan",
         reason="Judge model unavailable",

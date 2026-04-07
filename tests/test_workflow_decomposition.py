@@ -101,6 +101,26 @@ def test_analyze_goal_prefers_model_output_when_available():
     assert goal.requires_verification is False
 
 
+def test_analyze_goal_repairs_invalid_model_output(monkeypatch):
+    context = _workflow_context("not json")
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.goal_analysis.repair_structured_output",
+        lambda *args, **kwargs: {
+            "primary_intent": "file_read",
+            "requires_target_interpretation": True,
+            "requires_search": False,
+            "requires_read": True,
+            "requires_verification": False,
+        },
+    )
+
+    goal = analyze_goal("随便一句话", context=context)
+
+    assert goal.primary_intent == "file_read"
+    assert goal.requires_target_interpretation is True
+
+
 def test_decompose_goal_prefers_model_output_when_available():
     context = _workflow_context(
         '{"subtasks":[{"task_id":"workspace_discovery","task_profile":"workspace_discovery","target":"."},'
