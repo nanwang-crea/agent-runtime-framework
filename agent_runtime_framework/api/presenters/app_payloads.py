@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_runtime_framework.demo.payloads import compact_text, trace_detail_for_action, with_router_trace
-
+from agent_runtime_framework.api.presenters.payloads import compact_text, trace_detail_for_action, with_router_trace
 
 PayloadFn = Callable[[], dict[str, Any]]
 ListPayloadFn = Callable[[], list[dict[str, Any]]]
@@ -31,17 +30,11 @@ def build_result_payload(
         }
     if result.resume_token is not None:
         resume_token_id = result.resume_token.token_id
-    capability_name = result.action_kind
-    if result.action_kind == "respond" and result.task.actions:
-        last_action = result.task.actions[-1]
-        if not bool(last_action.metadata.get("direct_output")):
-            capability_name = "conversation"
     return {
         "status": result.status,
         "run_id": result.run_id,
         "plan_id": result.task.task_id,
         "final_answer": result.final_output,
-        "capability_name": capability_name,
         "execution_trace": with_router_trace(
             route_decision,
             [

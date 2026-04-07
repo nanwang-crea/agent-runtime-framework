@@ -76,7 +76,6 @@ function normalizeAssistantResponse(payload: unknown): AssistantResponse {
   return {
     status: typeof data.status === "string" ? data.status : "completed",
     final_answer: typeof data.final_answer === "string" ? data.final_answer : "",
-    capability_name: typeof data.capability_name === "string" ? data.capability_name : "assistant",
     execution_trace: Array.isArray(data.execution_trace) ? (data.execution_trace as ExecutionTraceStep[]) : [],
     approval_request:
       data.approval_request && typeof data.approval_request === "object"

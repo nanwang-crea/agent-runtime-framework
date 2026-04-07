@@ -1,0 +1,116 @@
+{
+  "schema_version": 3,
+  "instances": {
+    "openai": {
+      "type": "openai_compatible",
+      "enabled": true,
+      "connection": {
+        "base_url": "https://api.openai.com/v1",
+        "wire_api": "chat_completions"
+      },
+      "credentials": {
+        "api_key": ""
+      },
+      "catalog": {
+        "mode": "static",
+        "models": [
+          "gpt-5.4"
+        ]
+      }
+    },
+    "dashscope": {
+      "type": "openai_compatible",
+      "enabled": true,
+      "connection": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "wire_api": "chat_completions"
+      },
+      "credentials": {
+        "api_key": ""
+      },
+      "catalog": {
+        "mode": "static",
+        "models": [
+          "qwen3.5-plus",
+          "qwen-plus"
+        ]
+      }
+    },
+    "minimax": {
+      "type": "openai_compatible",
+      "enabled": true,
+      "connection": {
+        "base_url": "https://api.minimax.chat/v1",
+        "wire_api": "chat_completions"
+      },
+      "credentials": {
+        "api_key": ""
+      },
+      "catalog": {
+        "mode": "static",
+        "models": [
+          "MiniMax-M2.1"
+        ]
+      }
+    },
+    "codex_local": {
+      "type": "codex_cli",
+      "enabled": true,
+      "connection": {
+        "codex_binary": "codex",
+        "auth_file": "~/.codex/auth.json"
+      },
+      "credentials": {},
+      "catalog": {
+        "mode": "static",
+        "models": [
+          "gpt-5.3-codex",
+          "gpt-5.4",
+          "gpt-5.4-mini"
+        ]
+      }
+    }
+  },
+  "routes": {
+    "default": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "router": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "evaluator": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "conversation": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "capability_selector": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "planner": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "interpreter": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "resolver": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "executor": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    },
+    "composer": {
+      "instance": "dashscope",
+      "model": "qwen3.5-plus"
+    }
+  }
+}

@@ -19,11 +19,14 @@
 
 当前责任边界已经收口为：
 
+- `api/app.py` / `api/server.py`：只负责 FastAPI 入口与启动
+- `api/routes/*`：只负责 HTTP / SSE 适配
+- `api/services/chat_service.py`：直接负责聊天链路与 workflow 协调
+- `api/services/run_service.py`：直接负责审批恢复、replay 与运行记录恢复
+- `api/runtime_state.py`：状态容器与 payload 组装
 - `RootGraphRuntime`：只负责 route decision
 - `AgentGraphRuntime`：只负责 iterative graph orchestration
 - `GraphExecutionRuntime`：只负责 scheduler-driven node execution
-- `DemoAssistantApp`：只负责 app/session/payload 组织
-- `DemoRuntimeFactory`：只负责 wiring 和服务装配
 - graph-native write nodes：负责文件系统与文本编辑的工作流阶段语义
 
 ## 3. 当前稳定能力

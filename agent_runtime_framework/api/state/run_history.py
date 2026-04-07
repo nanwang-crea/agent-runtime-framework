@@ -17,7 +17,6 @@ def record_run(
     entry = {
         "run_id": run_id,
         "status": str(payload.get("status") or ""),
-        "capability_name": str(payload.get("capability_name") or ""),
         "prompt": prompt,
         "final_answer_preview": str(payload.get("final_answer") or "")[:160],
     }

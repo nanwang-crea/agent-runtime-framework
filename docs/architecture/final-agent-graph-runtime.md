@@ -4,7 +4,7 @@
 
 当前项目已经收敛为统一入口、双分支执行、图内审批与可重放的 Agent Graph Runtime。
 
-顶层入口不再在 `DemoAssistantApp` 中散落业务分支逻辑，而是统一通过 `RootGraphRuntime` 进入系统。所有请求先经过显式根图语义：`goal_intake -> route_by_goal`，然后分流到 conversation 分支或 agent 分支。
+顶层入口统一收敛在 `agent_runtime_framework.api`。`api/app.py` / `api/server.py` 只负责 FastAPI 入口与启动，`api/routes/*` 负责 HTTP/SSE 适配，`api/services/*` 直接承担各自的应用协调；所有非 HTTP 编排最终统一通过 `workflow/*` 进入系统。
 
 ## Top-Level Flow
 
@@ -54,16 +54,34 @@ goal_intake
 
 ## Module Responsibilities
 
-### `agent_runtime_framework/demo/app.py`
-角色：薄 façade / UI 入口适配层。
+### `agent_runtime_framework/api/app.py`
+角色：FastAPI app factory / 静态资源入口。
 
 负责：
-- `chat`
-- `stream_chat`
-- `approve`
-- `replay`
-- context / session / memory / model center 的外部接口
-- 少量 app 状态保存（如 `_pending_tokens`、`_run_history`）
+- 组装 `FastAPI`
+- 注册 `api/routes/*`
+- 挂载 frontend 静态资源入口
+
+### `agent_runtime_framework/api/routes/*`
+角色：HTTP / SSE route 适配层。
+
+负责：
+- 请求校验与 HTTP 返回
+- 调用 route-facing services
+- 不直接承担 workflow 编排
+
+### `agent_runtime_framework/api/services/*`
+角色：小型应用服务层。
+
+负责：
+- session / context / chat / runs / model center 等 route-facing 协调
+- 直接对接 workflow runtime 和持久化状态
+- 不承担 HTTP 细节
+
+当前关键文件为：
+- `chat_service.py`：负责 `RootGraphRuntime`、conversation branch、agent branch、payload 组装、clarification continuation、SSE 流事件
+- `run_service.py`：负责 pending token 恢复、approve、replay、缺失 token/run 的兜底 payload
+- `session_service.py` / `context_service.py`：负责轻量 session / context 输出
 
 ### `agent_runtime_framework/workflow/routing_runtime.py`
 角色：统一根图运行器。
@@ -102,64 +120,9 @@ goal_intake
 - `discovery.py` / `interaction.py` 提供发现类与交互类节点入口
 - `registry.py` 作为 `GraphExecutionRuntime` 的统一节点注册入口
 
-### `agent_runtime_framework/demo/agent_branch_orchestrator.py`
-角色：agent 分支 orchestration。
-
-负责：
-- 组装 `GoalEnvelope`
-- 恢复 clarification 对应的 prior state / prior graph
-- 调用 `AgentGraphRuntime`
-- 保存 run
-- 组装 payload
-- 写入 run history
-
-### `agent_runtime_framework/demo/workflow_branch_orchestrator.py`
-角色：conversation graph 执行层。
-
-负责：
-- 执行 conversation graph
-- 组装 conversation 分支 payload
-- 保持与主 graph runtime 一致的 workflow payload 形状
-
-说明：这不是 compat graph 编译入口；compat graph 旧入口已经移除。
-
-### `agent_runtime_framework/demo/workflow_payload_builder.py`
-角色：payload builder。
-
-负责：
-- 组装 workflow payload
-- 写入 approval / resume token 结果
-- 映射 clarification 与 evidence 展示字段
-
-### `agent_runtime_framework/demo/run_lifecycle.py`
-角色：生命周期控制器。
-
-负责：
-- `approve`
-- `replay`
-- token / run 恢复
-- missing token / missing run 兜底返回
-
-### `agent_runtime_framework/demo/workflow_run_observer.py`
-角色：运行副作用同步器。
-
-负责：
-- session turn 同步
-- task history 同步
-- memory focus 写回
-
-### `agent_runtime_framework/demo/runtime_factory.py`
-角色：装配层。
-
-负责统一构造：
-- `RootGraphRuntime`
-- `AgentGraphRuntime`
-- `GraphExecutionRuntime`
-- `AgentBranchOrchestrator`
-- `WorkflowBranchOrchestrator`
-- `RunLifecycleService`
-- `WorkflowRunObserver`
-- payload builder / pending approval registry 所需装配闭包
+说明：
+- API 层不再保留 `workflow_service.py`、`agent_branch_orchestrator.py`、`workflow_branch_orchestrator.py`、`workflow_payload_builder.py`、`run_lifecycle.py`、`workflow_run_observer.py`、`pending_run_registry.py` 这类总控中间层
+- 如果某条服务链路需要 runtime/persistence/payload 能力，就直接在对应 service 文件内通过私有 helper 组织
 
 ## Persistence and Replay
 
@@ -172,7 +135,7 @@ goal_intake
 
 Replay 时：
 - 先从 store 读取 run
-- 再通过 payload builder 还原展示 payload
+- 再由 `run_service.py` / `chat_service.py` 内部 payload helper 还原展示 payload
 - `root_graph` 会被一并恢复
 
 ## Approval Model
@@ -205,11 +168,11 @@ Replay 时：
 
 ## Recommended Reading Order
 
-1. `agent_runtime_framework/demo/app.py`
-2. `agent_runtime_framework/demo/runtime_factory.py`
+1. `agent_runtime_framework/api/app.py`
+2. `agent_runtime_framework/api/services/chat_service.py`
 3. `agent_runtime_framework/workflow/routing_runtime.py`
-4. `agent_runtime_framework/demo/agent_branch_orchestrator.py`
+4. `agent_runtime_framework/api/services/run_service.py`
 5. `agent_runtime_framework/workflow/agent_graph_runtime.py`
-6. `agent_runtime_framework/demo/workflow_payload_builder.py`
-7. `agent_runtime_framework/demo/run_lifecycle.py`
-8. `agent_runtime_framework/demo/workflow_branch_orchestrator.py`
+6. `agent_runtime_framework/api/runtime_state.py`
+7. `agent_runtime_framework/api/routes/chat.py`
+8. `agent_runtime_framework/api/routes/runs.py`

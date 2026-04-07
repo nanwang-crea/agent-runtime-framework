@@ -1,8 +1,5 @@
 from types import SimpleNamespace
 
-from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
-
-
 def test_create_workflow_node_executors_includes_current_node_families():
     from agent_runtime_framework.workflow.nodes import create_workflow_node_executors
 
@@ -20,7 +17,9 @@ def test_create_workflow_node_executors_includes_current_node_families():
     assert "chunked_file_read" in executors
 
 
-def test_demo_runtime_factory_uses_shared_workflow_node_registry(monkeypatch):
+def test_chat_service_uses_shared_workflow_node_registry(monkeypatch):
+    from agent_runtime_framework.api.services.chat_service import ChatService
+
     captured = {}
 
     def _fake_builder(*, context):
@@ -30,13 +29,11 @@ def test_demo_runtime_factory_uses_shared_workflow_node_registry(monkeypatch):
 
         return GraphExecutionRuntime(executors={"noop": object()}, context=context)
 
-    monkeypatch.setattr(
-        "agent_runtime_framework.demo.runtime_factory.build_workflow_graph_execution_runtime",
-        _fake_builder,
-    )
+    monkeypatch.setattr("agent_runtime_framework.api.services.chat_service.build_workflow_graph_execution_runtime", _fake_builder)
 
-    app = SimpleNamespace(_workflow_runtime_context=lambda: {})
-    runtime = DemoRuntimeFactory(app).build_graph_execution_runtime()
+    runtime_state = SimpleNamespace(workflow_runtime_context=lambda: {})
+    response_builder = SimpleNamespace()
+    runtime = ChatService(runtime_state, response_builder)._graph_runtime()
 
     assert captured["called"] is True
     assert captured["context"] == {}

@@ -1,11 +1,13 @@
 import agent_runtime_framework as arf
 from agent_runtime_framework import workflow
+from agent_runtime_framework.api.app import create_app
 from pathlib import Path
 
 
 def test_public_surface_exports_new_agent_layers():
     assert hasattr(arf, "SkillAttachment")
     assert hasattr(arf, "McpServiceRef")
+    assert arf.create_app is create_app
 
 
 def test_workflow_surface_no_longer_exports_legacy_graph_builder():

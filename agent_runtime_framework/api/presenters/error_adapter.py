@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_runtime_framework.api.presenters.payloads import with_router_trace
 from agent_runtime_framework.errors import AppError, normalize_app_error
 
-from agent_runtime_framework.demo.payloads import with_router_trace
 
-
-def normalize_demo_error(
+def normalize_api_error(
     exc: Exception,
     *,
     workspace: str,
@@ -96,7 +95,7 @@ def error_payload(
     memory_payload: dict[str, Any],
     context_payload: dict[str, Any],
 ) -> tuple[AppError, dict[str, Any]]:
-    error = normalize_demo_error(
+    error = normalize_api_error(
         exc,
         workspace=workspace,
         active_agent=active_agent,
@@ -105,16 +104,9 @@ def error_payload(
     payload = {
         "status": "error",
         "final_answer": error.message,
-        "capability_name": "",
         "execution_trace": with_router_trace(
             route_decision,
-            [
-                {
-                    "name": error.stage or "run",
-                    "status": "error",
-                    "detail": f"{error.code}: {error.message}",
-                }
-            ],
+            [{"name": error.stage or "run", "status": "error", "detail": f"{error.code}: {error.message}"}],
         ),
         "approval_request": None,
         "resume_token_id": None,

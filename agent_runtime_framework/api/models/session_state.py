@@ -10,7 +10,7 @@ class SessionTurn:
 
 
 @dataclass(slots=True)
-class DemoSessionState:
+class SessionState:
     session_id: str
     turns: list[SessionTurn] = field(default_factory=list)
     focused_capability: str | None = None

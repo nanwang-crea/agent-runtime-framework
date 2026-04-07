@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent_runtime_framework.demo.agent_branch_orchestrator import AgentBranchOrchestrator
+from agent_runtime_framework.api.services.chat_service import ChatService
+from agent_runtime_framework.api.services.run_service import RunService
 from agent_runtime_framework.workflow.models import GoalEnvelope, WorkflowGraph, WorkflowRun
 from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor
 
@@ -18,7 +19,7 @@ class _FakeRuntime:
         return self.run_result
 
 
-def test_agent_branch_orchestrator_merges_clarification_into_prior_goal(monkeypatch):
+def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
     prior_goal = GoalEnvelope(
         goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
         normalized_goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
@@ -41,7 +42,7 @@ def test_agent_branch_orchestrator_merges_clarification_into_prior_goal(monkeypa
     runtime = _FakeRuntime(WorkflowRun(goal=prior_goal.goal, graph=WorkflowGraph()))
 
     monkeypatch.setattr(
-        "agent_runtime_framework.demo.agent_branch_orchestrator.resolve_clarification_response",
+        "agent_runtime_framework.api.services.chat_service.resolve_clarification_response",
         lambda context, prior_goal_envelope, pending_request, user_response, prior_state: {
             "preferred_path": "README.md",
             "confirmed_target": "README.md",
@@ -55,21 +56,43 @@ def test_agent_branch_orchestrator_merges_clarification_into_prior_goal(monkeypa
 
     store = SimpleNamespace(load=lambda run_id: prior_run, save=lambda run: None)
     recorded = []
-    orchestrator = AgentBranchOrchestrator(
-        build_agent_graph_runtime=lambda: runtime,
-        build_runtime_context=lambda: {},
-        workflow_store=store,
-        workflow_payload=lambda run: {"status": "completed"},
-        remember_workflow_run=lambda message, run: None,
-        application_context=None,
-        workspace=".",
-        context=None,
-        get_pending_clarification=lambda: {"run_id": prior_run.run_id, "items": ["README.md", "frontend-shell/README.md"]},
-        record_run=lambda payload, message: recorded.append((payload, message)),
+    response_builder = SimpleNamespace(
+        memory_payload=lambda: {},
         run_history_payload=lambda: [],
+        error_payload=lambda exc: {"status": "error", "error": str(exc)},
+        session_payload=lambda: {},
+        plan_history_payload=lambda: [],
+        context_payload=lambda: {},
+    )
+    chat_service = ChatService(
+        SimpleNamespace(
+            workflow_runtime_context=lambda: {},
+            _workflow_store=store,
+            _pending_workflow_clarification={"run_id": prior_run.run_id, "items": ["README.md", "frontend-shell/README.md"]},
+            context=SimpleNamespace(application_context=None),
+            workspace=".",
+            record_run=lambda payload, message: recorded.append((payload, message)),
+        )
+        ,
+        response_builder,
     )
 
-    orchestrator.run("需要的是README.md这个文档", goal_spec=SimpleNamespace(original_goal="需要的是README.md这个文档", primary_intent="file_read", requires_target_interpretation=False, requires_search=False, requires_read=True, requires_verification=False, metadata={}), root_graph={"route": "agent", "intent": "file_read"})
+    chat_service._run_agent_branch(
+        "需要的是README.md这个文档",
+        goal_spec=SimpleNamespace(
+            original_goal="需要的是README.md这个文档",
+            primary_intent="file_read",
+            requires_target_interpretation=False,
+            requires_search=False,
+            requires_read=True,
+            requires_verification=False,
+            metadata={},
+        ),
+        build_runtime=lambda: runtime,
+        workflow_payload=lambda run: {"status": "completed"},
+        remember_run=lambda message, run: None,
+        root_graph={"route": "agent", "intent": "file_read"},
+    )
 
     call = runtime.calls[0]
     assert call["goal_envelope"].goal == prior_goal.goal
@@ -111,3 +134,70 @@ def test_final_response_executor_includes_response_memory_view(monkeypatch):
     assert result.output["final_response"] == "final"
     assert captured["payload"]["response_memory_view"]["confirmed_targets"] == ["README.md"]
     assert captured["payload"]["response_memory_view"]["excluded_targets"] == ["frontend-shell/README.md"]
+
+
+def test_run_service_approve_resumes_pending_token_from_runtime_state():
+    resumed = WorkflowRun(goal="demo", graph=WorkflowGraph())
+    resumed.final_output = "done"
+
+    class _Runtime:
+        def resume(self, run, *, resume_token, approved):
+            assert run is resumed
+            assert resume_token == "resume-token"
+            assert approved is True
+            return resumed
+
+    runtime_state = SimpleNamespace(
+        _pending_tokens={"token-1": {"runtime": _Runtime(), "run": resumed, "token": "resume-token"}},
+        workspace=".",
+        record_run=lambda payload, prompt: None,
+        context=SimpleNamespace(session=None),
+        _task_history=[],
+        _run_inputs={},
+        _workflow_store=SimpleNamespace(load=lambda run_id: resumed),
+        _pending_workflow_clarification=None,
+        _last_route_decision=None,
+    )
+    response_builder = SimpleNamespace(
+        session_payload=lambda: {"session_id": "s", "turns": []},
+        plan_history_payload=lambda: [],
+        run_history_payload=lambda: [],
+        memory_payload=lambda: {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
+    )
+    chat_service = SimpleNamespace(
+        _workflow_payload=lambda run, resume_token_id=None: {"status": run.status},
+        _register_pending_run=lambda run: None,
+        _remember_workflow_run=lambda message, run: None,
+    )
+
+    payload = RunService(runtime_state, response_builder, chat_service).approve("token-1", True)
+
+    assert payload["status"] == resumed.status
+    assert "token-1" not in runtime_state._pending_tokens
+
+
+def test_run_service_replay_falls_back_to_chat_when_run_is_missing(monkeypatch):
+    runtime_state = SimpleNamespace(
+        _pending_tokens={},
+        _run_inputs={"run-1": "hello"},
+        _workflow_store=SimpleNamespace(load=lambda run_id: (_ for _ in ()).throw(FileNotFoundError(run_id))),
+        workspace=".",
+        record_run=lambda payload, prompt: None,
+    )
+    response_builder = SimpleNamespace(
+        session_payload=lambda: {"session_id": "s", "turns": []},
+        plan_history_payload=lambda: [],
+        run_history_payload=lambda: [],
+        memory_payload=lambda: {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
+    )
+    chat_service = SimpleNamespace(
+        _workflow_payload=lambda run, resume_token_id=None: {"status": run.status},
+        _register_pending_run=lambda run: None,
+        _remember_workflow_run=lambda message, run: None,
+        chat=lambda message: {"status": "completed", "run_id": "run-2", "final_answer": message},
+    )
+
+    payload = RunService(runtime_state, response_builder, chat_service).replay("run-1")
+
+    assert payload["status"] == "completed"
+    assert payload["final_answer"] == "hello"

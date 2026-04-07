@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_runtime_framework.demo.payloads import compact_text, resource_payload
+from agent_runtime_framework.api.presenters.payloads import compact_text, resource_payload
 
 
 def build_context_payload(
@@ -29,10 +29,7 @@ def build_session_payload(session: Any) -> dict[str, Any]:
         return {"session_id": None, "turns": []}
     return {
         "session_id": session.session_id,
-        "turns": [
-            {"role": turn.role, "content": turn.content}
-            for turn in session.turns
-        ],
+        "turns": [{"role": turn.role, "content": turn.content} for turn in session.turns],
     }
 
 

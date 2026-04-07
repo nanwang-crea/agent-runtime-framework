@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
+import httpx
 
 
 def _stub_app():
@@ -14,39 +15,104 @@ def _stub_app():
         memory_payload=lambda: {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
         context_payload=lambda: {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
         model_center=SimpleNamespace(payload=lambda: {"config": {}, "runtime": {}, "runtime_checks": {}}, update=lambda payload: {"updated": payload}, run_action=lambda action, payload: {"action": action, "payload": payload}),
-        chat=lambda message: {"status": "completed", "final_answer": message, "capability_name": "workflow", "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."},
+        chat=lambda message: {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."},
         stream_chat=lambda message: iter([
             {"type": "start", "message": message},
-            {"type": "final", "payload": {"status": "completed", "final_answer": message, "capability_name": "workflow", "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."}},
+            {"type": "final", "payload": {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."}},
         ]),
         switch_context=lambda **kwargs: {"workspace": ".", "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": kwargs.get("agent_profile") or "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}},
     )
 
 
+def _stub_services():
+    return SimpleNamespace(
+        session=SimpleNamespace(
+            get_session=lambda: {
+                "workspace": ".",
+                "session": {"session_id": "s", "turns": []},
+                "plan_history": [],
+                "run_history": [],
+                "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
+                "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+            }
+        ),
+        chat=SimpleNamespace(
+            chat=lambda message: {"status": "completed", "final_answer": message},
+            stream_chat=lambda message: iter([
+                {"type": "start", "message": message},
+                {"type": "final", "payload": {"status": "completed", "final_answer": message}},
+            ]),
+        ),
+        context=SimpleNamespace(
+            switch_context=lambda **kwargs: {
+                "workspace": ".",
+                "session": {"session_id": "s", "turns": []},
+                "plan_history": [],
+                "run_history": [],
+                "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
+                "context": {"active_agent": kwargs.get("agent_profile") or "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+            }
+        ),
+        runs=SimpleNamespace(
+            approve=lambda token_id, approved: {"token_id": token_id, "approved": approved},
+            replay=lambda run_id: {"run_id": run_id, "status": "completed"},
+        ),
+        model_center=SimpleNamespace(
+            payload=lambda: {"config": {}, "runtime": {}, "runtime_checks": {}},
+            update=lambda payload: {"updated": payload},
+            run_action=lambda action, payload: {"action": action, "payload": payload},
+        ),
+    )
+
+
 def test_create_demo_api_exposes_core_routes():
-    from agent_runtime_framework.demo.api import create_demo_api
+    from agent_runtime_framework.api.app import create_app
+    from agent_runtime_framework.api.services import ApiServices
 
-    client = TestClient(create_demo_api(_stub_app()))
+    async def _run():
+        app = create_app()
+        app.state.api_services = ApiServices(**_stub_services().__dict__)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            session_response = await client.get("/api/session")
+            assert session_response.status_code == 200
+            assert session_response.json()["workspace"] == "."
 
-    session_response = client.get("/api/session")
-    assert session_response.status_code == 200
-    assert session_response.json()["workspace"] == "."
+            chat_response = await client.post("/api/chat", json={"message": "hello"})
+            assert chat_response.status_code == 200
+            assert chat_response.json()["final_answer"] == "hello"
 
-    chat_response = client.post("/api/chat", json={"message": "hello"})
-    assert chat_response.status_code == 200
-    assert chat_response.json()["final_answer"] == "hello"
+            stream_response = await client.post("/api/chat/stream", json={"message": "hello"})
+            assert stream_response.status_code == 200
+            assert stream_response.headers["content-type"].startswith("text/event-stream")
 
-    stream_response = client.post("/api/chat/stream", json={"message": "hello"})
-    assert stream_response.status_code == 200
-    assert stream_response.headers["content-type"].startswith("text/event-stream")
+            context_response = await client.post("/api/context", json={"agent_profile": "planner"})
+            assert context_response.status_code == 200
+            assert context_response.json()["context"]["active_agent"] == "planner"
+
+            approve_response = await client.post("/api/approve", json={"token_id": "t-1", "approved": True})
+            assert approve_response.status_code == 200
+            assert approve_response.json() == {"token_id": "t-1", "approved": True}
+
+            replay_response = await client.post("/api/replay", json={"run_id": "r-1"})
+            assert replay_response.status_code == 200
+            assert replay_response.json()["run_id"] == "r-1"
+
+    asyncio.run(_run())
 
 
 def test_create_demo_api_validates_required_payload_fields():
-    from agent_runtime_framework.demo.api import create_demo_api
+    from agent_runtime_framework.api.app import create_app
+    from agent_runtime_framework.api.services import ApiServices
 
-    client = TestClient(create_demo_api(_stub_app()))
+    async def _run():
+        app = create_app()
+        app.state.api_services = ApiServices(**_stub_services().__dict__)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post("/api/chat", json={})
 
-    response = client.post("/api/chat", json={})
+            assert response.status_code == 400
+            assert response.json()["error"] == "message is required"
 
-    assert response.status_code == 400
-    assert response.json()["error"] == "message is required"
+    asyncio.run(_run())

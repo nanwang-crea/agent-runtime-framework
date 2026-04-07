@@ -10,7 +10,6 @@ from agent_runtime_framework.models import ModelRegistry, ModelRouter
 
 logger = logging.getLogger(__name__)
 
-
 MODEL_ROLES = (
     "default",
     "router",
@@ -70,6 +69,7 @@ DEFAULT_V3_CONFIG: dict[str, Any] = {
     },
 }
 
+
 class ModelCenterStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -91,7 +91,7 @@ class ModelCenterStore:
         current = self.load_or_create()
         merged = normalize_config_v3(current)
 
-        incoming_instances = patch.get("instances") or patch.get("provider_instances")
+        incoming_instances = patch.get("instances")
         if isinstance(incoming_instances, dict):
             for instance_id, instance_patch in incoming_instances.items():
                 if not isinstance(instance_patch, dict):
@@ -115,13 +115,7 @@ class ModelCenterStore:
 
 
 class ModelCenterService:
-    def __init__(
-        self,
-        *,
-        store: ModelCenterStore,
-        registry: ModelRegistry,
-        router: ModelRouter,
-    ) -> None:
+    def __init__(self, *, store: ModelCenterStore, registry: ModelRegistry, router: ModelRouter) -> None:
         self.store = store
         self.registry = registry
         self.router = router
@@ -165,10 +159,7 @@ class ModelCenterService:
                     stage="model_center",
                     retriable=False,
                     suggestion="请检查前端传入的 action 是否受支持。",
-                    context={
-                        "action": normalized_action or action,
-                        "allowed_actions": ["authenticate_instance", "refresh_catalog"],
-                    },
+                    context={"action": normalized_action or action, "allowed_actions": ["authenticate_instance", "refresh_catalog"]},
                 )
             config = self.store.load_or_create()
             if normalized_action == "authenticate_instance":
@@ -176,15 +167,8 @@ class ModelCenterService:
                 if target:
                     runtime = self._runtime_state(config)
                     if target in runtime["instances"]:
-                        runtime["instances"][target] = self._runtime_state_for_instance(
-                            target,
-                            dict(config["instances"].get(target) or {}),
-                        )
-                        return {
-                            "config": config,
-                            "runtime": runtime,
-                            "runtime_checks": {"config_path": str(self.store.path)},
-                        }
+                        runtime["instances"][target] = self._runtime_state_for_instance(target, dict(config["instances"].get(target) or {}))
+                        return {"config": config, "runtime": runtime, "runtime_checks": {"config_path": str(self.store.path)}}
             return self._apply_and_project(config)
         except Exception as exc:
             error = normalize_app_error(
@@ -244,10 +228,7 @@ class ModelCenterService:
             instances[instance_id] = self._runtime_state_for_instance(instance_id, dict(instance_cfg or {}))
         return {
             "instances": instances,
-            "routes": {
-                role: {"instance": route["instance"], "model": route["model_name"]}
-                for role, route in self.router.routes_payload().items()
-            },
+            "routes": {role: {"instance": route["instance"], "model": route["model_name"]} for role, route in self.router.routes_payload().items()},
             "default_instance": str((config.get("routes") or {}).get("default", {}).get("instance") or ""),
             "active_model": {
                 "instance": str((config.get("routes") or {}).get("default", {}).get("instance") or ""),
@@ -257,7 +238,6 @@ class ModelCenterService:
 
     def _runtime_state_for_instance(self, instance_id: str, instance_cfg: dict[str, Any]) -> dict[str, Any]:
         session = self.registry.auth_session(instance_id)
-        models = []
         try:
             models = [item.as_dict() for item in self.registry.list_models(instance_id)]
         except KeyError:
@@ -298,17 +278,14 @@ class ModelCenterService:
 
 
 def normalize_config_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = _deep_merge(json.loads(json.dumps(DEFAULT_V3_CONFIG)), payload)
-    normalized["schema_version"] = 3
-    legacy_instances = normalized.pop("provider_instances", None)
-    merged_instances = dict(normalized.get("instances") or {})
-    if isinstance(legacy_instances, dict):
-        merged_instances = _deep_merge(merged_instances, legacy_instances)
-    normalized["instances"] = _normalize_instances(merged_instances)
-    normalized["routes"] = _normalize_routes(normalized.get("routes") or {})
-    normalized.pop("providers", None)
-    normalized.pop("models", None)
-    return normalized
+    payload_copy = json.loads(json.dumps(payload))
+    instances = payload_copy.get("instances") if isinstance(payload_copy.get("instances"), dict) else {}
+    routes = payload_copy.get("routes") if isinstance(payload_copy.get("routes"), dict) else {}
+    return {
+        "schema_version": 3,
+        "instances": _normalize_instances(dict(instances)),
+        "routes": _normalize_routes(dict(routes)),
+    }
 
 
 def _normalize_instances(instances: dict[str, Any]) -> dict[str, dict[str, Any]]:

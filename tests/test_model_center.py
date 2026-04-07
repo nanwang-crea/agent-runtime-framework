@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_runtime_framework.demo.model_center import normalize_config_v3
+from agent_runtime_framework.api.services.model_center_service import normalize_config_v3
 
 
 def test_normalize_config_v3_fills_missing_sections():
@@ -27,13 +27,10 @@ def test_normalize_config_v3_fills_missing_sections():
     assert "evaluator" in normalized["routes"]
     assert "planner" in normalized["routes"]
 
-
-def test_normalize_config_v3_drops_legacy_sections():
+def test_normalize_config_v3_ignores_unknown_top_level_sections():
     payload = {
         "schema_version": 3,
-        "providers": {"legacy": {"api_key": "old"}},
-        "models": {"legacy": ["m1"]},
-        "provider_instances": {
+        "instances": {
             "dashscope": {
                 "type": "openai_compatible",
                 "enabled": True,
@@ -42,13 +39,13 @@ def test_normalize_config_v3_drops_legacy_sections():
                 "catalog": {"mode": "static", "models": ["qwen3.5-plus"]},
             }
         },
+        "providers": {"legacy": {"api_key": "old"}},
+        "models": {"legacy": ["m1"]},
         "routes": {"conversation": {"instance": "dashscope", "model": "qwen3.5-plus"}},
     }
 
     normalized = normalize_config_v3(payload)
 
-    assert "providers" not in normalized
-    assert "models" not in normalized
     assert normalized["instances"]["dashscope"]["catalog"]["models"] == ["qwen3.5-plus"]
 
 

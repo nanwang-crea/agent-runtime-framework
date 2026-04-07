@@ -4,10 +4,11 @@
 
 当前生效的主链路是：
 
-- `agent_runtime_framework.demo.server`
-- `agent_runtime_framework.demo.app`
+- `agent_runtime_framework.api.server`
+- `agent_runtime_framework.api.app`
+- `agent_runtime_framework.api.routes.*`
+- `agent_runtime_framework.api.services.*`
 - `agent_runtime_framework.workflow.*`
-- `agent_runtime_framework.agents.*`（agent definitions / registry / workspace backend）
 
 这意味着仓库现在以 **workflow-first** 的方式处理工作区任务，尤其是复合请求，例如：
 
@@ -42,11 +43,11 @@
   - 为 graph runtime 提供底层工作区访问能力
   - 不再承担独立编排职责
 
-- `agent_runtime_framework.demo`
-  - 本地 HTTP server
-  - demo app shell
-  - model center wiring
-  - conversation routing + workflow runtime entry
+- `agent_runtime_framework.api`
+  - FastAPI app factory / uvicorn server entry
+  - route handlers (`api/routes`)
+  - route-facing application services (`api/services`)
+  - runtime state / model center / session-context payload assembly
 
 - `agent_runtime_framework.tools` / `resources` / `memory` / `models`
   - tool registry / tool execution
@@ -56,16 +57,19 @@
 
 ## Current Entry Point
 
-当前 demo 前后端主路径为：
+当前前后端主路径为：
 
-`frontend -> demo/server.py -> create_demo_assistant_app() -> DemoAssistantApp -> RootGraphRuntime -> (conversation graph | AgentGraphRuntime) -> GraphExecutionRuntime`
+`frontend -> api/server.py -> api/app.py -> api/routes/* -> api/services/* -> workflow/*`
 
 其中：
 
 - **compound / multi-step workspace goals** 走 `AgentGraphRuntime` + `GraphExecutionRuntime` 主路径
 - **conversation-style requests** 仍然走 conversation routing
-- `WorkspaceBackend` 作为底层工具与资源访问能力参与执行，不是产品入口运行时
-- `DemoAssistantApp` 负责 app/session/payload 组织，不拥有业务执行逻辑
+- `api/app.py` / `api/server.py` 只负责入口与启动
+- `api/routes/*` 只负责 HTTP/SSE 适配
+- `api/services/chat_service.py` 直接负责 chat / stream_chat 与 workflow 协调
+- `api/services/run_service.py` 直接负责 approve / replay / pending token 恢复
+- `workflow/` 保持唯一编排核心
 
 ## Runtime Rules
 
@@ -102,7 +106,7 @@
 - aggregation / final response executors
 - node-level approval / resume
 - file-backed workflow persistence
-- demo app 对 compound goal 的 workflow-first 路由
+- API backend 对 compound goal 的 workflow-first 路由
 - top-level public exports: `GraphExecutionRuntime`, `WorkflowRun`, `WorkflowNode`, `WorkflowGraph`
 
 当前稳定具备的部分主要是：
@@ -123,9 +127,9 @@
 - model-planned graph 的进一步扩展
 - subagent / MCP / skills 级别的图节点化
 
-## Demo Backend (Python)
+## API Backend (Python)
 
-The demo HTTP API and bundled web UI live in `agent_runtime_framework.demo.server`. The server is implemented with the standard library (`ThreadingHTTPServer`); there is no separate ASGI process (for example, no uvicorn).
+The HTTP API and bundled web UI live in `agent_runtime_framework.api.server`. The HTTP app is built with `FastAPI`, and `agent_runtime_framework.api.server` is the thin `uvicorn` launcher around the app factory in `agent_runtime_framework.api.app`.
 
 **Requirements:** Python **3.10+** (the package uses `@dataclass(slots=True)` and similar 3.10+ APIs).
 
@@ -137,21 +141,21 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-Start the demo (pick one):
+Start the backend (pick one):
 
 ```bash
 arf-desktop-demo --workspace .
 ```
 
 ```bash
-python -m agent_runtime_framework.demo.server --workspace .
+python -m agent_runtime_framework.api.server --workspace .
 ```
 
 Then open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 **CLI options:** `--workspace` (default `.`), `--host` (default `127.0.0.1`), `--port` (default `8765`).
 
-**Config:** the model center persists settings under `<workspace>/.arf_demo_config.json` (created or updated through the UI/API). On first use it seeds a DashScope-compatible layout:
+**Config:** the model center persists settings under `<workspace>/.arf_config.json` (created or updated through the UI/API). On first use it seeds a DashScope-compatible layout:
 
 - provider instance: `dashscope`
 - base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
@@ -159,7 +163,7 @@ Then open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 You still need a valid API key (or other credentials) for that provider in the model center before remote calls succeed.
 
-The demo combines general conversation routing with the workflow runtime, Codex execution, workspace tools, layered memory, and model-center-based per-role model routing.
+The API layer combines general conversation routing with the workflow runtime, Codex execution, workspace tools, layered memory, and model-center-based per-role model routing.
 
 **HTTP surface (current):**
 
@@ -179,7 +183,7 @@ The demo combines general conversation routing with the workflow runtime, Codex 
 
 ## Frontend Shell
 
-An `Electron + React + Vite` shell lives in [frontend-shell](frontend-shell). It proxies **`/api`** to the Python demo (default target `http://127.0.0.1:8765`). Override with `VITE_ASSISTANT_API_BASE` if the backend uses another host or port.
+An `Electron + React + Vite` shell lives in [frontend-shell](frontend-shell). It proxies **`/api`** to the Python API backend (default target `http://127.0.0.1:8765`). Override with `VITE_ASSISTANT_API_BASE` if the backend uses another host or port.
 
 **Important:** `npm run dev` starts **both** the Vite dev server and Electron (`concurrently`). Vite binds **127.0.0.1:3000** (strict port).
 
@@ -191,7 +195,7 @@ npm install
 npm run dev:web
 ```
 
-Then start the Python demo separately so `/api` can be proxied.
+Then start the Python API backend separately so `/api` can be proxied.
 
 The shell includes an Electron main process and preload bridge; Tauri is not part of the current runtime path.
 

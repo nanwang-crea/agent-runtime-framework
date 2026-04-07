@@ -1167,7 +1167,7 @@ function finalizeRunCard(
           id: runId,
           anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
           approvalTokenId: payload.resume_token_id,
-          capabilityName: payload.capability_name || "assistant",
+          capabilityName: inferCapabilityName(trace[trace.length - 1]?.name, "assistant"),
           phaseLabel: summary,
           status: mapPayloadStatus(payload),
           entries: mergeFinalTraceEntries([], trace),
@@ -1184,7 +1184,7 @@ function finalizeRunCard(
         : {
           ...run,
           approvalTokenId: payload.resume_token_id,
-          capabilityName: payload.capability_name || run.capabilityName,
+          capabilityName: trace.length ? inferCapabilityName(trace[trace.length - 1]?.name, run.capabilityName) : run.capabilityName,
           phaseLabel: summary,
           status: mapPayloadStatus(payload),
           entries: mergeFinalTraceEntries(run.entries, trace),
@@ -1250,8 +1250,8 @@ function buildRunSummary(payload: AssistantResponse): string {
   if (lastTrace?.detail) {
     return normalizeDetail(lastTrace.detail);
   }
-  if (payload.capability_name) {
-    return `已完成 ${payload.capability_name}`;
+  if (lastTrace?.name) {
+    return `已完成 ${lastTrace.name}`;
   }
   return "已完成";
 }
