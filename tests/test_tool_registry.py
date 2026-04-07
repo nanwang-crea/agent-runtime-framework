@@ -4,7 +4,7 @@ import pytest
 from threading import Event, Thread
 from types import SimpleNamespace
 
-from agent_runtime_framework.core.specs import AgentSpec, ToolSpec
+from agent_runtime_framework.tools.specs import ToolSpec
 from agent_runtime_framework.tools.executor import execute_tool_call
 from agent_runtime_framework.tools.models import ToolCall
 from agent_runtime_framework.tools.registry import ToolRegistry
@@ -24,18 +24,6 @@ def _failing_once_tool_factory():
         return {"ok": True}
 
     return _tool
-
-
-def _planner(task, context, observations):
-    return {"kind": "finish", "answer": "done"}
-
-
-def _evaluator(task, context, step_result):
-    return {"status": "completed"}
-
-
-def _responder(task, context, observations):
-    return "done"
 
 
 def test_registry_rejects_duplicate_tools():
@@ -149,19 +137,6 @@ def test_execute_tool_call_serializes_calls_with_same_argument():
         "start:same.txt",
         "end:same.txt",
     ]
-
-
-def test_agent_spec_allows_minimal_callable_components():
-    spec = AgentSpec(
-        name="demo",
-        description="demo agent",
-        planner=_planner,
-        evaluator=_evaluator,
-        responder=_responder,
-    )
-
-    assert spec.name == "demo"
-    assert spec.tools == []
 
 
 def test_tool_spec_can_load_prompt_assets(tmp_path: Path):

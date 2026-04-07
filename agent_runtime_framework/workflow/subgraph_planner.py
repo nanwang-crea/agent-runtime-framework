@@ -5,11 +5,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.contract_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.memory_views import build_planner_memory_view
 from agent_runtime_framework.workflow.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.models import build_agent_graph_execution_summary
 from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
-from agent_runtime_framework.workflow.prompting import extract_json_block
 
 ALLOWED_DYNAMIC_NODE_TYPES = {
     "interpret_target",
@@ -171,19 +172,21 @@ def _inject_semantic_foundation(goal_envelope: GoalEnvelope, graph_state: AgentG
 
 
 def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
-    if graph_state.execution_summary:
-        return dict(graph_state.execution_summary)
     payload = graph_state.aggregated_payload
-    return {
-        "current_iteration": graph_state.current_iteration,
-        "appended_node_ids": list(graph_state.appended_node_ids),
-        "summaries": list(payload.get("summaries", []) or []),
-        "evidence_count": len(payload.get("evidence_items", []) or []) + len(payload.get("chunks", []) or []) + len(payload.get("facts", []) or []),
-        "verification": dict(payload.get("verification") or {}) if isinstance(payload.get("verification"), dict) else None,
-        "open_issues": list(graph_state.open_issues),
-        "attempted_strategies": list(graph_state.attempted_strategies),
-        "latest_failure": dict(graph_state.failure_history[-1]) if graph_state.failure_history else None,
-    }
+    summary = build_agent_graph_execution_summary(graph_state)
+    summary["evidence_count"] = (
+        len(payload.get("evidence_items", []) or [])
+        + len(payload.get("chunks", []) or [])
+        + len(payload.get("facts", []) or [])
+    )
+    return summary
+
+
+def _repair_recorder(graph_state: AgentGraphState):
+    def _record(event: dict[str, Any]) -> None:
+        graph_state.repair_history.append(dict(event))
+
+    return _record
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
@@ -357,6 +360,7 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
     model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
         return None
+    request_payload = _planner_context_payload(goal_envelope, graph_state)
     response = chat_once(
         llm_client,
         ChatRequest(
@@ -368,14 +372,31 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
                 ),
                 ChatMessage(
                     role="user",
-                    content=json.dumps(_planner_context_payload(goal_envelope, graph_state), ensure_ascii=False),
+                    content=json.dumps(request_payload, ensure_ascii=False),
                 ),
             ],
             temperature=0.0,
             max_tokens=600,
         ),
     )
-    return json.loads(extract_json_block(str(response.content or "")))
+    raw_content = str(response.content or "")
+    parsed, parse_error = parse_json_object(raw_content)
+    if isinstance(parsed, dict):
+        return parsed
+    repaired = repair_structured_output(
+        context,
+        role="planner",
+        contract_kind="subgraph_plan",
+        required_fields=["planner_summary", "nodes"],
+        original_output=raw_content,
+        validation_error=parse_error or "invalid model response",
+        request_payload=request_payload,
+        extra_instructions="nodes must be a non-empty array of planned workflow nodes.",
+        on_record=_repair_recorder(graph_state),
+    )
+    if isinstance(repaired, dict):
+        return repaired
+    raise ValueError("model planner returned invalid json")
 
 
 def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_dynamic_nodes: int) -> tuple[list[PlannedNode], list[WorkflowEdge]]:

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from agent_runtime_framework.workflow import WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
-from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
+from agent_runtime_framework.workflow.nodes.discovery import EvidenceSynthesisExecutor
 from agent_runtime_framework.workflow.models import NodeResult
 
 

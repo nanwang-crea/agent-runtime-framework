@@ -91,6 +91,17 @@ goal_intake
 - clarification / approval / final response
 - loop 语义与恢复
 
+### `agent_runtime_framework/workflow/nodes/`
+角色：工作流节点执行器家族目录。
+
+负责：
+- 以节点家族而不是历史遗留文件名组织执行器
+- `core.py` 管理聚合、验证、最终回答、审批门等核心节点
+- `semantic.py` 管理 `interpret_target` / `plan_search` / `plan_read`
+- `workspace_write.py` 管理 graph-native 写节点
+- `discovery.py` / `interaction.py` 提供发现类与交互类节点入口
+- `registry.py` 作为 `GraphExecutionRuntime` 的统一节点注册入口
+
 ### `agent_runtime_framework/demo/agent_branch_orchestrator.py`
 角色：agent 分支 orchestration。
 

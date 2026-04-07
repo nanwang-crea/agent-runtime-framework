@@ -287,7 +287,6 @@ class AgentGraphState:
     goal_envelope: GoalEnvelope
     current_iteration: int = 0
     aggregated_payload: AggregatedWorkflowPayload = field(default_factory=normalize_aggregated_workflow_payload)
-    execution_summary: dict[str, Any] = field(default_factory=dict)
     planned_subgraphs: list[PlannedSubgraph] = field(default_factory=list)
     judge_history: list[JudgeDecision] = field(default_factory=list)
     appended_node_ids: list[str] = field(default_factory=list)
@@ -296,6 +295,7 @@ class AgentGraphState:
     open_issues: list[str] = field(default_factory=list)
     attempted_strategies: list[str] = field(default_factory=list)
     recovery_history: list[dict[str, Any]] = field(default_factory=list)
+    repair_history: list[dict[str, Any]] = field(default_factory=list)
     memory_state: WorkflowMemoryState = field(default_factory=WorkflowMemoryState)
 
     def as_payload(self) -> dict[str, Any]:
@@ -306,13 +306,61 @@ def new_agent_graph_state(*, run_id: str, goal_envelope: GoalEnvelope) -> AgentG
     return AgentGraphState(run_id=run_id, goal_envelope=goal_envelope)
 
 
+def build_agent_graph_execution_summary(state: AgentGraphState) -> dict[str, Any]:
+    payload = normalize_aggregated_workflow_payload(state.aggregated_payload)
+    latest_decision = state.judge_history[-1] if state.judge_history else None
+    latest_failure = dict(state.failure_history[-1]) if state.failure_history else None
+    latest_recovery = dict(state.recovery_history[-1]) if state.recovery_history else None
+    latest_repair = dict(state.repair_history[-1]) if state.repair_history else None
+    execution_failed = str((latest_recovery or {}).get("trigger") or "") == "execution_failed"
+
+    if latest_decision is not None:
+        last_judge_status = str(latest_decision.status or "")
+        last_judge_reason = str(latest_decision.reason or "")
+        latest_diagnosis = dict(latest_decision.diagnosis)
+        latest_strategy_guidance = dict(latest_decision.strategy_guidance)
+        missing_evidence = list(latest_decision.missing_evidence)
+    elif execution_failed:
+        last_judge_status = "execution_failed"
+        last_judge_reason = str((latest_recovery or {}).get("reason") or "workflow execution failed")
+        latest_diagnosis = {}
+        latest_strategy_guidance = {}
+        missing_evidence = list(state.open_issues)
+    else:
+        last_judge_status = ""
+        last_judge_reason = ""
+        latest_diagnosis = {}
+        latest_strategy_guidance = {}
+        missing_evidence = list(state.open_issues)
+
+    return {
+        "current_iteration": state.current_iteration,
+        "last_judge_status": last_judge_status,
+        "last_judge_reason": last_judge_reason,
+        "missing_evidence": missing_evidence,
+        "appended_node_ids": list(state.appended_node_ids),
+        "summaries": list(payload.get("summaries", []) or []),
+        "verification": dict(payload.get("verification") or {}) if isinstance(payload.get("verification"), dict) else None,
+        "quality_signals": [dict(item) for item in payload.get("quality_signals", []) or [] if isinstance(item, dict)],
+        "conflicts": [str(item) for item in payload.get("conflicts", []) or [] if str(item).strip()],
+        "open_issues": list(state.open_issues),
+        "attempted_strategies": list(state.attempted_strategies),
+        "latest_diagnosis": latest_diagnosis,
+        "latest_strategy_guidance": latest_strategy_guidance,
+        "latest_failure": latest_failure,
+        "latest_recovery_decision": latest_recovery,
+        "repair_count": len(state.repair_history),
+        "latest_repair": latest_repair,
+    }
+
+
 def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
     return {
         "run_id": state.run_id,
         "goal_envelope": state.goal_envelope.as_payload(),
         "current_iteration": state.current_iteration,
         "aggregated_payload": normalize_aggregated_workflow_payload(state.aggregated_payload),
-        "execution_summary": dict(state.execution_summary),
+        "execution_summary": build_agent_graph_execution_summary(state),
         "planned_subgraphs": [subgraph.as_payload() for subgraph in state.planned_subgraphs],
         "judge_history": [decision.as_payload() for decision in state.judge_history],
         "appended_node_ids": list(state.appended_node_ids),
@@ -321,5 +369,6 @@ def serialize_agent_graph_state(state: AgentGraphState) -> dict[str, Any]:
         "open_issues": list(state.open_issues),
         "attempted_strategies": list(state.attempted_strategies),
         "recovery_history": [dict(item) for item in state.recovery_history],
+        "repair_history": [dict(item) for item in state.repair_history],
         "memory_state": state.memory_state.as_payload(),
     }

@@ -160,12 +160,12 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.planned_subgraphs == []
     assert state.judge_history == []
     assert state.appended_node_ids == []
-    assert state.execution_summary == {}
     assert state.iteration_summaries == []
     assert state.failure_history == []
     assert state.open_issues == []
     assert state.attempted_strategies == []
     assert state.recovery_history == []
+    assert state.repair_history == []
     assert state.memory_state.clarification_memory == {}
     assert state.memory_state.semantic_memory == {}
     assert state.memory_state.execution_memory == {}
@@ -176,12 +176,15 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert payload["run_id"] == "run-1"
     assert payload["goal_envelope"]["goal"] == "总结 agent graph runtime 设计"
     assert payload["aggregated_payload"]["summaries"] == []
-    assert payload["execution_summary"] == {}
+    assert payload["execution_summary"]["current_iteration"] == 0
+    assert payload["execution_summary"]["last_judge_status"] == ""
+    assert payload["execution_summary"]["attempted_strategies"] == []
     assert payload["iteration_summaries"] == []
     assert payload["failure_history"] == []
     assert payload["open_issues"] == []
     assert payload["attempted_strategies"] == []
     assert payload["recovery_history"] == []
+    assert payload["repair_history"] == []
     assert payload["memory_state"] == {
         "clarification_memory": {},
         "semantic_memory": {},
@@ -221,6 +224,34 @@ def test_judge_decision_serializes_route_constraints():
     assert payload["blocked_next_node_types"] == ["final_response"]
     assert payload["must_cover"] == ["read README body"]
     assert payload["planner_instructions"] == "Read the README content before answering."
+
+
+def test_agent_graph_state_store_restores_repair_history():
+    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
+    state = AgentGraphStateStore().restore_state(
+        goal,
+        run_id="repair-state-1",
+        prior_state={
+            "run_id": "repair-state-1",
+            "goal_envelope": goal.as_payload(),
+            "repair_history": [
+                {
+                    "contract_kind": "read_plan",
+                    "role": "planner",
+                    "success": True,
+                    "attempts_used": 2,
+                    "max_attempts": 3,
+                    "initial_error": "missing preferred_regions",
+                }
+            ],
+            "memory_state": {},
+        },
+    )
+
+    assert state.repair_history[0]["contract_kind"] == "read_plan"
+    assert state.repair_history[0]["attempts_used"] == 2
 
 
 def test_workflow_prompt_helpers_are_owned_by_workflow_layer():

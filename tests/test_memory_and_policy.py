@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_runtime_framework.applications import ApplicationContext
+from agent_runtime_framework.workflow.application_context import ApplicationContext
 from agent_runtime_framework.memory import (
     InMemoryIndexMemory,
     InMemorySessionMemory,
@@ -210,8 +210,8 @@ def test_simple_desktop_policy_requires_confirmation_for_destructive_write():
 
 
 
-def test_workspace_backend_no_longer_exports_legacy_planner_helpers():
-    import agent_runtime_framework.agents.workspace_backend as workspace_backend
+def test_workflow_workspace_no_longer_exports_legacy_planner_helpers():
+    import agent_runtime_framework.workflow.workspace as workspace_backend
 
     assert not hasattr(workspace_backend, "infer_task_intent")
     assert not hasattr(workspace_backend, "plan_workspace_actions")

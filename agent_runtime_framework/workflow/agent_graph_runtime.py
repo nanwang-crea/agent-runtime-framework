@@ -52,9 +52,6 @@ class AgentGraphRuntime:
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
         run.shared_state["agent_graph_state_ref"] = state
         run.shared_state["memory_state"] = state.memory_state.as_payload()
-        run.shared_state["open_issues"] = list(state.open_issues)
-        run.shared_state["failure_history"] = list(state.failure_history)
-        run.shared_state["attempted_strategies"] = list(state.attempted_strategies)
         self._seed_system_nodes(run, goal_envelope, runtime_context)
         if clarification_response:
             run.shared_state["clarification_response"] = clarification_response
@@ -109,7 +106,6 @@ class AgentGraphRuntime:
         run.status = RUN_STATUS_COMPLETED
         run.final_output = self._limited_answer(last_decision)
         run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-        run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
         return run
 
     def _consume_subrun(self, goal_envelope: GoalEnvelope, state: AgentGraphState, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph, runtime_context: Any | None = None) -> WorkflowRun | None:
@@ -118,6 +114,11 @@ class AgentGraphRuntime:
         for key in ("evidence_synthesis", "clarification_request", "resolved_target"):
             if key in executed.shared_state:
                 run.shared_state[key] = executed.shared_state[key]
+        if "repair_history" in executed.shared_state:
+            merged_repairs = [dict(item) for item in executed.shared_state.get("repair_history", []) or [] if isinstance(item, dict)]
+            if merged_repairs:
+                state.repair_history = merged_repairs
+                run.shared_state["repair_history"] = list(state.repair_history)
         if executed.status == RUN_STATUS_FAILED:
             run.status = RUN_STATUS_FAILED
             run.error = executed.error
@@ -132,23 +133,7 @@ class AgentGraphRuntime:
                     },
                 )
             )
-            state.execution_summary = {
-                "current_iteration": state.current_iteration,
-                "last_judge_status": "execution_failed",
-                "last_judge_reason": str(executed.error or "workflow execution failed"),
-                "missing_evidence": list(state.open_issues),
-                "appended_node_ids": list(state.appended_node_ids),
-                "summaries": list(state.aggregated_payload.get("summaries", []) or []),
-                "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
-                "open_issues": list(state.open_issues),
-                "attempted_strategies": list(state.attempted_strategies),
-                "latest_diagnosis": {},
-                "latest_strategy_guidance": {},
-                "latest_failure": dict(state.failure_history[-1]) if state.failure_history else None,
-                "latest_recovery_decision": dict(state.recovery_history[-1]),
-            }
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-            run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
         if executed.status == RUN_STATUS_WAITING_APPROVAL:
             run.status = RUN_STATUS_WAITING_APPROVAL
@@ -157,7 +142,6 @@ class AgentGraphRuntime:
             run.metadata["pending_subrun"] = asdict(executed)
             run.metadata["pending_subgraph"] = subgraph.as_payload()
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-            run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
         if "evidence_synthesis" in executed.shared_state:
             run.shared_state["evidence_synthesis"] = executed.shared_state["evidence_synthesis"]
@@ -203,23 +187,6 @@ class AgentGraphRuntime:
             )
         if last_decision.status != "accepted":
             state.recovery_history.append(self._recovery_for_decision(last_decision, state.current_iteration))
-        state.execution_summary = {
-            "current_iteration": state.current_iteration,
-            "last_judge_status": last_decision.status,
-            "last_judge_reason": last_decision.reason,
-            "missing_evidence": list(last_decision.missing_evidence),
-            "appended_node_ids": list(state.appended_node_ids),
-            "summaries": list(state.aggregated_payload.get("summaries", []) or []),
-            "verification": dict(state.aggregated_payload.get("verification") or {}) if isinstance(state.aggregated_payload.get("verification"), dict) else None,
-            "quality_signals": [dict(item) for item in state.aggregated_payload.get("quality_signals", []) or [] if isinstance(item, dict)],
-            "conflicts": [str(item) for item in state.aggregated_payload.get("conflicts", []) or [] if str(item).strip()],
-            "open_issues": list(state.open_issues),
-            "attempted_strategies": list(state.attempted_strategies),
-            "latest_diagnosis": dict(last_decision.diagnosis),
-            "latest_strategy_guidance": dict(last_decision.strategy_guidance),
-            "latest_failure": dict(state.failure_history[-1]) if state.failure_history else None,
-            "latest_recovery_decision": dict(state.recovery_history[-1]) if state.recovery_history else None,
-        }
         run.shared_state["judge_decision"] = last_decision.as_payload()
         judge_node_id = f"judge_{state.current_iteration}"
         judge_result = NodeResult(status="completed", output=last_decision.as_payload())
@@ -230,14 +197,12 @@ class AgentGraphRuntime:
             run.status = RUN_STATUS_COMPLETED
             run.final_output = self._finalize(run, last_decision)
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-            run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
         if run.shared_state.get("clarification_request"):
             prompt = str((run.shared_state.get("clarification_request") or {}).get("prompt") or last_decision.reason or "Please clarify the request.")
             run.status = RUN_STATUS_COMPLETED
             run.final_output = prompt
             run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-            run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
             return run
         next_plan_node_id = f"plan_{state.current_iteration + 1}"
         if next_plan_node_id not in {node.node_id for node in run.graph.nodes} and state.current_iteration < self.max_iterations:
@@ -247,7 +212,6 @@ class AgentGraphRuntime:
             run.node_states[next_plan_node_id] = NodeState(node_id=next_plan_node_id, status="completed", result=plan_result)
             run.shared_state.setdefault("node_results", {})[next_plan_node_id] = plan_result
         run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
-        run.metadata["append_history"] = list(run.graph.metadata.get("append_history") or [])
         return None
 
     def _restore_workflow_run(self, payload: dict[str, Any]) -> WorkflowRun:

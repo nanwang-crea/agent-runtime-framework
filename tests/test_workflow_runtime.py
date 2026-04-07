@@ -20,17 +20,18 @@ from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 import pytest
 from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
-from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
-from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
+from agent_runtime_framework.workflow.nodes.interaction import ClarificationExecutor, ToolCallExecutor
 from agent_runtime_framework.workflow.aggregator import aggregate_node_results
 from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.node_executors import FinalResponseExecutor, VerificationExecutor
-from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
-from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
-from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
-from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
+from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor, VerificationExecutor
+from agent_runtime_framework.workflow.nodes.discovery import (
+    ChunkedFileReadExecutor,
+    ContentSearchExecutor,
+    EvidenceSynthesisExecutor,
+    WorkspaceDiscoveryExecutor,
+)
 from agent_runtime_framework.tools import ToolRegistry
-from agent_runtime_framework.core.specs import ToolSpec
+from agent_runtime_framework.tools.specs import ToolSpec
 from types import SimpleNamespace
 from agent_runtime_framework.resources import LocalFileResourceRepository
 
@@ -193,8 +194,8 @@ def test_single_node_workflow_run_initializes_and_completes_state_tracking():
 
 
 def _make_workspace_runtime_context(tmp_path):
-    from agent_runtime_framework.agents.workspace_backend import WorkspaceContext, build_default_workspace_tools
-    from agent_runtime_framework.applications import ApplicationContext
+    from agent_runtime_framework.workflow.application_context import ApplicationContext
+    from agent_runtime_framework.workflow.workspace import WorkspaceContext, build_default_workspace_tools
 
     app_context = ApplicationContext(
         resource_repository=LocalFileResourceRepository([tmp_path]),
@@ -211,7 +212,7 @@ def _make_workspace_runtime_context(tmp_path):
 
 
 def test_runtime_executes_create_path_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import CreatePathExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import CreatePathExecutor
 
     run = WorkflowRun(
         goal="创建 docs/notes.md",
@@ -349,7 +350,7 @@ def test_chunked_file_read_executor_fails_without_read_plan(monkeypatch, tmp_pat
 
 
 def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(monkeypatch, tmp_path):
-    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
 
     monkeypatch.setattr(
         "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
@@ -389,7 +390,7 @@ def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(mon
         }
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         _fake_semantic_plan,
     )
 
@@ -455,7 +456,7 @@ def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(mon
 
 
 def test_runtime_executes_move_path_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import MovePathExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import MovePathExecutor
 
     source = tmp_path / "docs" / "notes.md"
     source.parent.mkdir(parents=True)
@@ -474,7 +475,7 @@ def test_runtime_executes_move_path_node_with_workspace_tool(tmp_path):
 
 
 def test_runtime_executes_delete_path_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import DeletePathExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import DeletePathExecutor
 
     target = tmp_path / "docs" / "notes.md"
     target.parent.mkdir(parents=True)
@@ -492,7 +493,7 @@ def test_runtime_executes_delete_path_node_with_workspace_tool(tmp_path):
 
 
 def test_runtime_executes_apply_patch_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import ApplyPatchExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import ApplyPatchExecutor
 
     target = tmp_path / "README.md"
     target.write_text("before line\n", encoding="utf-8")
@@ -517,7 +518,7 @@ def test_runtime_executes_apply_patch_node_with_workspace_tool(tmp_path):
 
 
 def test_runtime_executes_write_file_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import WriteFileExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import WriteFileExecutor
 
     target = tmp_path / "README.md"
     target.write_text("old\n", encoding="utf-8")
@@ -542,7 +543,7 @@ def test_runtime_executes_write_file_node_with_workspace_tool(tmp_path):
 
 
 def test_runtime_executes_append_text_node_with_workspace_tool(tmp_path):
-    from agent_runtime_framework.workflow.filesystem_node_executors import AppendTextExecutor
+    from agent_runtime_framework.workflow.nodes.workspace_write import AppendTextExecutor
 
     target = tmp_path / "README.md"
     target.write_text("line one\n", encoding="utf-8")
@@ -713,7 +714,7 @@ def test_chunked_file_read_executor_emits_quality_signals(monkeypatch, tmp_path)
 
 
 def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor
 
     seen_payload = {}
 
@@ -730,7 +731,7 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         _fake_plan,
     )
     run = WorkflowRun(
@@ -753,10 +754,10 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
 
 
 def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "target_kind": "file",
             "scope_preference": "workspace_root",
@@ -771,7 +772,7 @@ def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeyp
 
 
 def test_plan_search_executor_stores_search_plan(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanSearchExecutor
 
     seen_payload = {}
 
@@ -786,7 +787,7 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         _fake_plan,
     )
     run = WorkflowRun(
@@ -808,10 +809,10 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
 
 
 def test_plan_search_executor_requires_semantic_queries(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanSearchExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "search_goal": "find backend readme",
             "path_bias": ["README.md"],
@@ -826,7 +827,7 @@ def test_plan_search_executor_requires_semantic_queries(monkeypatch):
 
 
 def test_plan_read_executor_stores_read_plan(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanReadExecutor
 
     seen_payload = {}
 
@@ -840,7 +841,7 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         _fake_plan,
     )
     run = WorkflowRun(
@@ -862,10 +863,10 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
 
 
 def test_plan_read_executor_requires_target_path(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanReadExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "read_goal": "summarize project overview",
             "preferred_regions": ["head"],
@@ -885,10 +886,10 @@ def test_plan_read_executor_requires_target_path(monkeypatch):
 
 
 def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanSearchExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "semantic_queries": "README.md",
             "path_bias": "README.md",
@@ -902,17 +903,17 @@ def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
 
 
 def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanSearchExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanSearchExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "semantic_queries": "README.md",
             "path_bias": "README.md",
         },
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors.repair_structured_output",
+        "agent_runtime_framework.workflow.nodes.semantic.repair_structured_output",
         lambda *args, **kwargs: {
             "search_goal": "find the root readme",
             "semantic_queries": ["README.md"],
@@ -928,10 +929,10 @@ def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
 
 
 def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanReadExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "target_path": "README.md",
             "preferred_regions": "head",
@@ -945,10 +946,10 @@ def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
 
 
 def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
-    from agent_runtime_framework.workflow.semantic_plan_executors import PlanReadExecutor
+    from agent_runtime_framework.workflow.nodes.semantic import PlanReadExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors._structured_semantic_plan",
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
         lambda context, payload, system_prompt, max_tokens=400: {
             "target_path": "README.md",
             "preferred_regions": "head",
@@ -956,7 +957,7 @@ def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.semantic_plan_executors.repair_structured_output",
+        "agent_runtime_framework.workflow.nodes.semantic.repair_structured_output",
         lambda *args, **kwargs: {
             "read_goal": "summarize the readme",
             "target_path": "README.md",
@@ -970,6 +971,36 @@ def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["read_plan"]["read_goal"] == "summarize the readme"
+
+
+def test_repair_structured_output_retries_three_times(monkeypatch):
+    from agent_runtime_framework.workflow.contract_repair import repair_structured_output
+
+    attempts: list[int] = []
+
+    def _fake_attempt(context, *, role, system_prompt, payload, max_tokens=500):
+        attempts.append(int(payload["attempt"]))
+        if int(payload["attempt"]) < 3:
+            return None, "invalid json"
+        return {"status": "replan", "reason": "ok", "allowed_next_node_types": ["plan_read"]}, None
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.contract_repair._repair_attempt",
+        _fake_attempt,
+    )
+
+    repaired = repair_structured_output(
+        context={},
+        role="judge",
+        contract_kind="judge_contract",
+        required_fields=["status", "reason", "allowed_next_node_types"],
+        original_output="not json",
+        validation_error="JSONDecodeError",
+        request_payload={"goal": "demo"},
+    )
+
+    assert repaired == {"status": "replan", "reason": "ok", "allowed_next_node_types": ["plan_read"]}
+    assert attempts == [1, 2, 3]
 
 
 def test_aggregate_node_results_deduplicates_facts_evidence_and_references():
@@ -1242,6 +1273,7 @@ def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
     assert result.final_output == "enough"
     assert result.metadata["agent_graph_state"]["current_iteration"] == 1
     assert len(result.metadata["agent_graph_state"]["planned_subgraphs"]) == 1
+    assert "append_history" not in result.metadata
     node_ids = [node.node_id for node in result.graph.nodes]
     assert node_ids[:3] == ["goal_intake", "context_assembly", "plan_1"]
     assert "aggregate_results_1" in node_ids
@@ -1755,7 +1787,7 @@ def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarific
             )
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.node_executors.synthesize_text",
+        "agent_runtime_framework.workflow.nodes.core.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "final response",
     )
     monkeypatch.setattr(
@@ -1826,6 +1858,58 @@ def test_agent_graph_runtime_records_execution_summary_for_replanning():
     assert result.metadata["agent_graph_state"]["execution_summary"]["open_issues"] == []
     assert result.metadata["agent_graph_state"]["attempted_strategies"] == ["create file"]
     assert result.metadata["agent_graph_state"]["iteration_summaries"][0]["planner_summary"] == "create file"
+
+
+def test_agent_graph_runtime_does_not_copy_append_history_into_run_metadata():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="collect evidence",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="collect", success_criteria=["progress"])],
+            edges=[],
+            metadata={"parent_judge_id": "plan_1"},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal)
+
+    assert "append_history" not in result.metadata
+    assert result.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"
+
+
+def test_agent_graph_runtime_exposes_repair_history_in_graph_state_and_execution_summary():
+    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="创建 tet.txt 并写入内容", normalized_goal="创建 tet.txt 并写入内容", intent="change_and_verify")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="create file",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="create", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {"status": "accepted", "reason": "done"},
+    )
+
+    result = runtime.run(goal, context={}, prior_state={"run_id": "repair-run-1", "goal_envelope": goal.as_payload(), "repair_history": [{
+        "contract_kind": "read_plan",
+        "role": "planner",
+        "success": True,
+        "attempts_used": 2,
+        "max_attempts": 3,
+        "initial_error": "missing preferred_regions",
+    }]})
+
+    assert result.metadata["agent_graph_state"]["repair_history"][0]["contract_kind"] == "read_plan"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["repair_count"] == 1
+    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_repair"]["attempts_used"] == 2
 
 
 def test_agent_graph_runtime_tracks_failure_history_and_open_issues():

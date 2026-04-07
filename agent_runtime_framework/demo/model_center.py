@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
+from agent_runtime_framework.errors import AppError, log_app_error, normalize_app_error
 from agent_runtime_framework.models import ModelRegistry, ModelRouter
 
 logger = logging.getLogger(__name__)

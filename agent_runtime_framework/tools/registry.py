@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import difflib
 
-from agent_runtime_framework.core.specs import ToolSpec
+from agent_runtime_framework.tools.specs import ToolSpec
 
 
 class ToolRegistry:

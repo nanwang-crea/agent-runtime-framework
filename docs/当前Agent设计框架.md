@@ -98,4 +98,3 @@
 - `README.md`
 - `docs/当前Agent设计框架.md`
 - `docs/architecture/final-agent-graph-runtime.md`
-- `docs/architecture/agent-stack-target.md`

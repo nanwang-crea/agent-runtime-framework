@@ -5,6 +5,7 @@ from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStor
 from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
 from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext
 from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
+from agent_runtime_framework.workflow.runtime_factory import build_workflow_graph_execution_runtime
 from agent_runtime_framework.workflow.routing_runtime import RootGraphRuntime
 from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
 from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
@@ -34,20 +35,12 @@ from agent_runtime_framework.workflow.models import (
     WorkflowGraph,
     WorkflowNode,
     WorkflowRun,
+    build_agent_graph_execution_summary,
     new_agent_graph_state,
     normalize_aggregated_workflow_payload,
     serialize_agent_graph_state,
 )
 from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
-from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
-from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
-from agent_runtime_framework.workflow.conversation import build_conversation_messages
-from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
-from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
-from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
-from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
 
 __all__ = [
     "NODE_STATUS_COMPLETED",
@@ -77,6 +70,7 @@ __all__ = [
     "AgentGraphRuntime",
     "WorkflowRuntimeContext",
     "GraphExecutionRuntime",
+    "build_workflow_graph_execution_runtime",
     "RootGraphRuntime",
     "build_goal_envelope",
     "plan_next_subgraph",
@@ -84,17 +78,9 @@ __all__ = [
     "judge_progress",
     "WorkflowResumeToken",
     "WorkflowScheduler",
-    "ToolCallExecutor",
-    "ClarificationExecutor",
-    "build_conversation_messages",
-    "TargetResolutionExecutor",
-    "WorkspaceDiscoveryExecutor",
-    "ContentSearchExecutor",
-    "ChunkedFileReadExecutor",
-    "EvidenceSynthesisExecutor",
-    "synthesize_text",
     "analyze_goal",
     "decompose_goal",
+    "build_agent_graph_execution_summary",
     "new_agent_graph_state",
     "normalize_aggregated_workflow_payload",
     "serialize_agent_graph_state",

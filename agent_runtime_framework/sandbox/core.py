@@ -7,7 +7,7 @@ import shlex
 import subprocess
 from typing import Any
 
-from agent_runtime_framework.core.errors import AppError
+from agent_runtime_framework.errors import AppError
 
 
 _DEFAULT_ALLOWED_COMMANDS = (

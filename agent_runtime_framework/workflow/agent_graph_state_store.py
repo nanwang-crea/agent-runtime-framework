@@ -37,7 +37,6 @@ class AgentGraphStateStore:
             goal_envelope=goal_envelope,
             current_iteration=int(prior_state.get("current_iteration") or 0),
             aggregated_payload=normalize_aggregated_workflow_payload(prior_state.get("aggregated_payload") or {}),
-            execution_summary=dict(prior_state.get("execution_summary") or {}),
             planned_subgraphs=[],
             judge_history=[],
             appended_node_ids=[str(item) for item in prior_state.get("appended_node_ids", []) or []],
@@ -46,6 +45,7 @@ class AgentGraphStateStore:
             open_issues=[str(item) for item in prior_state.get("open_issues", []) or [] if str(item).strip()],
             attempted_strategies=[str(item) for item in prior_state.get("attempted_strategies", []) or [] if str(item).strip()],
             recovery_history=[dict(item) for item in prior_state.get("recovery_history", []) or [] if isinstance(item, dict)],
+            repair_history=[dict(item) for item in prior_state.get("repair_history", []) or [] if isinstance(item, dict)],
             memory_state=WorkflowMemoryState(
                 clarification_memory=dict((prior_state.get("memory_state") or {}).get("clarification_memory") or {}),
                 semantic_memory=dict((prior_state.get("memory_state") or {}).get("semantic_memory") or {}),

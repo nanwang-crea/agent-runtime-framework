@@ -5,7 +5,7 @@ from typing import Any
 from agent_runtime_framework.workflow.contract_repair import repair_structured_output
 from agent_runtime_framework.workflow.llm_access import chat_json
 from agent_runtime_framework.workflow.memory_views import build_judge_memory_view
-from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, JudgeDecision, normalize_aggregated_workflow_payload
+from agent_runtime_framework.workflow.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
 from agent_runtime_framework.workflow.planner_prompts import build_judge_system_prompt
 
 
@@ -99,7 +99,7 @@ def _judge_context_payload(goal_envelope: GoalEnvelope, payload: dict[str, Any],
         "constraints": dict(goal_envelope.constraints),
         "current_iteration": graph_state.current_iteration,
         "aggregated_payload": payload,
-        "execution_summary": dict(graph_state.execution_summary),
+        "execution_summary": build_agent_graph_execution_summary(graph_state),
         "judge_memory_view": build_judge_memory_view(graph_state),
     }
 
@@ -189,6 +189,13 @@ def _guardrail_decision(
     return None
 
 
+def _record_repair(graph_state: AgentGraphState):
+    def _recorder(event: dict[str, Any]) -> None:
+        graph_state.repair_history.append(dict(event))
+
+    return _recorder
+
+
 def judge_progress(
     goal_envelope: GoalEnvelope,
     aggregated_payload: dict[str, Any] | None,
@@ -199,15 +206,20 @@ def judge_progress(
     guardrail_decision = _guardrail_decision(goal_envelope, payload, graph_state)
     if guardrail_decision is not None:
         return guardrail_decision
-    model_payload = chat_json(
-        context,
-        role="judge",
-        system_prompt=build_judge_system_prompt(),
-        payload=_judge_context_payload(goal_envelope, payload, graph_state),
-        max_tokens=600,
-        temperature=0.0,
-    )
-    contract_error = _judge_contract_error(model_payload if isinstance(model_payload, dict) else None)
+    judge_payload = _judge_context_payload(goal_envelope, payload, graph_state)
+    try:
+        model_payload = chat_json(
+            context,
+            role="judge",
+            system_prompt=build_judge_system_prompt(),
+            payload=judge_payload,
+            max_tokens=600,
+            temperature=0.0,
+        )
+        contract_error = _judge_contract_error(model_payload if isinstance(model_payload, dict) else None)
+    except Exception as exc:
+        model_payload = None
+        contract_error = f"{type(exc).__name__}: {exc}"
     if contract_error is None and isinstance(model_payload, dict):
         return _normalize_model_judge_decision(model_payload)
     if contract_error is not None:
@@ -218,8 +230,9 @@ def judge_progress(
             required_fields=["status", "reason", "allowed_next_node_types"],
             original_output=model_payload,
             validation_error=contract_error,
-            request_payload=_judge_context_payload(goal_envelope, payload, graph_state),
+            request_payload=judge_payload,
             extra_instructions="status must be either accept or replan. replan requires allowed_next_node_types.",
+            on_record=_record_repair(graph_state),
         )
         if isinstance(repaired, dict) and _judge_contract_error(repaired) is None:
             return _normalize_model_judge_decision(repaired)

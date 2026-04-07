@@ -9,15 +9,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from agent_runtime_framework.core.errors import AppError, log_app_error, normalize_app_error
-from agent_runtime_framework.demo.app import DemoAssistantApp, create_demo_assistant_app
+from agent_runtime_framework.errors import AppError, log_app_error, normalize_app_error
+from agent_runtime_framework.demo.app import DemoAssistantApp
+from agent_runtime_framework.demo.bootstrap import create_demo_assistant_app
 from agent_runtime_framework.demo.runtime_factory import DemoRuntimeFactory
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s [%(name)s] %(message)s",
 )
-logging.getLogger("agent_runtime_framework.assistant").setLevel(logging.WARNING)
 
 _FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend-shell" / "dist"
 

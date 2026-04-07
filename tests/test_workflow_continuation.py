@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from agent_runtime_framework.demo.agent_branch_orchestrator import AgentBranchOrchestrator
 from agent_runtime_framework.workflow.models import GoalEnvelope, WorkflowGraph, WorkflowRun
-from agent_runtime_framework.workflow.node_executors import FinalResponseExecutor
+from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor
 
 
 class _FakeRuntime:
@@ -89,7 +89,7 @@ def test_final_response_executor_includes_response_memory_view(monkeypatch):
         return "final"
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.node_executors.synthesize_text",
+        "agent_runtime_framework.workflow.nodes.core.synthesize_text",
         _fake_synthesize,
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from agent_runtime_framework.applications import ApplicationContext
+from agent_runtime_framework.workflow.application_context import ApplicationContext
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.models import DriverCapabilities, InMemoryCredentialStore, ModelProfile, ModelRegistry, ModelRouter
 from agent_runtime_framework.policy import SimpleDesktopPolicy
@@ -496,6 +496,38 @@ def test_planner_context_payload_compacts_histories_and_surfaces_ineffective_act
         "compare entrypoints",
     ]
     assert "recent_recovery" in payload["planner_memory_view"]
+
+
+def test_planner_context_payload_derives_execution_summary_without_cached_state():
+    envelope = SimpleNamespace(
+        goal="解释 service 模块",
+        normalized_goal="解释 service 模块",
+        intent="compound",
+        target_hints=["service"],
+        success_criteria=["ground answer"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-derived-summary", goal_envelope=envelope)
+    state.current_iteration = 2
+    state.attempted_strategies = ["workspace scan", "compare entrypoints"]
+    state.open_issues = ["verification"]
+    state.failure_history = [
+        {
+            "iteration": 2,
+            "status": "needs_verification",
+            "reason": "verification missing",
+            "missing_evidence": ["verification"],
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "strategy_guidance": {"recommended_strategy": "verify_existing_changes"},
+        }
+    ]
+    state.recovery_history = [{"trigger": "replan", "action": "replan", "reason": "verification missing"}]
+
+    payload = _planner_context_payload(envelope, state)
+
+    assert payload["execution_summary"]["current_iteration"] == 2
+    assert payload["execution_summary"]["last_judge_status"] == ""
+    assert payload["execution_summary"]["latest_failure"]["status"] == "needs_verification"
 
 
 def test_plan_next_subgraph_request_body_uses_compacted_context():

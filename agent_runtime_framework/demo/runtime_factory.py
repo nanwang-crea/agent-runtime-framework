@@ -9,24 +9,9 @@ from agent_runtime_framework.demo.run_lifecycle import RunLifecycleService
 from agent_runtime_framework.demo.workflow_branch_orchestrator import WorkflowBranchOrchestrator
 from agent_runtime_framework.demo.workflow_payload_builder import WorkflowPayloadBuilder
 from agent_runtime_framework.demo.workflow_run_observer import WorkflowRunObserver
+from agent_runtime_framework.demo.payloads import with_router_trace
 from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, analyze_goal
-from agent_runtime_framework.workflow.clarification_executor import ClarificationExecutor
-from agent_runtime_framework.workflow.content_search_executor import ContentSearchExecutor
-from agent_runtime_framework.workflow.discovery_executor import WorkspaceDiscoveryExecutor
-from agent_runtime_framework.workflow.evidence_synthesis_executor import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.filesystem_node_executors import (
-    AppendTextExecutor,
-    ApplyPatchExecutor,
-    CreatePathExecutor,
-    DeletePathExecutor,
-    MovePathExecutor,
-    WriteFileExecutor,
-)
-from agent_runtime_framework.workflow.node_executors import AggregationExecutor, ApprovalGateExecutor, FinalResponseExecutor, VerificationExecutor
-from agent_runtime_framework.workflow.semantic_plan_executors import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
-from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
-from agent_runtime_framework.workflow.tool_call_executor import ToolCallExecutor
-from agent_runtime_framework.workflow.chunked_file_read_executor import ChunkedFileReadExecutor
+from agent_runtime_framework.workflow.runtime_factory import build_workflow_graph_execution_runtime
 
 
 @dataclass(slots=True)
@@ -34,31 +19,7 @@ class DemoRuntimeFactory:
     app: Any
 
     def build_graph_execution_runtime(self) -> GraphExecutionRuntime:
-        return GraphExecutionRuntime(
-            executors={
-                "workspace_discovery": WorkspaceDiscoveryExecutor(),
-                "interpret_target": InterpretTargetExecutor(),
-                "plan_search": PlanSearchExecutor(),
-                "plan_read": PlanReadExecutor(),
-                "content_search": ContentSearchExecutor(),
-                "chunked_file_read": ChunkedFileReadExecutor(),
-                "evidence_synthesis": EvidenceSynthesisExecutor(),
-                "aggregate_results": AggregationExecutor(),
-                "create_path": CreatePathExecutor(),
-                "move_path": MovePathExecutor(),
-                "delete_path": DeletePathExecutor(),
-                "apply_patch": ApplyPatchExecutor(),
-                "write_file": WriteFileExecutor(),
-                "append_text": AppendTextExecutor(),
-                "verification": VerificationExecutor(),
-                "approval_gate": ApprovalGateExecutor(),
-                "final_response": FinalResponseExecutor(),
-                "tool_call": ToolCallExecutor(),
-                "clarification": ClarificationExecutor(),
-                "target_resolution": TargetResolutionExecutor(),
-            },
-            context=self.app._workflow_runtime_context(),
-        )
+        return build_workflow_graph_execution_runtime(context=self.app._workflow_runtime_context())
 
     def build_agent_graph_runtime(self) -> AgentGraphRuntime:
         return AgentGraphRuntime(
@@ -74,7 +35,7 @@ class DemoRuntimeFactory:
             run_history_payload=self.app.run_history_payload,
             memory_payload=self.app.memory_payload,
             context_payload=self.app.context_payload,
-            with_router_trace=self.app._with_router_trace,
+            with_router_trace=lambda steps: with_router_trace(self.app._last_route_decision, steps),
             workspace=str(self.app.workspace),
         )
         pending_run_registry = PendingRunRegistry(
@@ -99,7 +60,7 @@ class DemoRuntimeFactory:
             workspace=self.app.workspace,
             context=self.app.context,
             get_pending_clarification=lambda: self.app._pending_workflow_clarification,
-            record_run=self.app._record_run,
+            record_run=self.app.record_run,
             run_history_payload=self.app.run_history_payload,
         )
 
@@ -111,7 +72,7 @@ class DemoRuntimeFactory:
             run_history_payload=self.app.run_history_payload,
             memory_payload=self.app.memory_payload,
             context_payload=self.app.context_payload,
-            with_router_trace=self.app._with_router_trace,
+            with_router_trace=lambda steps: with_router_trace(self.app._last_route_decision, steps),
             workspace=str(self.app.workspace),
         )
         pending_run_registry = PendingRunRegistry(
@@ -144,7 +105,7 @@ class DemoRuntimeFactory:
             run_history_payload=self.app.run_history_payload,
             memory_payload=self.app.memory_payload,
             context_payload=self.app.context_payload,
-            with_router_trace=self.app._with_router_trace,
+            with_router_trace=lambda steps: with_router_trace(self.app._last_route_decision, steps),
             workspace=str(self.app.workspace),
         )
         pending_run_registry = PendingRunRegistry(
@@ -163,7 +124,7 @@ class DemoRuntimeFactory:
             pending_run_registry=pending_run_registry,
             run_inputs=self.app._run_inputs,
             workflow_payload=workflow_payload,
-            record_run=self.app._record_run,
+            record_run=self.app.record_run,
             remember_workflow_run=observer.remember_workflow_run,
             load_workflow_run=self.app._workflow_store.load,
             chat=self.app.chat,

@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from threading import Lock
 from typing import Any
 
-from agent_runtime_framework.core.specs import ToolSpec
+from agent_runtime_framework.tools.specs import ToolSpec
 from agent_runtime_framework.tools.models import ToolCall, ToolResult
 
 _SERIALIZATION_LOCKS: dict[str, Lock] = {}

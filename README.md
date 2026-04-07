@@ -38,9 +38,9 @@
   - aggregation / final response / native node executors
 
 - `agent_runtime_framework.agents`
-  - 兼容单子任务执行器
-  - planner / evaluator / tool execution / answer synthesis
-  - 作为 workflow node 的兼容 backend，而不是顶层主运行时
+  - workspace context / workspace tools / personas
+  - 为 graph runtime 提供底层工作区访问能力
+  - 不再承担独立编排职责
 
 - `agent_runtime_framework.demo`
   - 本地 HTTP server
@@ -201,15 +201,3 @@ The shell includes an Electron main process and preload bridge; Tauri is not par
 
 - `docs/当前Agent设计框架.md`
 - `docs/architecture/final-agent-graph-runtime.md`
-- `docs/architecture/agent-stack-target.md`
-## Five-Layer Agent Stack
-
-The target architecture is organized as:
-
-- Entry Trigger Layer
-- AgentTool Orchestration Layer
-- Agent Definition Layer
-- Runtime Execution Layer
-- Supporting Capability Layer
-
-`RootGraphRuntime` is the route layer. `AgentGraphRuntime` is the orchestration layer. `GraphExecutionRuntime` is the execution kernel. `WorkspaceBackend` provides tool-backed workspace execution. `skills` and `MCP` are reserved as future extension interfaces through the agent definition and orchestration layers rather than being hard-coded into the demo app.

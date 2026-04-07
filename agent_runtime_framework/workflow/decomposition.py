@@ -4,10 +4,10 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
+from agent_runtime_framework.workflow.contract_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm_access import get_application_context
 from agent_runtime_framework.workflow.models import GoalSpec, SubTaskSpec
 from agent_runtime_framework.workflow.planner_prompts import build_decomposition_system_prompt
-from agent_runtime_framework.workflow.prompting import extract_json_block
 
 
 def decompose_goal(goal: GoalSpec, context: Any | None = None) -> list[SubTaskSpec]:
@@ -54,10 +54,29 @@ def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[
     except Exception as exc:
         return None, str(exc) or "model call failed"
 
-    try:
-        parsed = json.loads(extract_json_block(str(response.content or "")))
-    except Exception:
-        return None, "invalid model response"
+    raw_content = str(response.content or "")
+    parsed, parse_error = parse_json_object(raw_content)
+    if not isinstance(parsed, dict):
+        parsed = repair_structured_output(
+            context,
+            role="planner",
+            contract_kind="decomposition",
+            required_fields=["subtasks"],
+            original_output=raw_content,
+            validation_error=parse_error or "invalid model response",
+            request_payload={
+                "original_goal": goal.original_goal,
+                "primary_intent": goal.primary_intent,
+                "requires_target_interpretation": goal.requires_target_interpretation,
+                "requires_search": goal.requires_search,
+                "requires_read": goal.requires_read,
+                "requires_verification": goal.requires_verification,
+                "metadata": goal.metadata,
+            },
+            extra_instructions="subtasks must be a non-empty array of objects with task_id and task_profile.",
+        )
+        if not isinstance(parsed, dict):
+            return None, "invalid model response"
 
     subtasks_payload = parsed.get("subtasks") or []
     subtasks: list[SubTaskSpec] = []
