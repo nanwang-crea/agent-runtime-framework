@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_runtime_framework.api.presenters.response_builder import ApiResponseBuilder
+from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
 from agent_runtime_framework.api.services.chat_service import ChatService
 
@@ -11,7 +11,7 @@ from agent_runtime_framework.api.services.chat_service import ChatService
 @dataclass(slots=True)
 class RunService:
     runtime_state: ApiRuntimeState
-    response_builder: ApiResponseBuilder
+    session_responses: SessionResponseFactory
     chat_service: ChatService
 
     def _workflow_payload(self, run: Any) -> dict[str, Any]:
@@ -25,10 +25,10 @@ class RunService:
             "status": "missing_token",
             "final_answer": "未找到可恢复的审批请求。",
             "execution_trace": [],
-            "session": self.response_builder.session_payload(),
-            "plan_history": self.response_builder.plan_history_payload(),
-            "run_history": self.response_builder.run_history_payload(),
-            "memory": self.response_builder.memory_payload(),
+            "session": self.session_responses.session_payload(),
+            "plan_history": self.session_responses.plan_history_payload(),
+            "run_history": self.session_responses.run_history_payload(),
+            "memory": self.session_responses.memory_payload(),
             "approval_request": None,
             "resume_token_id": None,
             "workspace": str(self.runtime_state.workspace),
@@ -39,10 +39,10 @@ class RunService:
             "status": "missing_run",
             "final_answer": "未找到可重放的运行记录。",
             "execution_trace": [],
-            "session": self.response_builder.session_payload(),
-            "plan_history": self.response_builder.plan_history_payload(),
-            "run_history": self.response_builder.run_history_payload(),
-            "memory": self.response_builder.memory_payload(),
+            "session": self.session_responses.session_payload(),
+            "plan_history": self.session_responses.plan_history_payload(),
+            "run_history": self.session_responses.run_history_payload(),
+            "memory": self.session_responses.memory_payload(),
             "approval_request": None,
             "resume_token_id": None,
             "workspace": str(self.runtime_state.workspace),

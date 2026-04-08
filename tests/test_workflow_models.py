@@ -1,7 +1,9 @@
 from agent_runtime_framework.workflow import (
+    InteractionRequest,
     NODE_STATUS_COMPLETED,
     NODE_STATUS_PENDING,
     RUN_STATUS_PENDING,
+    RUN_STATUS_WAITING_INPUT,
     AgentGraphState,
     GoalEnvelope,
     JudgeDecision,
@@ -35,6 +37,7 @@ def test_workflow_run_tracks_graph_and_node_states():
     assert run.status == RUN_STATUS_PENDING
     assert run.graph is graph
     assert run.shared_state == {}
+    assert run.pending_interaction is None
     assert run.node_states["analyze"].status == NODE_STATUS_PENDING
 
 
@@ -61,6 +64,7 @@ def test_node_state_and_result_capture_result_error_and_approval_data():
         status=NODE_STATUS_COMPLETED,
         output={"summary": "done"},
         references=["README.md"],
+        interaction_request=InteractionRequest(kind="clarification", prompt="Which README?", items=["README.md"]),
     )
     state = NodeState(
         node_id="summarize",
@@ -74,6 +78,8 @@ def test_node_state_and_result_capture_result_error_and_approval_data():
     assert state.result is result
     assert state.result.output == {"summary": "done"}
     assert state.result.references == ["README.md"]
+    assert state.result.interaction_request.kind == "clarification"
+    assert state.result.interaction_request.items == ["README.md"]
     assert state.approval_requested is True
     assert state.approval_granted is False
     assert state.error == ""
@@ -85,6 +91,7 @@ def test_workflow_models_expose_stable_status_values():
     result = NodeResult(status=NODE_STATUS_COMPLETED)
 
     assert RUN_STATUS_PENDING == "pending"
+    assert RUN_STATUS_WAITING_INPUT == "waiting_input"
     assert NODE_STATUS_PENDING == "pending"
     assert NODE_STATUS_COMPLETED == "completed"
     assert node.status == NODE_STATUS_PENDING
@@ -94,7 +101,7 @@ def test_workflow_models_expose_stable_status_values():
 
 
 def test_workflow_payload_helpers_normalize_aggregated_schema():
-    from agent_runtime_framework.workflow.models import normalize_aggregated_workflow_payload
+    from agent_runtime_framework.workflow.state.models import normalize_aggregated_workflow_payload
 
     payload = normalize_aggregated_workflow_payload(
         {
@@ -147,7 +154,7 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert judge.coverage_report == {}
     assert judge.replan_hint == {}
 
-    from agent_runtime_framework.workflow.models import (
+    from agent_runtime_framework.workflow.state.models import (
         new_agent_graph_state,
         serialize_agent_graph_state,
     )
@@ -227,7 +234,7 @@ def test_judge_decision_serializes_route_constraints():
 
 
 def test_agent_graph_state_store_restores_repair_history():
-    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+    from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = AgentGraphStateStore().restore_state(
@@ -257,11 +264,11 @@ def test_agent_graph_state_store_restores_repair_history():
 def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
     root = Path(__file__).resolve().parents[1]
     workflow_files = [
-        root / "agent_runtime_framework" / "workflow" / "goal_analysis.py",
-        root / "agent_runtime_framework" / "workflow" / "decomposition.py",
-        root / "agent_runtime_framework" / "workflow" / "subgraph_planner.py",
-        root / "agent_runtime_framework" / "workflow" / "llm_access.py",
-        root / "agent_runtime_framework" / "workflow" / "conversation.py",
+        root / "agent_runtime_framework" / "workflow" / "planning" / "goal_analysis.py",
+        root / "agent_runtime_framework" / "workflow" / "planning" / "decomposition.py",
+        root / "agent_runtime_framework" / "workflow" / "planning" / "subgraph_planner.py",
+        root / "agent_runtime_framework" / "workflow" / "llm" / "access.py",
+        root / "agent_runtime_framework" / "workflow" / "interaction" / "conversation_messages.py",
     ]
 
     for path in workflow_files:
@@ -271,7 +278,7 @@ def test_workflow_prompt_helpers_are_owned_by_workflow_layer():
 
 
 def test_subgraph_planner_prompt_mentions_strategy_change_and_failure_history():
-    from agent_runtime_framework.workflow.planner_prompts import build_subgraph_planner_system_prompt
+    from agent_runtime_framework.workflow.planning.prompts import build_subgraph_planner_system_prompt
 
     prompt = build_subgraph_planner_system_prompt()
 
@@ -281,7 +288,7 @@ def test_subgraph_planner_prompt_mentions_strategy_change_and_failure_history():
 
 
 def test_agent_graph_state_store_restores_workflow_memory_state():
-    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+    from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = AgentGraphStateStore().restore_state(
@@ -306,8 +313,8 @@ def test_agent_graph_state_store_restores_workflow_memory_state():
 
 
 def test_memory_views_compact_structured_workflow_memory():
-    from agent_runtime_framework.workflow.memory_views import build_planner_memory_view, build_semantic_memory_view
-    from agent_runtime_framework.workflow.models import new_agent_graph_state
+    from agent_runtime_framework.workflow.memory.views import build_planner_memory_view, build_semantic_memory_view
+    from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = new_agent_graph_state(run_id="run-memory-view", goal_envelope=goal)
@@ -349,8 +356,8 @@ def test_memory_views_compact_structured_workflow_memory():
 
 
 def test_memory_updates_write_semantic_and_execution_memory():
-    from agent_runtime_framework.workflow.memory_updates import remember_execution_feedback, remember_semantic_plan
-    from agent_runtime_framework.workflow.models import new_agent_graph_state
+    from agent_runtime_framework.workflow.memory.updates import remember_execution_feedback, remember_semantic_plan
+    from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = new_agent_graph_state(run_id="run-memory-update", goal_envelope=goal)
@@ -370,7 +377,7 @@ def test_memory_updates_write_semantic_and_execution_memory():
 
 
 def test_workflow_prompt_helpers_extract_json_and_build_context_block():
-    from agent_runtime_framework.workflow.prompting import (
+    from agent_runtime_framework.workflow.planning.prompt_utils import (
         build_run_context_block,
         extract_json_block,
         render_workflow_prompt_doc,
@@ -398,7 +405,7 @@ def test_workflow_prompt_helpers_extract_json_and_build_context_block():
 
 
 def test_workflow_planner_prompt_helpers_expose_intent_and_node_taxonomy():
-    from agent_runtime_framework.workflow.planner_prompts import (
+    from agent_runtime_framework.workflow.planning.prompts import (
         build_decomposition_system_prompt,
         build_goal_analysis_system_prompt,
         build_subgraph_planner_system_prompt,

@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from agent_runtime_framework.api.models.session_state import SessionState
 from agent_runtime_framework.api.state.run_history import record_run
+from agent_runtime_framework.api.state.session_state import SessionState
 from agent_runtime_framework.models import ModelRegistry, ModelRouter
-from agent_runtime_framework.workflow.context_assembly import WorkflowRuntimeContext, build_runtime_context
-from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
+from agent_runtime_framework.workflow.context.runtime_context import WorkflowRuntimeContext, build_runtime_context
+from agent_runtime_framework.workflow.state.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.workspace import WorkspaceContext, resolve_runtime_persona
 
 if TYPE_CHECKING:
@@ -28,6 +28,7 @@ class ApiRuntimeState:
     _task_history: list[Any]
     _run_inputs: dict[str, str]
     _last_route_decision: dict[str, str] | None
+    _pending_workflow_interaction: dict[str, Any] | None
     _pending_workflow_clarification: dict[str, Any] | None
     _active_agent: str
     _available_workspaces: list[str]

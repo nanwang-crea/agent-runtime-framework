@@ -1,4 +1,4 @@
-from agent_runtime_framework.api.models.profiles import builtin_profiles, get_profile
+from agent_runtime_framework.api.models.agent_profiles import builtin_profiles, get_profile
 
 
 def test_builtin_profiles_cover_current_context_switcher_options():

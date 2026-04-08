@@ -1,4 +1,5 @@
 from agent_runtime_framework.workflow import (
+    InteractionRequest,
     NODE_STATUS_COMPLETED,
     NODE_STATUS_FAILED,
     GoalEnvelope,
@@ -7,6 +8,7 @@ from agent_runtime_framework.workflow import (
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_WAITING_APPROVAL,
+    RUN_STATUS_WAITING_INPUT,
     NodeResult,
     NodeState,
     WorkflowEdge,
@@ -16,13 +18,13 @@ from agent_runtime_framework.workflow import (
     new_agent_graph_state,
     normalize_aggregated_workflow_payload,
 )
-from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
+from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
 import pytest
-from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
-from agent_runtime_framework.workflow.scheduler import WorkflowScheduler
+from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRuntime
+from agent_runtime_framework.workflow.runtime.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.nodes.interaction import ClarificationExecutor, ToolCallExecutor
-from agent_runtime_framework.workflow.aggregator import aggregate_node_results
-from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
+from agent_runtime_framework.workflow.orchestration.aggregation import aggregate_node_results
+from agent_runtime_framework.workflow.executors.target_resolution import TargetResolutionExecutor
 from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor, VerificationExecutor
 from agent_runtime_framework.workflow.nodes.discovery import (
     ChunkedFileReadExecutor,
@@ -61,6 +63,10 @@ class NoDirectExecuteRuntime:
             run.shared_state["node_results"][node.node_id] = result
             if result.status == RUN_STATUS_FAILED:
                 run.status = RUN_STATUS_FAILED
+                return run
+            if result.interaction_request is not None:
+                run.pending_interaction = result.interaction_request
+                run.status = RUN_STATUS_WAITING_INPUT
                 return run
         run.status = RUN_STATUS_COMPLETED
         return run
@@ -190,11 +196,25 @@ def test_single_node_workflow_run_initializes_and_completes_state_tracking():
     assert result.shared_state["node_results"]["only"].output == {"node": "only"}
 
 
+def test_runtime_pauses_when_executor_requests_user_input():
+    graph = WorkflowGraph(nodes=[WorkflowNode(node_id="clarify", node_type="clarification", metadata={"prompt": "Which README should I use?"})], edges=[])
+    run = WorkflowRun(goal="read the readme", graph=graph)
+
+    result = GraphExecutionRuntime(executors={"clarification": ClarificationExecutor()}).run(run)
+
+    assert result.status == RUN_STATUS_WAITING_INPUT
+    assert result.pending_interaction is not None
+    assert result.pending_interaction.kind == "clarification"
+    assert result.pending_interaction.prompt == "Which README should I use?"
+    assert result.node_states["clarify"].status == NODE_STATUS_COMPLETED
+    assert result.node_states["clarify"].result.interaction_request.prompt == "Which README should I use?"
+
+
 
 
 
 def _make_workspace_runtime_context(tmp_path):
-    from agent_runtime_framework.workflow.application_context import ApplicationContext
+    from agent_runtime_framework.workflow.context.app_context import ApplicationContext
     from agent_runtime_framework.workflow.workspace import WorkspaceContext, build_default_workspace_tools
 
     app_context = ApplicationContext(
@@ -228,7 +248,7 @@ def test_runtime_executes_create_path_node_with_workspace_tool(tmp_path):
 
 
 def test_target_resolution_executor_prefers_interpreted_target_constraints(tmp_path):
-    from agent_runtime_framework.workflow.target_resolution_executor import TargetResolutionExecutor
+    from agent_runtime_framework.workflow.executors.target_resolution import TargetResolutionExecutor
 
     (tmp_path / "README.md").write_text("root\n", encoding="utf-8")
     (tmp_path / "frontend-shell").mkdir()
@@ -267,7 +287,7 @@ def test_target_resolution_executor_fails_without_interpreted_target(tmp_path):
 
 def test_content_search_executor_uses_search_plan_queries(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.content_search.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "search summary",
     )
     (tmp_path / "README.md").write_text("agent runtime framework\n", encoding="utf-8")
@@ -292,7 +312,7 @@ def test_content_search_executor_uses_search_plan_queries(monkeypatch, tmp_path)
 
 def test_content_search_executor_fails_without_search_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.content_search.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "search summary",
     )
     result = ContentSearchExecutor().execute(
@@ -307,7 +327,7 @@ def test_content_search_executor_fails_without_search_plan(monkeypatch, tmp_path
 
 def test_chunked_file_read_executor_uses_read_plan_target_and_region(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.chunked_file_read.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
     )
     target = tmp_path / "README.md"
@@ -336,7 +356,7 @@ def test_chunked_file_read_executor_uses_read_plan_target_and_region(monkeypatch
 
 def test_chunked_file_read_executor_fails_without_read_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.chunked_file_read.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
     )
     result = ChunkedFileReadExecutor().execute(
@@ -353,11 +373,11 @@ def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(mon
     from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.content_search.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "search summary",
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.chunked_file_read.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "read summary",
     )
 
@@ -400,9 +420,9 @@ def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(mon
     runtime_context = _make_workspace_runtime_context(tmp_path)
     run = WorkflowRun(
         goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
+        pending_interaction=InteractionRequest(kind="clarification", prompt="Which README?", items=["README.md", "frontend-shell/README.md"]),
         shared_state={
             "clarification_response": "当前工作区的README文件，在最外层的",
-            "clarification_request": {"items": ["README.md", "frontend-shell/README.md"]},
             "node_results": {},
         },
     )
@@ -659,7 +679,7 @@ def test_aggregate_node_results_preserves_structured_output_fields():
 
 def test_content_search_executor_emits_quality_signals(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.content_search_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.content_search.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "search summary",
     )
     target = tmp_path / "README.md"
@@ -688,7 +708,7 @@ def test_content_search_executor_emits_quality_signals(monkeypatch, tmp_path):
 
 def test_chunked_file_read_executor_emits_quality_signals(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.chunked_file_read_executor.synthesize_text",
+        "agent_runtime_framework.workflow.executors.chunked_file_read.synthesize_text",
         lambda context, role, system_prompt, payload, max_tokens: "chunk summary",
     )
     target = tmp_path / "README.md"
@@ -736,9 +756,9 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
     )
     run = WorkflowRun(
         goal="看根目录 README",
+        pending_interaction=InteractionRequest(kind="clarification", prompt="Which README?", items=["README.md", "frontend-shell/README.md"]),
         shared_state={
             "clarification_response": "最外层那个 README",
-            "clarification_request": {"items": ["README.md", "frontend-shell/README.md"]},
             "failure_history": [{"iteration": 1, "status": "needs_clarification"}],
         },
     )
@@ -974,7 +994,7 @@ def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
 
 
 def test_repair_structured_output_retries_three_times(monkeypatch):
-    from agent_runtime_framework.workflow.contract_repair import repair_structured_output
+    from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output
 
     attempts: list[int] = []
 
@@ -985,7 +1005,7 @@ def test_repair_structured_output_retries_three_times(monkeypatch):
         return {"status": "replan", "reason": "ok", "allowed_next_node_types": ["plan_read"]}, None
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.contract_repair._repair_attempt",
+        "agent_runtime_framework.workflow.llm.structured_output_repair._repair_attempt",
         _fake_attempt,
     )
 
@@ -1165,7 +1185,7 @@ def test_final_response_executor_prefers_evidence_synthesis_output():
 
 
 def test_append_subgraph_appends_nodes_in_order_after_anchor():
-    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+    from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 
     graph = WorkflowGraph(
         nodes=[
@@ -1191,7 +1211,7 @@ def test_append_subgraph_appends_nodes_in_order_after_anchor():
 
 
 def test_append_subgraph_connects_anchor_and_records_history():
-    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+    from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 
     graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_1", node_type="judge")], edges=[])
     subgraph = PlannedSubgraph(
@@ -1210,7 +1230,7 @@ def test_append_subgraph_connects_anchor_and_records_history():
 
 
 def test_append_subgraph_rejects_duplicate_node_id():
-    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+    from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 
     graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_1", node_type="judge")], edges=[])
     subgraph = PlannedSubgraph(
@@ -1225,7 +1245,7 @@ def test_append_subgraph_rejects_duplicate_node_id():
 
 
 def test_append_subgraph_metadata_contains_iteration_and_parent_judge():
-    from agent_runtime_framework.workflow.graph_mutation import append_subgraph
+    from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 
     graph = WorkflowGraph(nodes=[WorkflowNode(node_id="judge_2", node_type="judge")], edges=[])
     subgraph = PlannedSubgraph(
@@ -1245,7 +1265,7 @@ def test_append_subgraph_metadata_contains_iteration_and_parent_judge():
 
 
 def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(
         goal="读取 README.md",
@@ -1282,7 +1302,7 @@ def test_agent_graph_runtime_completes_when_first_iteration_is_accepted():
 
 
 def test_agent_graph_runtime_appends_second_iteration_when_more_evidence_is_needed():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(
         goal="总结 docs",
@@ -1325,7 +1345,7 @@ def test_agent_graph_runtime_appends_second_iteration_when_more_evidence_is_need
 
 
 def test_agent_graph_runtime_returns_limited_answer_when_iteration_budget_is_exhausted():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(
         goal="长任务",
@@ -1354,10 +1374,10 @@ def test_agent_graph_runtime_returns_limited_answer_when_iteration_budget_is_exh
 
 
 def test_judge_progress_accepts_when_model_returns_accept(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "accept",
             "reason": "Collected sufficient evidence",
@@ -1385,14 +1405,14 @@ def test_judge_progress_accepts_when_model_returns_accept(monkeypatch):
 
 
 def test_judge_progress_repairs_invalid_model_contract(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {"status": "maybe", "reason": ""},
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.repair_structured_output",
+        "agent_runtime_framework.workflow.planning.judge.repair_structured_output",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "Need a direct file read before answering.",
@@ -1414,10 +1434,10 @@ def test_judge_progress_repairs_invalid_model_contract(monkeypatch):
 
 
 def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "Need grounded evidence first.",
@@ -1439,10 +1459,10 @@ def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
 
 
 def test_judge_progress_uses_model_replan_for_missing_verification(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "Verification is still missing.",
@@ -1475,10 +1495,10 @@ def test_judge_progress_uses_model_replan_for_missing_verification(monkeypatch):
 
 
 def test_judge_progress_uses_model_replan_for_ambiguity(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "The target is still ambiguous.",
@@ -1500,7 +1520,7 @@ def test_judge_progress_uses_model_replan_for_ambiguity(monkeypatch):
 
 
 def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound", constraints={"max_iterations": 1})
     state = new_agent_graph_state(run_id="judge-5", goal_envelope=goal)
@@ -1513,10 +1533,10 @@ def test_judge_progress_stops_due_to_cost_when_iteration_budget_is_exceeded():
 
 
 def test_judge_progress_uses_model_replan_for_candidate_only_progress(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "Candidate search results are not enough yet.",
@@ -1552,10 +1572,10 @@ def test_judge_progress_uses_model_replan_for_candidate_only_progress(monkeypatc
 
 
 def test_judge_progress_file_read_replans_when_model_requires_direct_read(monkeypatch):
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "replan",
             "reason": "Search hits are not enough; read the file body next.",
@@ -1593,7 +1613,7 @@ def test_judge_progress_file_read_replans_when_model_requires_direct_read(monkey
 
 
 def test_judge_progress_detects_conflicting_evidence():
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     goal = GoalEnvelope(goal="确认主入口文件", normalized_goal="确认主入口文件", intent="file_read", success_criteria=["resolve target"])
     decision = judge_progress(
@@ -1624,7 +1644,7 @@ def test_judge_progress_detects_conflicting_evidence():
 
 
 def test_judge_progress_uses_memory_excluded_targets_as_conflicts():
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-1", goal_envelope=goal)
@@ -1646,7 +1666,7 @@ def test_judge_progress_uses_memory_excluded_targets_as_conflicts():
 
 
 def test_judge_progress_rejects_evidence_when_confirmed_target_differs():
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-2", goal_envelope=goal)
@@ -1672,7 +1692,7 @@ def test_judge_progress_rejects_evidence_when_confirmed_target_differs():
 
 
 def test_judge_progress_rejects_read_plan_path_mismatch():
-    from agent_runtime_framework.workflow.judge import judge_progress
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-3", goal_envelope=goal)
@@ -1704,7 +1724,7 @@ def test_final_response_executor_rejects_execution_when_judge_has_not_accepted()
 
 
 def test_agent_graph_runtime_limited_answer_contains_replan_reason_and_missing_items():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="长任务", normalized_goal="长任务", intent="compound")
     runtime = AgentGraphRuntime(
@@ -1733,7 +1753,7 @@ def test_agent_graph_runtime_limited_answer_contains_replan_reason_and_missing_i
 
 
 def test_agent_graph_runtime_returns_clarification_branch_when_graph_requests_it():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
     runtime = AgentGraphRuntime(
@@ -1751,14 +1771,16 @@ def test_agent_graph_runtime_returns_clarification_branch_when_graph_requests_it
 
     result = runtime.run(goal)
 
-    assert result.status == RUN_STATUS_COMPLETED
-    assert result.shared_state["clarification_request"]["clarification_required"] is True
-    assert result.final_output
+    assert result.status == RUN_STATUS_WAITING_INPUT
+    assert result.pending_interaction is not None
+    assert result.pending_interaction.kind == "clarification"
+    assert result.pending_interaction.prompt
+    assert result.final_output is None
 
 
 def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarification(monkeypatch):
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
-    from agent_runtime_framework.workflow.subgraph_planner import plan_next_subgraph
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
+    from agent_runtime_framework.workflow.planning.subgraph_planner import plan_next_subgraph
 
     class PlanReadExecutor:
         def execute(self, node, run, context=None):
@@ -1791,7 +1813,7 @@ def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarific
         lambda context, role, system_prompt, payload, max_tokens: "final response",
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.judge.chat_json",
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
         lambda *args, **kwargs: {
             "status": "accept",
             "reason": "Collected sufficient evidence",
@@ -1830,7 +1852,7 @@ def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarific
 
 
 def test_agent_graph_runtime_records_execution_summary_for_replanning():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(
         goal="创建 tet.txt 并写入内容",
@@ -1861,7 +1883,7 @@ def test_agent_graph_runtime_records_execution_summary_for_replanning():
 
 
 def test_agent_graph_runtime_does_not_copy_append_history_into_run_metadata():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
     runtime = AgentGraphRuntime(
@@ -1883,7 +1905,7 @@ def test_agent_graph_runtime_does_not_copy_append_history_into_run_metadata():
 
 
 def test_agent_graph_runtime_exposes_repair_history_in_graph_state_and_execution_summary():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="创建 tet.txt 并写入内容", normalized_goal="创建 tet.txt 并写入内容", intent="change_and_verify")
     runtime = AgentGraphRuntime(
@@ -1913,7 +1935,7 @@ def test_agent_graph_runtime_exposes_repair_history_in_graph_state_and_execution
 
 
 def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(
         goal="总结 docs",
@@ -1951,7 +1973,7 @@ def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
 
 
 def test_agent_graph_runtime_records_replan_recovery_decision_for_clarification_route():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
     runtime = AgentGraphRuntime(
@@ -1974,12 +1996,13 @@ def test_agent_graph_runtime_records_replan_recovery_decision_for_clarification_
 
     result = runtime.run(goal)
 
+    assert result.status == RUN_STATUS_WAITING_INPUT
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "replan"
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "replan"
 
 
 def test_agent_graph_runtime_records_execution_failure_recovery_decision():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
     runtime = AgentGraphRuntime(
@@ -2002,7 +2025,7 @@ def test_agent_graph_runtime_records_execution_failure_recovery_decision():
 
 
 def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesis():
-    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+    from agent_runtime_framework.workflow.orchestration.system_nodes import SystemNodeManager
 
     manager = SystemNodeManager()
     run = WorkflowRun(
@@ -2036,7 +2059,7 @@ def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesi
 
 
 def test_agent_graph_state_store_restores_workflow_run_with_resume_token():
-    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+    from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 
     store = AgentGraphStateStore()
     run = store.restore_workflow_run(
@@ -2075,7 +2098,7 @@ def test_agent_graph_state_store_restores_workflow_run_with_resume_token():
 
 
 def test_system_node_manager_seeds_goal_context_and_plan_nodes():
-    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+    from agent_runtime_framework.workflow.orchestration.system_nodes import SystemNodeManager
 
     manager = SystemNodeManager()
     goal = GoalEnvelope(
@@ -2108,7 +2131,7 @@ def test_system_node_manager_seeds_goal_context_and_plan_nodes():
 
 
 def test_system_node_manager_materializes_iteration_nodes():
-    from agent_runtime_framework.workflow.system_node_manager import SystemNodeManager
+    from agent_runtime_framework.workflow.orchestration.system_nodes import SystemNodeManager
 
     manager = SystemNodeManager()
     run = WorkflowRun(
@@ -2147,7 +2170,7 @@ def test_system_node_manager_materializes_iteration_nodes():
 
 
 def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtime():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="讲解 service 模块", normalized_goal="讲解 service 模块", intent="target_explainer")
     runtime = AgentGraphRuntime(
@@ -2168,13 +2191,14 @@ def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtim
 
     result = runtime.run(goal)
 
-    assert result.status == RUN_STATUS_COMPLETED
+    assert result.status == RUN_STATUS_WAITING_INPUT
     assert runtime.workflow_runtime.calls[-1] == ["clarification"]
-    assert result.shared_state["clarification_request"]["clarification_required"] is True
+    assert result.pending_interaction is not None
+    assert result.pending_interaction.kind == "clarification"
 
 
 def test_routing_runtime_does_not_rewrite_clarification_reply_into_target_explainer():
-    from agent_runtime_framework.workflow.routing_runtime import RootGraphRuntime
+    from agent_runtime_framework.workflow.runtime.routing import RootGraphRuntime
 
     captured = {}
 
@@ -2202,7 +2226,7 @@ def test_routing_runtime_does_not_rewrite_clarification_reply_into_target_explai
 
 
 def test_agent_graph_runtime_fails_when_planner_emits_unsupported_node_type():
-    from agent_runtime_framework.workflow.agent_graph_runtime import AgentGraphRuntime
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="compound")
     runtime = AgentGraphRuntime(

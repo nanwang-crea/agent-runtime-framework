@@ -6,7 +6,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from agent_runtime_framework.api.bootstrap import create_api_services
-from agent_runtime_framework.api.routes import chat, context, model_center, runs, session
+from agent_runtime_framework.api.routes import (
+    chat_routes,
+    context_routes,
+    model_center_routes,
+    run_routes,
+    session_routes,
+)
 
 _FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend-shell" / "dist"
 
@@ -15,11 +21,11 @@ def create_app(workspace: str | Path = ".") -> FastAPI:
     service_bundle = create_api_services(workspace)
     app = FastAPI()
     app.state.api_services = service_bundle
-    app.include_router(session.router)
-    app.include_router(chat.router)
-    app.include_router(context.router)
-    app.include_router(model_center.router)
-    app.include_router(runs.router)
+    app.include_router(session_routes.router)
+    app.include_router(chat_routes.router)
+    app.include_router(context_routes.router)
+    app.include_router(model_center_routes.router)
+    app.include_router(run_routes.router)
 
     @app.get("/{path:path}")
     def get_frontend_asset(path: str):

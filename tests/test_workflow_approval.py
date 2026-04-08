@@ -7,7 +7,7 @@ from agent_runtime_framework.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
-from agent_runtime_framework.workflow.execution_runtime import GraphExecutionRuntime
+from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRuntime
 
 
 class NoopExecutor:
@@ -82,7 +82,7 @@ def test_workflow_runtime_resumes_explicit_approval_gate_graph():
 
 
 def test_workflow_runtime_resumes_restored_executor_managed_approval_node():
-    from agent_runtime_framework.workflow.agent_graph_state_store import AgentGraphStateStore
+    from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 
     payload = {
         "run_id": "run-approval",

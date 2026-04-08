@@ -51,13 +51,13 @@ def test_api_service_modules_expose_route_facing_services():
 
 
 def test_api_route_modules_exist_for_split_http_surface():
-    from agent_runtime_framework.api.routes import chat, context, model_center, runs, session
+    from agent_runtime_framework.api.routes import chat_routes, context_routes, model_center_routes, run_routes, session_routes
 
-    assert chat.router is not None
-    assert context.router is not None
-    assert model_center.router is not None
-    assert runs.router is not None
-    assert session.router is not None
+    assert chat_routes.router is not None
+    assert context_routes.router is not None
+    assert model_center_routes.router is not None
+    assert run_routes.router is not None
+    assert session_routes.router is not None
 
 
 def test_api_app_factory_builds_routes_without_demo_route_module():
@@ -93,15 +93,21 @@ def test_api_package_no_longer_uses_runtime_factory_module():
     assert not (api_root / "runtime_factory.py").exists()
 
 
-def test_api_package_uses_classified_subdirectories_for_models_state_and_presenters():
+def test_api_package_uses_classified_subdirectories_for_models_state_and_responses():
     from pathlib import Path
 
     api_root = Path(__file__).resolve().parents[1] / "agent_runtime_framework" / "api"
 
     assert (api_root / "models").is_dir()
     assert (api_root / "state").is_dir()
-    assert (api_root / "presenters").is_dir()
+    assert (api_root / "responses").is_dir()
     assert (api_root / "dependencies.py").exists() is False
+    assert (api_root / "state" / "session_state.py").exists()
+    assert (api_root / "models" / "agent_profiles.py").exists()
+    assert (api_root / "responses" / "session_responses.py").exists()
+    assert (api_root / "responses" / "error_responses.py").exists()
+    assert (api_root / "responses" / "run_responses.py").exists()
+    assert not (api_root / "responses" / "api_response_builder.py").exists()
 
 
 def test_api_package_no_longer_keeps_workflow_control_layer_files():

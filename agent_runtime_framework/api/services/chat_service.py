@@ -5,22 +5,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
-from agent_runtime_framework.api.presenters.payloads import with_router_trace
-from agent_runtime_framework.api.presenters.response_builder import ApiResponseBuilder
+from agent_runtime_framework.api.responses.common_payloads import with_router_trace
+from agent_runtime_framework.api.responses.error_responses import ErrorResponseFactory
+from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
 from agent_runtime_framework.memory.index import MemoryRecord
 from agent_runtime_framework.resources import ResourceRef
-from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, WorkflowRun, analyze_goal
-from agent_runtime_framework.workflow.clarification_interpreter import resolve_clarification_response
-from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
-from agent_runtime_framework.workflow.routing_runtime import RootGraphPayload, RuntimePayload
-from agent_runtime_framework.workflow.runtime_factory import build_workflow_graph_execution_runtime
+from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, RUN_STATUS_WAITING_INPUT, WorkflowRun, analyze_goal
+from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
+from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
+from agent_runtime_framework.workflow.runtime.routing import RootGraphPayload, RuntimePayload
+from agent_runtime_framework.workflow.runtime.factory import build_workflow_graph_execution_runtime
 
 
 @dataclass(slots=True)
 class ChatService:
     runtime_state: ApiRuntimeState
-    response_builder: ApiResponseBuilder
+    session_responses: SessionResponseFactory
+    error_responses: ErrorResponseFactory
 
     def _runtime_context(self):
         return self.runtime_state.workflow_runtime_context()
@@ -50,6 +52,40 @@ class ChatService:
         }
         return resume_token.token_id
 
+    def _interaction_payload(self, interaction: Any) -> dict[str, Any] | None:
+        if interaction is None:
+            return None
+        if isinstance(interaction, dict):
+            return {
+                "kind": str(interaction.get("kind") or ""),
+                "prompt": str(interaction.get("prompt") or ""),
+                "summary": str(interaction.get("summary") or ""),
+                "items": [str(item) for item in interaction.get("items", []) or [] if str(item).strip()],
+                "source_node_id": interaction.get("source_node_id"),
+                "metadata": dict(interaction.get("metadata") or {}),
+            }
+        return {
+            "kind": str(getattr(interaction, "kind", "") or ""),
+            "prompt": str(getattr(interaction, "prompt", "") or ""),
+            "summary": str(getattr(interaction, "summary", "") or ""),
+            "items": [str(item) for item in getattr(interaction, "items", []) or [] if str(item).strip()],
+            "source_node_id": getattr(interaction, "source_node_id", None),
+            "metadata": dict(getattr(interaction, "metadata", {}) or {}),
+        }
+
+    def _pending_interaction_bundle(self) -> dict[str, Any] | None:
+        current = getattr(self.runtime_state, "_pending_workflow_interaction", None)
+        if current is not None:
+            return dict(current)
+        legacy = getattr(self.runtime_state, "_pending_workflow_clarification", None)
+        if legacy is None:
+            return None
+        return dict(legacy)
+
+    def _assistant_text_for_run(self, run: WorkflowRun) -> str:
+        pending_interaction = self._interaction_payload(getattr(run, "pending_interaction", None)) or {}
+        return str(run.final_output or pending_interaction.get("prompt") or "")
+
     def _workflow_payload(self, run: WorkflowRun, *, resume_token_id: str | None = None) -> dict[str, Any]:
         execution_trace = [
             {"name": node.node_type, "status": run.node_states[node.node_id].status, "detail": node.node_type}
@@ -57,10 +93,14 @@ class ChatService:
             if node.node_id in run.node_states
         ]
         approval_request = self._workflow_approval_request(run) if run.status == "waiting_approval" else None
-        clarification_request = run.shared_state.get("clarification_request")
-        pending_clarification = ({**dict(clarification_request or {}), "run_id": run.run_id} if clarification_request is not None and run.status == "completed" else None)
-        self.runtime_state._pending_workflow_clarification = pending_clarification
-        final_answer = str(run.final_output or (clarification_request or {}).get("prompt") or (approval_request or {}).get("reason") or "")
+        pending_interaction = self._interaction_payload(getattr(run, "pending_interaction", None))
+        pending_interaction_bundle = ({**dict(pending_interaction or {}), "run_id": run.run_id} if pending_interaction is not None and run.status == RUN_STATUS_WAITING_INPUT else None)
+        setattr(self.runtime_state, "_pending_workflow_interaction", pending_interaction_bundle)
+        if pending_interaction_bundle is not None and str(pending_interaction_bundle.get("kind") or "") == "clarification":
+            setattr(self.runtime_state, "_pending_workflow_clarification", pending_interaction_bundle)
+        else:
+            setattr(self.runtime_state, "_pending_workflow_clarification", None)
+        final_answer = str(run.final_output or (pending_interaction or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         evidence = self._workflow_evidence_payload(run)
         graph_state = dict(run.metadata.get("agent_graph_state") or {})
         judge_history = list(graph_state.get("judge_history") or [])
@@ -73,12 +113,13 @@ class ChatService:
             "execution_trace": with_router_trace(self.runtime_state._last_route_decision, execution_trace),
             "evidence": evidence,
             "approval_request": approval_request,
+            "pending_interaction": pending_interaction_bundle,
             "resume_token_id": resume_token_id,
-            "session": self.response_builder.session_payload(),
-            "plan_history": self.response_builder.plan_history_payload(),
-            "run_history": self.response_builder.run_history_payload(),
-            "memory": self.response_builder.memory_payload(),
-            "context": self.response_builder.context_payload(),
+            "session": self.session_responses.session_payload(),
+            "plan_history": self.session_responses.plan_history_payload(),
+            "run_history": self.session_responses.run_history_payload(),
+            "memory": self.session_responses.memory_payload(),
+            "context": self.session_responses.context_payload(),
             "workspace": str(self.runtime_state.workspace),
             "judge": judge_history[-1] if judge_history else None,
             "planned_subgraphs": list(graph_state.get("planned_subgraphs") or []),
@@ -142,10 +183,11 @@ class ChatService:
 
     def _remember_workflow_run(self, message: str, run: Any) -> None:
         session = self.runtime_state.context.session
+        assistant_text = self._assistant_text_for_run(run)
         if session is not None:
             session.add_turn("user", message)
-            if run.final_output:
-                session.add_turn("assistant", str(run.final_output))
+            if assistant_text:
+                session.add_turn("assistant", assistant_text)
             session.focused_capability = "workflow"
         pseudo_actions = []
         references: list[str] = []
@@ -170,7 +212,7 @@ class ChatService:
         self.runtime_state._task_history[:] = self.runtime_state._task_history[:40]
         if references:
             ref = ResourceRef.for_path(references[0])
-            summary = str(run.final_output or f"Workflow completed for {ref.title}")
+            summary = str(assistant_text or f"Workflow completed for {ref.title}")
             self.runtime_state.context.application_context.session_memory.remember_focus([ref], summary=summary)
             remember = getattr(self.runtime_state.context.application_context.index_memory, "remember", None)
             if callable(remember):
@@ -190,7 +232,7 @@ class ChatService:
             workspace_root=self.runtime_state.workspace,
             context=self.runtime_state.context,
         ).as_payload()
-        run.shared_state["memory"] = self.response_builder.memory_payload()
+        run.shared_state["memory"] = self.session_responses.memory_payload()
         run.shared_state["session_memory_snapshot"] = self.runtime_state.context.application_context.session_memory.snapshot()
         run = runtime.run(run)
         self._remember_workflow_run(message, run)
@@ -210,7 +252,7 @@ class ChatService:
         remember_run: Callable[[str, Any], None] | None = None,
     ) -> RuntimePayload:
         runtime = build_runtime() if build_runtime is not None else self._agent_runtime()
-        prior_bundle = dict(self.runtime_state._pending_workflow_clarification or {}) if self.runtime_state._pending_workflow_clarification else None
+        prior_bundle = self._pending_interaction_bundle()
         prior_run = None
         prior_state = None
         prior_graph = None
@@ -297,7 +339,7 @@ class ChatService:
         payload_builder = workflow_payload or (lambda workflow_run: self._workflow_payload(workflow_run, resume_token_id=self._register_pending_run(workflow_run)))
         payload = payload_builder(run)
         self.runtime_state.record_run(payload, message)
-        payload["run_history"] = self.response_builder.run_history_payload()
+        payload["run_history"] = self.session_responses.run_history_payload()
         return payload
 
     def _root_runtime(self) -> RootGraphRuntime:
@@ -305,7 +347,7 @@ class ChatService:
             analyze_goal_fn=lambda message, context: analyze_goal(message, context=context),
             context=self._runtime_context(),
             mark_route_decision=lambda route, source: setattr(self.runtime_state, "_last_route_decision", {"route": route, "source": source}),
-            has_pending_clarification=lambda: self.runtime_state._pending_workflow_clarification is not None,
+            has_pending_clarification=lambda: self._pending_interaction_bundle() is not None,
             run_conversation=lambda message, graph, root_graph: self._run_conversation_branch(message, graph=graph, root_graph=root_graph),
             run_agent=lambda message, goal, root_graph: self._run_agent_branch(message, goal_spec=goal, root_graph=root_graph),
         )
@@ -315,7 +357,7 @@ class ChatService:
         try:
             return self._root_runtime().run(message)
         except Exception as exc:
-            return self.response_builder.error_payload(exc)
+            return self.error_responses.error_payload(exc)
 
     def stream_chat(self, message: str) -> Iterable[dict[str, Any]]:
         yield {"type": "start", "message": message}
@@ -328,7 +370,7 @@ class ChatService:
             return
         for step in payload.get("execution_trace", []):
             yield {"type": "step", "step": step}
-        yield {"type": "memory", "memory": self.response_builder.memory_payload()}
+        yield {"type": "memory", "memory": self.session_responses.memory_payload()}
         final_answer = str(payload.get("final_answer") or "")
         if not final_answer:
             yield {"type": "final", "payload": payload}

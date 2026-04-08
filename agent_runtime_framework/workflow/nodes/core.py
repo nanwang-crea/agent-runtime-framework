@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime_framework.models import ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.aggregator import aggregate_node_results
-from agent_runtime_framework.workflow.conversation import build_conversation_messages
-from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context, get_workspace_root
-from agent_runtime_framework.workflow.llm_synthesis import synthesize_text
-from agent_runtime_framework.workflow.memory_views import build_response_memory_view_from_payload
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
+from agent_runtime_framework.workflow.orchestration.aggregation import aggregate_node_results
+from agent_runtime_framework.workflow.interaction.conversation_messages import build_conversation_messages
+from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context, get_workspace_root
+from agent_runtime_framework.workflow.llm.synthesis import synthesize_text
+from agent_runtime_framework.workflow.memory.views import build_response_memory_view_from_payload
+from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
 @dataclass(slots=True)

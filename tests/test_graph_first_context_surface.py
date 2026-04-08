@@ -1,4 +1,4 @@
-from agent_runtime_framework.workflow.application_context import ApplicationContext
+from agent_runtime_framework.workflow.context.app_context import ApplicationContext
 from agent_runtime_framework.workflow.workspace import WorkspaceContext, build_default_workspace_tools
 
 

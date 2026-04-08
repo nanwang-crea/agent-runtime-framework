@@ -2,9 +2,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_runtime_framework.workflow import WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.aggregator import aggregate_node_results
+from agent_runtime_framework.workflow.orchestration.aggregation import aggregate_node_results
 from agent_runtime_framework.workflow.nodes.discovery import EvidenceSynthesisExecutor
-from agent_runtime_framework.workflow.models import NodeResult
+from agent_runtime_framework.workflow.state.models import NodeResult
 
 
 class _FakeChatClient:

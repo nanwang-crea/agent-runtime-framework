@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import URLError
 
-from agent_runtime_framework.workflow.application_context import ApplicationContext
+from agent_runtime_framework.workflow.context.app_context import ApplicationContext
 from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory
 from agent_runtime_framework.models import (
     AuthSession,

@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.api.models.profiles import builtin_profiles
-from agent_runtime_framework.api.models.session_state import SessionState
-from agent_runtime_framework.api.presenters.response_builder import ApiResponseBuilder
+from agent_runtime_framework.api.models.agent_profiles import builtin_profiles
+from agent_runtime_framework.api.responses.error_responses import ErrorResponseFactory
+from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
 from agent_runtime_framework.api.services import ApiServices
 from agent_runtime_framework.api.services.chat_service import ChatService
 from agent_runtime_framework.api.services.context_service import ContextService
@@ -14,6 +14,7 @@ from agent_runtime_framework.api.services.model_center_service import ModelCente
 from agent_runtime_framework.api.services.run_service import RunService
 from agent_runtime_framework.api.services.session_service import SessionService
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
+from agent_runtime_framework.api.state.session_state import SessionState
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.models import (
     CodexCliDriver,
@@ -26,8 +27,8 @@ from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.sandbox import SandboxConfig
 from agent_runtime_framework.tools import ToolRegistry
-from agent_runtime_framework.workflow.application_context import ApplicationContext
-from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
+from agent_runtime_framework.workflow.context.app_context import ApplicationContext
+from agent_runtime_framework.workflow.state.persistence import WorkflowPersistenceStore
 from agent_runtime_framework.workflow.workspace import WorkspaceContext, build_default_workspace_tools
 
 
@@ -82,6 +83,7 @@ def create_api_runtime_state(workspace: str | Path, *, seed_config: dict[str, An
         _task_history=[],
         _run_inputs={},
         _last_route_decision=None,
+        _pending_workflow_interaction=None,
         _pending_workflow_clarification=None,
         _active_agent="workspace",
         _available_workspaces=[str(workspace_path)],
@@ -94,12 +96,13 @@ def create_api_runtime_state(workspace: str | Path, *, seed_config: dict[str, An
 
 def create_api_services(workspace: str | Path, *, seed_config: dict[str, Any] | None = None) -> ApiServices:
     runtime_state = create_api_runtime_state(workspace, seed_config=seed_config)
-    response_builder = ApiResponseBuilder(runtime_state)
-    chat_service = ChatService(runtime_state, response_builder)
+    session_responses = SessionResponseFactory(runtime_state)
+    error_responses = ErrorResponseFactory(runtime_state, session_responses)
+    chat_service = ChatService(runtime_state, session_responses, error_responses)
     return ApiServices(
-        session=SessionService(runtime_state, response_builder),
+        session=SessionService(runtime_state, session_responses),
         chat=chat_service,
-        context=ContextService(runtime_state, response_builder),
-        runs=RunService(runtime_state, response_builder, chat_service=chat_service),
+        context=ContextService(runtime_state, session_responses),
+        runs=RunService(runtime_state, session_responses, chat_service=chat_service),
         model_center=runtime_state.model_center,
     )

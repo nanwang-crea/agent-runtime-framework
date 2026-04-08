@@ -4,12 +4,12 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.contract_repair import parse_json_object, repair_structured_output
-from agent_runtime_framework.workflow.llm_access import get_application_context
-from agent_runtime_framework.workflow.memory_updates import remember_clarification, remember_semantic_plan
-from agent_runtime_framework.workflow.memory_views import build_semantic_memory_view
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
+from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
+from agent_runtime_framework.workflow.llm.access import get_application_context
+from agent_runtime_framework.workflow.memory.updates import remember_clarification, remember_semantic_plan
+from agent_runtime_framework.workflow.memory.views import build_semantic_memory_view
+from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
 def _as_string_list(value: Any) -> list[str]:
@@ -204,11 +204,16 @@ class InterpretTargetExecutor:
         state = run.shared_state.get("agent_graph_state_ref")
         repair_record = _repair_recorder(run)
         semantic_view = build_semantic_memory_view(state) if state is not None else {}
+        prior_candidates = list(getattr(getattr(run, "pending_interaction", None), "items", []) or [])
+        if not prior_candidates:
+            prior_candidates = list((run.shared_state.get("clarification_request") or {}).get("items") or [])
+        if not prior_candidates:
+            prior_candidates = list(((semantic_view.get("clarification_memory") or {}).get("candidate_items") or []))
         payload = {
             "goal": run.goal,
             "clarification_response": run.shared_state.get("clarification_response"),
             "open_issues": run.shared_state.get("open_issues", []),
-            "prior_candidates": list((run.shared_state.get("clarification_request") or {}).get("items") or []),
+            "prior_candidates": prior_candidates,
             "target_hints": list(node.metadata.get("target_hints") or []),
             "failure_history": list(run.shared_state.get("failure_history") or []),
             "memory_view": semantic_view,

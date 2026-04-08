@@ -3,16 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-from agent_runtime_framework.workflow.application_context import ApplicationContext
+from agent_runtime_framework.workflow.context.app_context import ApplicationContext
 from agent_runtime_framework.memory import InMemorySessionMemory
 from agent_runtime_framework.models import DriverCapabilities, InMemoryCredentialStore, ModelProfile, ModelRegistry, ModelRouter
 from agent_runtime_framework.policy import SimpleDesktopPolicy
 from agent_runtime_framework.resources import LocalFileResourceRepository
 from agent_runtime_framework.tools import ToolRegistry
-from agent_runtime_framework.workflow.decomposition import decompose_goal
-from agent_runtime_framework.workflow.goal_analysis import analyze_goal
-from agent_runtime_framework.workflow.models import GoalSpec, JudgeDecision, SubTaskSpec, new_agent_graph_state
-from agent_runtime_framework.workflow.subgraph_planner import _planner_context_payload, plan_next_subgraph
+from agent_runtime_framework.workflow.planning.decomposition import decompose_goal
+from agent_runtime_framework.workflow.planning.goal_analysis import analyze_goal
+from agent_runtime_framework.workflow.state.models import GoalSpec, JudgeDecision, SubTaskSpec, new_agent_graph_state
+from agent_runtime_framework.workflow.planning.subgraph_planner import _planner_context_payload, plan_next_subgraph
 
 
 class _FakeCompletions:
@@ -105,7 +105,7 @@ def test_analyze_goal_repairs_invalid_model_output(monkeypatch):
     context = _workflow_context("not json")
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.goal_analysis.repair_structured_output",
+        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output",
         lambda *args, **kwargs: {
             "primary_intent": "file_read",
             "requires_target_interpretation": True,

@@ -1,5 +1,5 @@
-from agent_runtime_framework.workflow.aggregator import aggregate_node_results
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.orchestration.aggregation import aggregate_node_results
+from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.nodes.core import AggregationExecutor, FinalResponseExecutor
 from types import SimpleNamespace
 

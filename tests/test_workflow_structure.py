@@ -1,0 +1,112 @@
+from pathlib import Path
+
+
+def test_workflow_package_uses_classified_subdirectories():
+    workflow_root = Path(__file__).resolve().parents[1] / "agent_runtime_framework" / "workflow"
+
+    assert (workflow_root / "runtime").is_dir()
+    assert (workflow_root / "planning").is_dir()
+    assert (workflow_root / "state").is_dir()
+    assert (workflow_root / "context").is_dir()
+    assert (workflow_root / "executors").is_dir()
+    assert (workflow_root / "interaction").is_dir()
+    assert (workflow_root / "llm").is_dir()
+    assert (workflow_root / "memory").is_dir()
+    assert (workflow_root / "orchestration").is_dir()
+    assert (workflow_root / "runtime" / "agent_graph.py").exists()
+    assert (workflow_root / "runtime" / "execution.py").exists()
+    assert (workflow_root / "runtime" / "routing.py").exists()
+    assert (workflow_root / "runtime" / "factory.py").exists()
+    assert (workflow_root / "runtime" / "protocols.py").exists()
+    assert (workflow_root / "planning" / "prompts.py").exists()
+    assert (workflow_root / "planning" / "prompt_utils.py").exists()
+    assert (workflow_root / "state" / "graph_state_store.py").exists()
+    assert (workflow_root / "context" / "app_context.py").exists()
+    assert (workflow_root / "context" / "runtime_context.py").exists()
+    assert (workflow_root / "executors" / "chunked_file_read.py").exists()
+    assert (workflow_root / "executors" / "clarification.py").exists()
+    assert (workflow_root / "executors" / "content_search.py").exists()
+    assert (workflow_root / "executors" / "discovery.py").exists()
+    assert (workflow_root / "executors" / "evidence_synthesis.py").exists()
+    assert (workflow_root / "executors" / "target_resolution.py").exists()
+    assert (workflow_root / "executors" / "tool_call.py").exists()
+    assert (workflow_root / "llm" / "access.py").exists()
+    assert (workflow_root / "llm" / "synthesis.py").exists()
+    assert (workflow_root / "llm" / "structured_output_repair.py").exists()
+    assert (workflow_root / "memory" / "updates.py").exists()
+    assert (workflow_root / "memory" / "views.py").exists()
+    assert (workflow_root / "interaction" / "clarification_resolution.py").exists()
+    assert (workflow_root / "interaction" / "conversation_messages.py").exists()
+    assert (workflow_root / "orchestration" / "aggregation.py").exists()
+
+
+def test_workflow_root_no_longer_keeps_core_runtime_files_flat():
+    workflow_root = Path(__file__).resolve().parents[1] / "agent_runtime_framework" / "workflow"
+
+    assert not (workflow_root / "agent_graph_runtime.py").exists()
+    assert not (workflow_root / "execution_runtime.py").exists()
+    assert not (workflow_root / "routing_runtime.py").exists()
+    assert not (workflow_root / "scheduler.py").exists()
+    assert not (workflow_root / "runtime_factory.py").exists()
+    assert not (workflow_root / "runtime_protocols.py").exists()
+    assert not (workflow_root / "runtime" / "agent_graph_runtime.py").exists()
+    assert not (workflow_root / "runtime" / "execution_runtime.py").exists()
+    assert not (workflow_root / "runtime" / "routing_runtime.py").exists()
+    assert not (workflow_root / "runtime" / "runtime_factory.py").exists()
+    assert not (workflow_root / "runtime" / "runtime_protocols.py").exists()
+
+
+def test_workflow_root_no_longer_keeps_core_planning_and_state_files_flat():
+    workflow_root = Path(__file__).resolve().parents[1] / "agent_runtime_framework" / "workflow"
+
+    assert not (workflow_root / "goal_analysis.py").exists()
+    assert not (workflow_root / "goal_intake.py").exists()
+    assert not (workflow_root / "decomposition.py").exists()
+    assert not (workflow_root / "subgraph_planner.py").exists()
+    assert not (workflow_root / "graph_mutation.py").exists()
+    assert not (workflow_root / "judge.py").exists()
+    assert not (workflow_root / "models.py").exists()
+    assert not (workflow_root / "approval.py").exists()
+    assert not (workflow_root / "persistence.py").exists()
+    assert not (workflow_root / "application_context.py").exists()
+    assert not (workflow_root / "context_assembly.py").exists()
+    assert not (workflow_root / "planning" / "planner_prompts.py").exists()
+    assert not (workflow_root / "planning" / "prompting.py").exists()
+    assert not (workflow_root / "state" / "agent_graph_state_store.py").exists()
+    assert not (workflow_root / "context" / "application_context.py").exists()
+    assert not (workflow_root / "context" / "context_assembly.py").exists()
+
+
+def test_workflow_root_no_longer_keeps_executor_llm_and_memory_files_flat():
+    workflow_root = Path(__file__).resolve().parents[1] / "agent_runtime_framework" / "workflow"
+
+    assert not (workflow_root / "clarification_executor.py").exists()
+    assert not (workflow_root / "chunked_file_read_executor.py").exists()
+    assert not (workflow_root / "content_search_executor.py").exists()
+    assert not (workflow_root / "discovery_executor.py").exists()
+    assert not (workflow_root / "evidence_synthesis_executor.py").exists()
+    assert not (workflow_root / "target_resolution_executor.py").exists()
+    assert not (workflow_root / "tool_call_executor.py").exists()
+    assert not (workflow_root / "llm_access.py").exists()
+    assert not (workflow_root / "llm_synthesis.py").exists()
+    assert not (workflow_root / "contract_repair.py").exists()
+    assert not (workflow_root / "memory_updates.py").exists()
+    assert not (workflow_root / "memory_views.py").exists()
+    assert not (workflow_root / "conversation.py").exists()
+    assert not (workflow_root / "clarification_interpreter.py").exists()
+    assert not (workflow_root / "aggregator.py").exists()
+    assert not (workflow_root / "system_node_manager.py").exists()
+    assert not (workflow_root / "executors" / "chunked_file_read_executor.py").exists()
+    assert not (workflow_root / "executors" / "clarification_executor.py").exists()
+    assert not (workflow_root / "executors" / "content_search_executor.py").exists()
+    assert not (workflow_root / "executors" / "discovery_executor.py").exists()
+    assert not (workflow_root / "executors" / "evidence_synthesis_executor.py").exists()
+    assert not (workflow_root / "executors" / "target_resolution_executor.py").exists()
+    assert not (workflow_root / "executors" / "tool_call_executor.py").exists()
+    assert not (workflow_root / "llm" / "llm_access.py").exists()
+    assert not (workflow_root / "llm" / "llm_synthesis.py").exists()
+    assert not (workflow_root / "llm" / "contract_repair.py").exists()
+    assert not (workflow_root / "memory" / "memory_updates.py").exists()
+    assert not (workflow_root / "memory" / "memory_views.py").exists()
+    assert not (workflow_root / "interaction" / "clarification_interpreter.py").exists()
+    assert not (workflow_root / "orchestration" / "result_aggregation.py").exists()

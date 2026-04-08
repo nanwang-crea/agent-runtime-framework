@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_runtime_framework.workflow.application_context import ApplicationContext
+from agent_runtime_framework.workflow.context.app_context import ApplicationContext
 from agent_runtime_framework.memory import (
     InMemoryIndexMemory,
     InMemorySessionMemory,
@@ -16,8 +16,8 @@ from agent_runtime_framework.policy import (
     SimpleDesktopPolicy,
 )
 from agent_runtime_framework.resources import LocalFileResourceRepository, ResourceRef
-from agent_runtime_framework.workflow.context_assembly import build_runtime_context
-from agent_runtime_framework.workflow.goal_intake import build_goal_envelope
+from agent_runtime_framework.workflow.context.runtime_context import build_runtime_context
+from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
 
 
 def test_session_memory_tracks_recent_focus():

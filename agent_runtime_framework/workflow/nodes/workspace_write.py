@@ -6,9 +6,9 @@ from typing import Any
 
 from agent_runtime_framework.workflow.workspace.models import TaskState
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
-from agent_runtime_framework.workflow.llm_access import get_application_context, get_workspace_context
-from agent_runtime_framework.workflow.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
-from agent_runtime_framework.workflow.runtime_protocols import RuntimeContextLike
+from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context
+from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
 def _collect_references(output: dict[str, Any]) -> list[str]:

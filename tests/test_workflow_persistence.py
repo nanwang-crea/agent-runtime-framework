@@ -1,12 +1,14 @@
 from agent_runtime_framework.workflow import (
+    InteractionRequest,
     NODE_STATUS_COMPLETED,
     NODE_STATUS_WAITING_APPROVAL,
     RUN_STATUS_WAITING_APPROVAL,
+    RUN_STATUS_WAITING_INPUT,
     NodeState,
     WorkflowGraph,
     WorkflowRun,
 )
-from agent_runtime_framework.workflow.persistence import WorkflowPersistenceStore
+from agent_runtime_framework.workflow.state.persistence import WorkflowPersistenceStore
 
 
 def test_workflow_run_can_restore_waiting_approval_state(tmp_path):
@@ -63,6 +65,25 @@ def test_workflow_persistence_store_round_trips_structured_evidence_payloads(tmp
     assert restored.shared_state["aggregated_result"].output["facts"] == [{"kind": "source_root", "path": "src"}]
     assert restored.shared_state["aggregated_result"].output["evidence_items"][0]["path"] == "README.md"
     assert restored.shared_state["evidence_synthesis"]["summary"] == "workspace summary"
+
+
+def test_workflow_persistence_store_round_trips_pending_interaction(tmp_path):
+    store = WorkflowPersistenceStore(tmp_path / "workflow-runs.json")
+    run = WorkflowRun(goal="read readme")
+    run.status = RUN_STATUS_WAITING_INPUT
+    run.pending_interaction = InteractionRequest(
+        kind="clarification",
+        prompt="Which README should I inspect?",
+        items=["README.md", "frontend-shell/README.md"],
+    )
+
+    store.save(run)
+    restored = store.load(run.run_id)
+
+    assert restored.status == RUN_STATUS_WAITING_INPUT
+    assert restored.pending_interaction is not None
+    assert restored.pending_interaction.kind == "clarification"
+    assert restored.pending_interaction.items == ["README.md", "frontend-shell/README.md"]
 
 
 def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path):
