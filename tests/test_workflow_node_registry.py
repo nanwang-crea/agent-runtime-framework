@@ -22,14 +22,11 @@ def test_chat_service_uses_shared_workflow_node_registry(monkeypatch):
 
     captured = {}
 
-    def _fake_builder(*, context):
+    def _fake_registry():
         captured["called"] = True
-        captured["context"] = context
-        from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRuntime
+        return {"noop": object()}
 
-        return GraphExecutionRuntime(executors={"noop": object()}, context=context)
-
-    monkeypatch.setattr("agent_runtime_framework.api.services.chat_service.build_workflow_graph_execution_runtime", _fake_builder)
+    monkeypatch.setattr("agent_runtime_framework.api.services.chat_service.create_workflow_node_executors", _fake_registry)
 
     runtime_state = SimpleNamespace(workflow_runtime_context=lambda: {})
     session_responses = SimpleNamespace()
@@ -37,5 +34,5 @@ def test_chat_service_uses_shared_workflow_node_registry(monkeypatch):
     runtime = ChatService(runtime_state, session_responses, error_responses)._graph_runtime()
 
     assert captured["called"] is True
-    assert captured["context"] == {}
     assert runtime.executors == {"noop": runtime.executors["noop"]}
+    assert runtime.context == {}

@@ -2229,12 +2229,25 @@ def test_agent_graph_runtime_routes_clarification_through_graph_execution_runtim
 
 
 def test_routing_runtime_does_not_rewrite_clarification_reply_into_target_explainer():
-    from agent_runtime_framework.workflow.runtime.routing import RootGraphRuntime
-
     captured = {}
+    from agent_runtime_framework.api.services.chat_service import ChatService
 
-    runtime = RootGraphRuntime(
-        analyze_goal_fn=lambda message, context: SimpleNamespace(
+    runtime_state = SimpleNamespace(
+        ensure_session=lambda: None,
+        workflow_runtime_context=lambda: {},
+        _pending_workflow_interaction={"run_id": "run-1", "kind": "clarification"},
+        _last_route_decision=None,
+        context=SimpleNamespace(application_context=None),
+        workspace=".",
+        _workflow_store=SimpleNamespace(save=lambda run: None),
+        record_run=lambda payload, message: None,
+    )
+    service = ChatService(runtime_state, SimpleNamespace(), SimpleNamespace(error_payload=lambda exc: {"status": "error"}))
+
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(
+        "agent_runtime_framework.api.services.chat_service.analyze_goal",
+        lambda message, context: SimpleNamespace(
             original_goal=message,
             primary_intent="file_read",
             requires_target_interpretation=False,
@@ -2243,14 +2256,16 @@ def test_routing_runtime_does_not_rewrite_clarification_reply_into_target_explai
             requires_verification=False,
             metadata={},
         ),
-        context={},
-        mark_route_decision=lambda route, source: None,
-        has_pending_clarification=lambda: True,
-        run_conversation=lambda message, graph, root_graph: {"status": "completed"},
-        run_agent=lambda message, goal, root_graph: (captured.__setitem__("goal", goal) or {"status": "completed"}),
     )
-
-    runtime.run("需要的是README.md这个文档")
+    monkeypatch.setattr(
+        ChatService,
+        "_run_agent_branch",
+        lambda self, message, goal_spec, root_graph, process_sink=None: (captured.__setitem__("goal", goal_spec) or {"status": "completed"}),
+    )
+    try:
+        service._run_root_graph("需要的是README.md这个文档")
+    finally:
+        monkeypatch.undo()
 
     assert captured["goal"].primary_intent == "file_read"
     assert captured["goal"].requires_read is True

@@ -16,7 +16,6 @@ def test_workflow_package_uses_classified_subdirectories():
     assert (workflow_root / "runtime" / "agent_graph.py").exists()
     assert (workflow_root / "runtime" / "execution.py").exists()
     assert (workflow_root / "runtime" / "routing.py").exists()
-    assert (workflow_root / "runtime" / "factory.py").exists()
     assert (workflow_root / "runtime" / "protocols.py").exists()
     assert (workflow_root / "planning" / "prompts.py").exists()
     assert (workflow_root / "planning" / "prompt_utils.py").exists()

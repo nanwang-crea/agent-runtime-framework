@@ -83,6 +83,9 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
         session_responses,
         error_responses,
     )
+    monkeypatch.setattr(ChatService, "_agent_runtime", lambda self, process_sink=None: runtime)
+    monkeypatch.setattr(ChatService, "_workflow_payload", lambda self, run, resume_token_id=None: {"status": "completed"})
+    monkeypatch.setattr(ChatService, "_remember_workflow_run", lambda self, message, run: None)
 
     chat_service._run_agent_branch(
         "需要的是README.md这个文档",
@@ -95,9 +98,6 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
             requires_verification=False,
             metadata={},
         ),
-        build_runtime=lambda: runtime,
-        workflow_payload=lambda run: {"status": "completed"},
-        remember_run=lambda message, run: None,
         root_graph={"route": "agent", "intent": "file_read"},
     )
 

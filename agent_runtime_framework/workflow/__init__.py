@@ -5,8 +5,6 @@ from agent_runtime_framework.workflow.state.persistence import WorkflowPersisten
 from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
 from agent_runtime_framework.workflow.context.runtime_context import WorkflowRuntimeContext
 from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRuntime
-from agent_runtime_framework.workflow.runtime.factory import build_workflow_graph_execution_runtime
-from agent_runtime_framework.workflow.runtime.routing import RootGraphRuntime
 from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
 from agent_runtime_framework.workflow.planning.subgraph_planner import plan_next_subgraph
 from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
@@ -74,8 +72,6 @@ __all__ = [
     "AgentGraphRuntime",
     "WorkflowRuntimeContext",
     "GraphExecutionRuntime",
-    "build_workflow_graph_execution_runtime",
-    "RootGraphRuntime",
     "build_goal_envelope",
     "plan_next_subgraph",
     "append_subgraph",

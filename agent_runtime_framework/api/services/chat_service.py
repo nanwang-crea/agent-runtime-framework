@@ -14,11 +14,12 @@ from agent_runtime_framework.api.responses.session_responses import SessionRespo
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
 from agent_runtime_framework.memory.index import MemoryRecord
 from agent_runtime_framework.resources import ResourceRef
-from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RootGraphRuntime, RUN_STATUS_WAITING_INPUT, WorkflowRun, analyze_goal
+from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRuntime, RUN_STATUS_WAITING_INPUT, WorkflowRun, analyze_goal
 from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
+from agent_runtime_framework.workflow.nodes import create_workflow_node_executors
 from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
+from agent_runtime_framework.workflow.state.models import GoalSpec, WorkflowGraph, WorkflowNode
 from agent_runtime_framework.workflow.runtime.routing import RootGraphPayload, RuntimePayload
-from agent_runtime_framework.workflow.runtime.factory import build_workflow_graph_execution_runtime
 
 
 @dataclass(slots=True)
@@ -34,7 +35,11 @@ class ChatService:
             return self.runtime_state.workflow_runtime_context()
 
     def _graph_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> GraphExecutionRuntime:
-        return build_workflow_graph_execution_runtime(context=self._runtime_context(process_sink=process_sink), process_sink=process_sink)
+        return GraphExecutionRuntime(
+            executors=create_workflow_node_executors(),
+            context=self._runtime_context(process_sink=process_sink),
+            process_sink=process_sink,
+        )
 
     def _agent_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> AgentGraphRuntime:
         return AgentGraphRuntime(
@@ -252,12 +257,10 @@ class ChatService:
         *,
         goal_spec: Any | None = None,
         root_graph: RootGraphPayload | None = None,
-        build_runtime: Callable[[], Any] | None = None,
-        workflow_payload: Callable[[Any], dict[str, Any]] | None = None,
-        remember_run: Callable[[str, Any], None] | None = None,
         process_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> RuntimePayload:
-        runtime = build_runtime() if build_runtime is not None else self._agent_runtime(process_sink=process_sink)
+        runtime = self._agent_runtime(process_sink=process_sink)
+        runtime_context = self._runtime_context(process_sink=process_sink)
         prior_bundle = self._pending_interaction_bundle()
         prior_run = None
         prior_state = None
@@ -332,7 +335,7 @@ class ChatService:
             )
         run = runtime.run(
             goal_envelope,
-            context=self._runtime_context(),
+            context=runtime_context,
             prior_state=prior_state,
             prior_graph=prior_graph,
             clarification_response=(message if prior_run is not None else None),
@@ -342,26 +345,79 @@ class ChatService:
         if root_graph is not None:
             run.metadata["root_graph"] = dict(root_graph)
         self.runtime_state._workflow_store.save(run)
-        (remember_run or self._remember_workflow_run)(message, run)
-        payload_builder = workflow_payload or (lambda workflow_run: self._workflow_payload(workflow_run, resume_token_id=self._register_pending_run(workflow_run)))
-        payload = payload_builder(run)
+        self._remember_workflow_run(message, run)
+        payload = self._workflow_payload(run, resume_token_id=self._register_pending_run(run))
         self.runtime_state.record_run(payload, message)
         return payload
 
-    def _root_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> RootGraphRuntime:
-        return RootGraphRuntime(
-            analyze_goal_fn=lambda message, context: analyze_goal(message, context=context),
-            context=self._runtime_context(process_sink=process_sink),
-            mark_route_decision=lambda route, source: setattr(self.runtime_state, "_last_route_decision", {"route": route, "source": source}),
-            has_pending_clarification=lambda: self._pending_interaction_bundle() is not None,
-            run_conversation=lambda message, graph, root_graph: self._run_conversation_branch(message, graph=graph, root_graph=root_graph, process_sink=process_sink),
-            run_agent=lambda message, goal, root_graph: self._run_agent_branch(message, goal_spec=goal, root_graph=root_graph, process_sink=process_sink),
+    def _build_conversation_graph(self, goal: GoalSpec) -> WorkflowGraph:
+        return WorkflowGraph(
+            nodes=[WorkflowNode(node_id="final_response", node_type="final_response", metadata={"conversation_mode": True})],
+            edges=[],
+            metadata={
+                "goal": goal.original_goal,
+                "source": "conversation_graph",
+                "execution_mode": "native",
+                "conversation_mode": True,
+            },
         )
+
+    def _with_root_trace(self, payload: RuntimePayload, goal: GoalSpec, route: str) -> RuntimePayload:
+        updated: RuntimePayload = dict(payload)
+        trace = list(updated.get("execution_trace") or [])
+        root_steps = [
+            {"name": "goal_intake", "status": "completed", "detail": "goal_intake"},
+            {"name": "route_by_goal", "status": "completed", "detail": f"route={route}; intent={goal.primary_intent}"},
+        ]
+        existing_names = {str(step.get("name") or "") for step in trace if isinstance(step, dict)}
+        prefixed = [step for step in root_steps if step["name"] not in existing_names]
+        if trace and isinstance(trace[0], dict) and str(trace[0].get("name") or "") == "router":
+            updated["execution_trace"] = [trace[0], *prefixed, *trace[1:]]
+        else:
+            updated["execution_trace"] = [*prefixed, *trace]
+        updated["root_graph"] = {
+            "route": route,
+            "intent": str(goal.primary_intent or ""),
+        }
+        return updated
+
+    def _run_root_graph(
+        self,
+        message: str,
+        *,
+        process_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> RuntimePayload:
+        runtime_context = self._runtime_context(process_sink=process_sink)
+        has_pending_clarification = self._pending_interaction_bundle() is not None
+        route_source = "clarification" if has_pending_clarification else "goal_analysis"
+        self.runtime_state._last_route_decision = {"route": "workflow", "source": route_source}
+
+        goal = analyze_goal(message, context=runtime_context)
+        route = "conversation"
+        if has_pending_clarification or str(goal.primary_intent or "").strip() not in {"generic", "chat", "conversation"}:
+            route = "agent"
+
+        root_graph: RootGraphPayload = {"route": route, "intent": str(goal.primary_intent or "")}
+        if route == "conversation":
+            payload = self._run_conversation_branch(
+                message,
+                graph=self._build_conversation_graph(goal),
+                root_graph=root_graph,
+                process_sink=process_sink,
+            )
+        else:
+            payload = self._run_agent_branch(
+                message,
+                goal_spec=goal,
+                root_graph=root_graph,
+                process_sink=process_sink,
+            )
+        return self._with_root_trace(payload, goal, route)
 
     def chat(self, message: str) -> dict[str, Any]:
         self.runtime_state.ensure_session()
         try:
-            return self._root_runtime().run(message)
+            return self._run_root_graph(message)
         except Exception as exc:
             return self.error_responses.error_payload(exc)
 
@@ -378,7 +434,7 @@ class ChatService:
 
         def _run_chat() -> None:
             try:
-                payload = self._root_runtime(process_sink=_process_sink).run(message)
+                payload = self._run_root_graph(message, process_sink=_process_sink)
             except Exception as exc:
                 payload = self.error_responses.error_payload(exc)
             event_queue.put({"type": "payload", "payload": payload})
