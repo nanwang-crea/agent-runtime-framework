@@ -48,20 +48,22 @@ def test_frontend_chat_streaming_keeps_run_card_separate_from_answer_body():
 
 def test_frontend_shell_mentions_agent_and_workspace_switching():
     app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+    sidebar_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "components" / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
     api_ts = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "api.ts").read_text(encoding="utf-8")
 
-    assert "Agent" in app_tsx
-    assert "Workspace" in app_tsx
+    assert "sidebar-footer-workspace" in sidebar_tsx
+    assert "handleWorkspaceSwitch" in app_tsx
     assert "/api/context" in api_ts
 
 
 def test_frontend_shell_uses_codex_like_two_column_shell():
     app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+    sidebar_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "components" / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
     styles_css = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "styles.css").read_text(encoding="utf-8")
 
     assert "runsByAnchor" in app_tsx
     assert "Sidebar" in app_tsx
-    assert "MainHeader" in app_tsx
+    assert "sidebar-shell" in sidebar_tsx
     assert ".codex-shell" in styles_css
     assert "ContextPanel" not in app_tsx
 

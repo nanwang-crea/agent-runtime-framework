@@ -22,28 +22,30 @@ export function RunStatusCard({
   const recentEntries = run.entries.slice(-2).reverse();
   const subtleMeta = [
     stageSummary.total > 0 ? `${stageSummary.total} steps` : null,
-    stageSummary.running ? "live" : null,
+    stageSummary.running ? "处理中" : null,
     stageSummary.error ? `${stageSummary.error} error` : null,
   ]
     .filter(Boolean)
     .join(" · ");
+  const headline = run.collapsed ? run.summary : run.phaseLabel;
 
   return (
-    <div ref={setContainerRef} className={`run-status-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
+    <section ref={setContainerRef} className={`run-status-row ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
       <button type="button" className="run-status-header" onClick={onToggle}>
-        <div className="run-status-copy">
-          <div className="run-status-topline">
+        <span className="run-status-line" />
+        <span className="run-status-copy">
+          <span className="run-inline-meta">
+            <span className="run-inline-label">{run.capabilityName || "assistant"}</span>
             <span className={`run-badge ${run.status}`}>{run.status}</span>
-            <span className="message-role">执行过程</span>
-          </div>
-          <strong>{run.capabilityName || "assistant"}</strong>
-          <span>{run.collapsed ? run.summary : run.phaseLabel}</span>
+          </span>
+          <strong>{headline}</strong>
           {subtleMeta ? <small>{subtleMeta}</small> : null}
-        </div>
-        <span className="run-toggle">{run.collapsed ? "展开" : "收起"}</span>
+        </span>
+        <span className="run-toggle">{run.collapsed ? "查看" : "隐藏"}</span>
+        <span className="run-status-line" />
       </button>
 
-      <div className="run-preview-list">
+      <div className="run-preview-strip">
         {recentEntries.length === 0 ? (
           <div className="run-preview-item">当前流程暂无额外步骤。</div>
         ) : (
@@ -56,7 +58,7 @@ export function RunStatusCard({
       </div>
 
       {!run.collapsed ? (
-        <div className="run-status-body">
+        <div className="run-status-details">
           <div className="run-event-list">
             {run.entries.length === 0 ? (
               <div className="run-empty-state">等待事件流返回更多执行细节。</div>
@@ -71,7 +73,7 @@ export function RunStatusCard({
           </div>
 
           {processDetails?.pendingTokenId ? (
-            <div className="approval-card">
+            <div className="run-inline-panel approval-card">
               <strong>需要审批</strong>
               <p>{processDetails.approvalText}</p>
               <div className="approval-actions">
@@ -86,14 +88,14 @@ export function RunStatusCard({
           ) : null}
 
           {processDetails?.streamingReply && processDetails.currentStatus === "streaming" ? (
-            <div className="run-streaming-note">
+            <div className="run-inline-panel run-streaming-note">
               <strong>正在生成回答</strong>
               <p>{processDetails.streamingReply}</p>
             </div>
           ) : null}
 
           {run.error ? (
-            <div className="run-error-box">
+            <div className="run-inline-panel run-error-box">
               <strong>{run.error.message}</strong>
               {run.error.suggestion ? <p>{run.error.suggestion}</p> : null}
               {run.error.retriable && onReplay ? (
@@ -105,6 +107,6 @@ export function RunStatusCard({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }

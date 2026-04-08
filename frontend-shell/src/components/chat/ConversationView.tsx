@@ -1,5 +1,5 @@
 import { Fragment, type FormEvent, type MutableRefObject, type RefObject } from "react";
-import type { AssistantError } from "../../types";
+import type { AssistantError, ModelsResponse } from "../../types";
 import type { ChatItem, ProcessDetailState, RunCardState, RunStageSummary } from "../../viewModels";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
@@ -11,6 +11,9 @@ type ConversationViewProps = {
   isBusy: boolean;
   message: string;
   status: string;
+  models: ModelsResponse;
+  selectedInstance: string;
+  selectedModel: string;
   uiError: AssistantError | null;
   showJumpToLatestRun: boolean;
   latestRunCardId: string | null;
@@ -22,6 +25,9 @@ type ConversationViewProps = {
   onMessageChange: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
   onStop: () => void;
+  onSelectInstance: (instance: string) => void;
+  onSelectModel: (model: string) => void;
+  onApplyModel: () => void;
   onApproval: (approved: boolean) => void;
   onReplay: (runId: string) => void;
   onToggleRun: (runId: string) => void;
@@ -36,6 +42,9 @@ export function ConversationView({
   isBusy,
   message,
   status,
+  models,
+  selectedInstance,
+  selectedModel,
   uiError,
   showJumpToLatestRun,
   latestRunCardId,
@@ -47,6 +56,9 @@ export function ConversationView({
   onMessageChange,
   onSubmit,
   onStop,
+  onSelectInstance,
+  onSelectModel,
+  onApplyModel,
   onApproval,
   onReplay,
   onToggleRun,
@@ -56,18 +68,6 @@ export function ConversationView({
 }: ConversationViewProps) {
   return (
     <section className="conversation-view">
-      <div className="conversation-intro-card">
-        <div>
-          <span className="conversation-label">Agent Shell</span>
-          <strong>{activeWorkspace || "当前工作区"}</strong>
-          <p>消息流是主视图，流程与审批以内联轻卡片跟随，不再占用额外侧栏。</p>
-        </div>
-        <div className="conversation-intro-status">
-          <span className="header-chip">{chatItems.length} items</span>
-          <span className={`header-chip status-${status}`}>{status}</span>
-        </div>
-      </div>
-
       {uiError ? (
         <div className="ui-error-banner">
           <strong>{uiError.code} · {uiError.message}</strong>
@@ -79,7 +79,7 @@ export function ConversationView({
         {chatItems.length === 0 ? (
           <div className="stream-empty-state">
             <strong>开始一段对话</strong>
-            <p>右侧只保留一个主对话窗口，发送消息后会在这里看到回答与执行过程。</p>
+            <p>主界面会像 Codex 一样以消息流为中心，过程只作为轻量状态穿插其中。</p>
           </div>
         ) : (
           chatItems.map((item) => (
@@ -106,13 +106,26 @@ export function ConversationView({
 
       {showJumpToLatestRun && latestRunCardId ? (
         <div className="jump-row">
-          <button type="button" className="secondary-button" onClick={onJumpToLatestRun}>
-            跳到最新流程
+          <button type="button" className="jump-link-button" onClick={onJumpToLatestRun}>
+            跳到最新状态
           </button>
         </div>
       ) : null}
 
-      <Composer message={message} disabled={isBusy} status={status} onChange={onMessageChange} onSubmit={onSubmit} onStop={onStop} />
+      <Composer
+        message={message}
+        disabled={isBusy}
+        status={status}
+        models={models}
+        selectedInstance={selectedInstance}
+        selectedModel={selectedModel}
+        onChange={onMessageChange}
+        onSubmit={onSubmit}
+        onStop={onStop}
+        onSelectInstance={onSelectInstance}
+        onSelectModel={onSelectModel}
+        onApplyModel={onApplyModel}
+      />
     </section>
   );
 }

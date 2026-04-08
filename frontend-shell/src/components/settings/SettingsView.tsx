@@ -49,6 +49,7 @@ export function SettingsView({
           <div>
             <span className="conversation-label">当前生效模型</span>
             <strong>全局模型切换</strong>
+            <p className="instance-meta-text">聊天输入区也可以直接切换模型，这里保留为设置入口。</p>
           </div>
         </div>
         <div className="settings-form-row">

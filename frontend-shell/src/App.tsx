@@ -11,7 +11,6 @@ import {
   updateModelCenter,
 } from "./api";
 import { ConversationView } from "./components/chat/ConversationView";
-import { MainHeader } from "./components/layout/MainHeader";
 import { Sidebar } from "./components/layout/Sidebar";
 import { SettingsView } from "./components/settings/SettingsView";
 import type {
@@ -618,7 +617,7 @@ function App() {
       <Sidebar
         activeView={activeView}
         workspace={activeWorkspace}
-        status={status}
+        availableWorkspaces={(contextState.available_workspaces.length > 0 ? contextState.available_workspaces : [workspace]).filter(Boolean)}
         session={session}
         threads={threads}
         onNewChat={() => {
@@ -633,26 +632,11 @@ function App() {
         }}
         onSelectChat={() => setActiveView("chat")}
         onSelectSettings={() => setActiveView("settings")}
+        onSelectWorkspace={(nextWorkspace) => void handleWorkspaceSwitch(nextWorkspace)}
       />
 
       <section className="main-shell">
-        <MainHeader
-          activeView={activeView}
-          workspace={compactText(activeWorkspace || "workspace", 36)}
-          status={status}
-          title={activeView === "chat" ? "Agent Shell" : "设置"}
-        />
-
-        <div className="workspace-switch-row">
-          <span className="conversation-label">切换工作区</span>
-          <select value={contextState.active_workspace || workspace} onChange={(event) => void handleWorkspaceSwitch(event.target.value)}>
-            {(contextState.available_workspaces.length > 0 ? contextState.available_workspaces : [workspace]).filter(Boolean).map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
+        {activeView === "settings" ? <div className="settings-page-title">设置</div> : null}
 
         {activeView === "chat" ? (
           <ConversationView
@@ -661,6 +645,9 @@ function App() {
             isBusy={isBusy}
             message={message}
             status={status}
+            models={models}
+            selectedInstance={globalModelDraft.instance}
+            selectedModel={globalModelDraft.model}
             uiError={uiError}
             showJumpToLatestRun={showJumpToLatestRun}
             latestRunCardId={latestRunCardId}
@@ -672,6 +659,15 @@ function App() {
             onMessageChange={setMessage}
             onSubmit={handleSubmit}
             onStop={handleStop}
+            onSelectInstance={(instance) => {
+              const nextInstance = models.instances.find((item) => item.instance === instance);
+              setGlobalModelDraft({
+                instance,
+                model: nextInstance?.models[0]?.model_name || "",
+              });
+            }}
+            onSelectModel={(model) => setGlobalModelDraft((current) => ({ ...current, model }))}
+            onApplyModel={() => void handleDefaultModelSelect(globalModelDraft.instance, globalModelDraft.model)}
             onApproval={(approved) => void handleApproval(approved)}
             onReplay={(runId) => void handleReplay(runId)}
             onToggleRun={(runId) =>

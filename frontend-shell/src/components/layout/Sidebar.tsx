@@ -4,73 +4,56 @@ import type { ThreadSummary, ViewId } from "../../viewModels";
 type SidebarProps = {
   activeView: ViewId;
   workspace: string;
-  status: string;
+  availableWorkspaces: string[];
   session: SessionPayload;
   threads: ThreadSummary[];
   onNewChat: () => void;
   onSelectChat: () => void;
   onSelectSettings: () => void;
+  onSelectWorkspace: (workspace: string) => void;
 };
 
 export function Sidebar({
   activeView,
   workspace,
-  status,
+  availableWorkspaces,
   session,
   threads,
   onNewChat,
   onSelectChat,
   onSelectSettings,
+  onSelectWorkspace,
 }: SidebarProps) {
   return (
     <aside className="sidebar-shell">
-      <div className="sidebar-top">
-        <div className="sidebar-brand">
-          <div className="brand-mark">AR</div>
-          <div>
-            <strong>Agent Runtime</strong>
-            <p>workflow-first desktop shell</p>
-          </div>
-        </div>
-        <button type="button" className="sidebar-new-chat" onClick={onNewChat}>
-          新对话
+      <div className="sidebar-topbar">
+        <button type="button" className="sidebar-icon-button" onClick={onNewChat}>
+          新线程
+        </button>
+        <button type="button" className="sidebar-icon-button sidebar-placeholder" disabled title="后续接入技能面板">
+          技能
         </button>
       </div>
 
-      <div className="sidebar-section">
-        <span className="sidebar-label">Workspace</span>
-        <div className="sidebar-workspace-card">
-          <strong>{workspace || "加载中..."}</strong>
-          <span>{session.turns.length} 条消息</span>
-        </div>
+      <div className="sidebar-nav">
+        <button type="button" className={`sidebar-nav-item ${activeView === "chat" ? "active" : ""}`} onClick={onSelectChat}>
+          对话
+        </button>
+        <button type="button" className={`sidebar-nav-item ${activeView === "settings" ? "active" : ""}`} onClick={onSelectSettings}>
+          设置
+        </button>
       </div>
 
-      <div className="sidebar-section">
-        <span className="sidebar-label">导航</span>
-        <div className="sidebar-nav">
-          <button
-            type="button"
-            className={`sidebar-nav-item ${activeView === "chat" ? "active" : ""}`}
-            onClick={onSelectChat}
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            className={`sidebar-nav-item ${activeView === "settings" ? "active" : ""}`}
-            onClick={onSelectSettings}
-          >
-            设置
-          </button>
-        </div>
+      <div className="sidebar-thread-header">
+        <span className="sidebar-label">线程</span>
       </div>
 
-      <div className="sidebar-section sidebar-threads">
-        <div className="sidebar-section-head">
-          <span className="sidebar-label">线程</span>
-          <span className={`sidebar-status status-${status}`}>{status}</span>
-        </div>
-        <div className="thread-list">
+      <div className="thread-list">
+        <button type="button" className="thread-quick-action" onClick={onNewChat}>
+          + 新建会话
+        </button>
+
+        <div className="thread-list-body">
           {threads.length === 0 ? (
             <div className="thread-empty">发送第一条消息后，这里会展示对话摘要。</div>
           ) : (
@@ -90,9 +73,20 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
-        <button type="button" className="sidebar-settings-link" onClick={onSelectSettings}>
-          设置
-        </button>
+        <div className="sidebar-footer-meta">
+          <span>{session.turns.length} 条上下文</span>
+          <span>{workspace ? "本地工作区" : "未加载"}</span>
+        </div>
+        <div className="sidebar-footer-workspace">
+          <span className="sidebar-label">工作区</span>
+          <select value={workspace} onChange={(event) => onSelectWorkspace(event.target.value)}>
+            {availableWorkspaces.filter(Boolean).map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
     </aside>
   );
