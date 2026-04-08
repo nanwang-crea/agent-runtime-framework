@@ -544,7 +544,7 @@ function App() {
     return userTurns.map(({ turn, index }, listIndex) => ({
       id: `thread-${index}`,
       title: compactText(turn.content, 26) || `对话 ${index + 1}`,
-      subtitle: `${session.turns.length - listIndex} 条上下文 · ${compactText(turn.content, 40)}`,
+      subtitle: listIndex === 0 ? `当前会话 · ${session.turns.length} 条上下文` : compactText(turn.content, 34),
       active: activeView === "chat" && listIndex === 0,
     }));
   }, [activeView, session.turns]);
