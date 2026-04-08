@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from agent_runtime_framework.api.models.agent_profiles import get_profile
 from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
 from agent_runtime_framework.resources import LocalFileResourceRepository
@@ -15,11 +15,7 @@ class ContextService:
     runtime_state: ApiRuntimeState
     session_responses: SessionResponseFactory
 
-    def switch_context(self, *, agent_profile: str | None = None, workspace: str | None = None) -> dict[str, Any]:
-        if agent_profile:
-            if get_profile(agent_profile) is None:
-                raise ValueError(f"unknown agent profile: {agent_profile}")
-            self.runtime_state._active_agent = agent_profile
+    def switch_context(self, *, workspace: str | None = None) -> dict[str, Any]:
         if workspace:
             next_workspace = Path(workspace).expanduser().resolve()
             if not next_workspace.exists():

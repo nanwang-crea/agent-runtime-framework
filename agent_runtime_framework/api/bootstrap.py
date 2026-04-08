@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_runtime_framework.api.models.agent_profiles import builtin_profiles
 from agent_runtime_framework.api.responses.error_responses import ErrorResponseFactory
 from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
 from agent_runtime_framework.api.services import ApiServices
@@ -85,9 +84,7 @@ def create_api_runtime_state(workspace: str | Path, *, seed_config: dict[str, An
         _last_route_decision=None,
         _pending_workflow_interaction=None,
         _pending_workflow_clarification=None,
-        _active_agent="workspace",
         _available_workspaces=[str(workspace_path)],
-        available_profiles=builtin_profiles(),
         _workflow_store=WorkflowPersistenceStore(workspace_path / ".arf" / "workflow-runs.json"),
     )
     runtime_state.model_center.load()

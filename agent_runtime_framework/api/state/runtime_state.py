@@ -30,9 +30,7 @@ class ApiRuntimeState:
     _last_route_decision: dict[str, str] | None
     _pending_workflow_interaction: dict[str, Any] | None
     _pending_workflow_clarification: dict[str, Any] | None
-    _active_agent: str
     _available_workspaces: list[str]
-    available_profiles: list[Any]
     _workflow_store: WorkflowPersistenceStore
 
     def ensure_session(self) -> SessionState:

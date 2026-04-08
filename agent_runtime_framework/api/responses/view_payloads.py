@@ -8,16 +8,12 @@ from agent_runtime_framework.api.responses.common_payloads import compact_text, 
 def build_context_payload(
     *,
     workspace: str,
-    active_agent: str,
     active_persona: str,
-    available_profiles: list[Any],
     available_workspaces: list[str],
     sandbox_payload: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "active_agent": active_agent,
         "active_persona": active_persona,
-        "available_agents": [profile.to_payload() for profile in available_profiles],
         "active_workspace": workspace,
         "available_workspaces": list(dict.fromkeys([workspace, *available_workspaces])),
         "sandbox": sandbox_payload,

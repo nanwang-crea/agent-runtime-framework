@@ -21,8 +21,6 @@ const EMPTY_MEMORY: AssistantResponse["memory"] = {
 };
 
 const EMPTY_CONTEXT: ContextPayload = {
-  active_agent: "workspace",
-  available_agents: [],
   active_workspace: "",
   available_workspaces: [],
 };
@@ -107,7 +105,7 @@ export function fetchSession(): Promise<SessionResponse> {
   return request<SessionResponse>("/api/session");
 }
 
-export function updateContext(payload: { agent_profile?: string; workspace?: string }): Promise<SessionResponse> {
+export function updateContext(payload: { workspace?: string }): Promise<SessionResponse> {
   return request<SessionResponse>("/api/context", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

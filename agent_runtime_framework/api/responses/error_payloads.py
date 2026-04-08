@@ -10,12 +10,10 @@ def normalize_api_error(
     exc: Exception,
     *,
     workspace: str,
-    active_agent: str,
     route_decision: dict[str, str] | None,
 ) -> AppError:
     base_context = {
         "workspace": workspace,
-        "active_agent": active_agent,
         "route": str((route_decision or {}).get("route") or ""),
         "route_source": str((route_decision or {}).get("source") or ""),
     }
@@ -87,7 +85,6 @@ def error_payload(
     *,
     exc: Exception,
     workspace: str,
-    active_agent: str,
     route_decision: dict[str, str] | None,
     session_payload: dict[str, Any],
     plan_history: list[dict[str, Any]],
@@ -98,7 +95,6 @@ def error_payload(
     error = normalize_api_error(
         exc,
         workspace=workspace,
-        active_agent=active_agent,
         route_decision=route_decision,
     )
     payload = {

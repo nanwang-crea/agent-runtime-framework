@@ -8,15 +8,7 @@ export type SessionPayload = {
   turns: Turn[];
 };
 
-export type AgentProfilePayload = {
-  id: string;
-  label: string;
-  kind: string;
-};
-
 export type ContextPayload = {
-  active_agent: string;
-  available_agents: AgentProfilePayload[];
   active_workspace: string;
   available_workspaces: string[];
 };

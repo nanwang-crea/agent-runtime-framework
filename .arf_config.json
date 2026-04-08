@@ -5,11 +5,11 @@
       "type": "openai_compatible",
       "enabled": true,
       "connection": {
-        "base_url": "https://api.openai.com/v1",
+        "base_url": "http://localhost:8317/v1",
         "wire_api": "chat_completions"
       },
       "credentials": {
-        "api_key": ""
+        "api_key": "your-api-key-1"
       },
       "catalog": {
         "mode": "static",
@@ -26,7 +26,7 @@
         "wire_api": "chat_completions"
       },
       "credentials": {
-        "api_key": ""
+        "api_key": "sk-f4a4ff4b0bf242df9bae933c165d5835"
       },
       "catalog": {
         "mode": "static",
@@ -40,11 +40,11 @@
       "type": "openai_compatible",
       "enabled": true,
       "connection": {
-        "base_url": "https://api.minimax.chat/v1",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "wire_api": "chat_completions"
       },
       "credentials": {
-        "api_key": ""
+        "api_key": "sk-f4a4ff4b0bf242df9bae933c165d5835"
       },
       "catalog": {
         "mode": "static",
@@ -58,9 +58,12 @@
       "enabled": true,
       "connection": {
         "codex_binary": "codex",
-        "auth_file": "~/.codex/auth.json"
+        "auth_file": "~/.codex/auth.json",
+        "base_url": ""
       },
-      "credentials": {},
+      "credentials": {
+        "api_key": ""
+      },
       "catalog": {
         "mode": "static",
         "models": [
@@ -73,8 +76,8 @@
   },
   "routes": {
     "default": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "router": {
       "instance": "dashscope",
@@ -85,32 +88,32 @@
       "model": "qwen3.5-plus"
     },
     "conversation": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "capability_selector": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "planner": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "interpreter": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "resolver": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "executor": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "composer": {
-      "instance": "dashscope",
-      "model": "qwen3.5-plus"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     }
   }
 }

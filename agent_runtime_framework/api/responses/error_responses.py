@@ -20,7 +20,6 @@ class ErrorResponseFactory:
         error, payload = error_payload(
             exc=exc,
             workspace=str(self.runtime_state.workspace),
-            active_agent=self.runtime_state._active_agent,
             route_decision=self.runtime_state._last_route_decision,
             session_payload=self.session_responses.session_payload(),
             plan_history=self.session_responses.plan_history_payload(),

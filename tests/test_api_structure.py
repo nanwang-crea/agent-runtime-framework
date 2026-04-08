@@ -103,7 +103,7 @@ def test_api_package_uses_classified_subdirectories_for_models_state_and_respons
     assert (api_root / "responses").is_dir()
     assert (api_root / "dependencies.py").exists() is False
     assert (api_root / "state" / "session_state.py").exists()
-    assert (api_root / "models" / "agent_profiles.py").exists()
+    assert not (api_root / "models" / "agent_profiles.py").exists()
     assert (api_root / "responses" / "session_responses.py").exists()
     assert (api_root / "responses" / "error_responses.py").exists()
     assert (api_root / "responses" / "run_responses.py").exists()

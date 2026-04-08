@@ -36,9 +36,7 @@ class SessionResponseFactory:
     def context_payload(self) -> dict[str, Any]:
         return build_context_payload(
             workspace=str(self.runtime_state.workspace),
-            active_agent=self.runtime_state._active_agent,
             active_persona=self.runtime_state.active_persona_name(),
-            available_profiles=self.runtime_state.available_profiles,
             available_workspaces=self.runtime_state._available_workspaces,
             sandbox_payload=resolve_sandbox(self.runtime_state.context).to_payload(),
         )

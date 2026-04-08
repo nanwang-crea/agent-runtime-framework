@@ -11,6 +11,5 @@ router = APIRouter()
 def post_context(payload: dict[str, Any], request: Request) -> Any:
     services = request.app.state.api_services
     return services.context.switch_context(
-        agent_profile=str(payload.get("agent_profile") or "").strip() or None,
         workspace=str(payload.get("workspace") or "").strip() or None,
     )

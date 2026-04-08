@@ -13,14 +13,14 @@ def _stub_app():
         plan_history_payload=lambda: [],
         run_history_payload=lambda: [],
         memory_payload=lambda: {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-        context_payload=lambda: {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+        context_payload=lambda: {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
         model_center=SimpleNamespace(payload=lambda: {"config": {}, "runtime": {}, "runtime_checks": {}}, update=lambda payload: {"updated": payload}, run_action=lambda action, payload: {"action": action, "payload": payload}),
-        chat=lambda message: {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."},
+        chat=lambda message: {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."},
         stream_chat=lambda message: iter([
             {"type": "start", "message": message},
-            {"type": "final", "payload": {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."}},
+            {"type": "final", "payload": {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."}},
         ]),
-        switch_context=lambda **kwargs: {"workspace": ".", "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_agent": kwargs.get("agent_profile") or "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}},
+        switch_context=lambda **kwargs: {"workspace": kwargs.get("workspace") or ".", "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}}},
     )
 
 
@@ -33,7 +33,7 @@ def _stub_services():
                 "plan_history": [],
                 "run_history": [],
                 "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-                "context": {"active_agent": "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+                "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
             }
         ),
         chat=SimpleNamespace(
@@ -45,12 +45,12 @@ def _stub_services():
         ),
         context=SimpleNamespace(
             switch_context=lambda **kwargs: {
-                "workspace": ".",
+                "workspace": kwargs.get("workspace") or ".",
                 "session": {"session_id": "s", "turns": []},
                 "plan_history": [],
                 "run_history": [],
                 "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-                "context": {"active_agent": kwargs.get("agent_profile") or "workspace", "available_agents": [], "active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}},
             }
         ),
         runs=SimpleNamespace(
@@ -71,12 +71,30 @@ def test_create_demo_api_exposes_core_routes():
 
     async def _run():
         app = create_app()
-        app.state.api_services = ApiServices(**_stub_services().__dict__)
+        services = _stub_services()
+        captured_context_kwargs = {}
+
+        def _switch_context(**kwargs):
+            captured_context_kwargs.clear()
+            captured_context_kwargs.update(kwargs)
+            return {
+                "workspace": kwargs.get("workspace") or ".",
+                "session": {"session_id": "s", "turns": []},
+                "plan_history": [],
+                "run_history": [],
+                "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
+                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}},
+            }
+
+        services.context = SimpleNamespace(switch_context=_switch_context)
+        app.state.api_services = ApiServices(**services.__dict__)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             session_response = await client.get("/api/session")
             assert session_response.status_code == 200
             assert session_response.json()["workspace"] == "."
+            assert "active_agent" not in session_response.json()["context"]
+            assert "available_agents" not in session_response.json()["context"]
 
             chat_response = await client.post("/api/chat", json={"message": "hello"})
             assert chat_response.status_code == 200
@@ -86,9 +104,10 @@ def test_create_demo_api_exposes_core_routes():
             assert stream_response.status_code == 200
             assert stream_response.headers["content-type"].startswith("text/event-stream")
 
-            context_response = await client.post("/api/context", json={"agent_profile": "planner"})
+            context_response = await client.post("/api/context", json={"workspace": "/tmp/demo-workspace"})
             assert context_response.status_code == 200
-            assert context_response.json()["context"]["active_agent"] == "planner"
+            assert context_response.json()["context"]["active_workspace"] == "/tmp/demo-workspace"
+            assert captured_context_kwargs == {"workspace": "/tmp/demo-workspace"}
 
             approve_response = await client.post("/api/approve", json={"token_id": "t-1", "approved": True})
             assert approve_response.status_code == 200

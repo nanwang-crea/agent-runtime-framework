@@ -71,8 +71,6 @@ type RunCardState = {
 function App() {
   const [workspace, setWorkspace] = useState("");
   const [contextState, setContextState] = useState<ContextPayload>({
-    active_agent: "workspace",
-    available_agents: [],
     active_workspace: "",
     available_workspaces: [],
   });
@@ -243,27 +241,6 @@ function App() {
       setUiError(null);
     } catch (error) {
       setUiError(extractAssistantError(error, "重试运行失败。"));
-      setStatus("error");
-    }
-  }
-
-  async function handleAgentSwitch(agentProfile: string) {
-    try {
-      const payload = await updateContext({ agent_profile: agentProfile });
-      setWorkspace(payload.workspace);
-      setContextState(payload.context);
-      setSession(payload.session);
-      setPlans(payload.plan_history);
-      setMemory(payload.memory);
-      setPendingTokenId(null);
-      setApprovalText("");
-      setPendingUserMessage("");
-      setStreamingReply("");
-      setRunCards([]);
-      setStatus("idle");
-      setUiError(null);
-    } catch (error) {
-      setUiError(extractAssistantError(error, "切换 Agent 失败。"));
       setStatus("error");
     }
   }
@@ -709,7 +686,7 @@ function App() {
         <div className="brand">
           <p className="kicker">Agent Runtime Framework</p>
           <h1>Agent Shell</h1>
-          <p className="brand-copy">同一个会话里切换 agent 和 workspace，让对话流承载执行过程、历史和配置中心。</p>
+          <p className="brand-copy">围绕默认 workspace agent 展开对话，让执行过程、历史和配置中心都收进同一个会话视图里。</p>
         </div>
 
         <nav className="nav">
@@ -728,17 +705,6 @@ function App() {
         <div className="sidebar-card">
           <span>当前工作区</span>
           <code>{activeWorkspace || "加载中..."}</code>
-        </div>
-
-        <div className="sidebar-card">
-          <span>切换 Agent</span>
-          <select value={contextState.active_agent} onChange={(event) => void handleAgentSwitch(event.target.value)}>
-            {contextState.available_agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.label}
-              </option>
-            ))}
-          </select>
         </div>
 
         <div className="sidebar-card">
@@ -776,7 +742,6 @@ function App() {
             <h2>{activeView === "chat" ? "Agent Shell" : activeView === "history" ? "历史" : "设置"}</h2>
           </div>
           <div className="topbar-meta">
-            <span className="pill">{contextState.active_agent}</span>
             <span className="pill">{compactText(activeWorkspace || "workspace", 28)}</span>
             <span className={`pill ${status}`}>{status}</span>
           </div>
@@ -805,7 +770,6 @@ function App() {
                 </div>
                 <div className="live-shell-meta">
                   <span className={`pill ${status}`}>{status === "streaming" ? "live" : status}</span>
-                  <span className="pill">{contextState.active_agent}</span>
                   <span className="pill">{runCards.length} runs</span>
                 </div>
               </div>
