@@ -132,3 +132,69 @@ def repair_structured_output(
             }
         )
     return None
+
+
+def repair_structured_output_until_valid(
+    context: Any,
+    *,
+    role: str,
+    contract_kind: str,
+    required_fields: list[str],
+    original_output: Any,
+    request_payload: dict[str, Any],
+    validate: Any,
+    extra_instructions: str = "",
+    max_attempts: int = DEFAULT_REPAIR_ATTEMPTS,
+    on_record: Any | None = None,
+) -> dict[str, Any] | None:
+    latest_output = original_output
+    latest_error = validate(original_output)
+    if latest_error is None and isinstance(original_output, dict):
+        return original_output
+
+    for attempt in range(1, max_attempts + 1):
+        repaired = repair_structured_output(
+            context,
+            role=role,
+            contract_kind=contract_kind,
+            required_fields=required_fields,
+            original_output=latest_output,
+            validation_error=str(latest_error or "invalid structured output"),
+            request_payload=request_payload,
+            extra_instructions=extra_instructions,
+            max_attempts=1,
+            on_record=None,
+        )
+        if not isinstance(repaired, dict):
+            latest_output = {"prior_repair_attempt": latest_output, "attempt": attempt}
+            continue
+        latest_output = repaired
+        latest_error = validate(repaired)
+        if latest_error is None:
+            if callable(on_record):
+                on_record(
+                    {
+                        "contract_kind": contract_kind,
+                        "role": role,
+                        "success": True,
+                        "attempts_used": attempt,
+                        "max_attempts": max_attempts,
+                        "initial_error": validate(original_output) or "",
+                        "final_error": "",
+                    }
+                )
+            return repaired
+
+    if callable(on_record):
+        on_record(
+            {
+                "contract_kind": contract_kind,
+                "role": role,
+                "success": False,
+                "attempts_used": max_attempts,
+                "max_attempts": max_attempts,
+                "initial_error": validate(original_output) or "",
+                "final_error": str(latest_error or "invalid structured output"),
+            }
+        )
+    return None

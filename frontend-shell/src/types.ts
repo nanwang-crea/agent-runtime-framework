@@ -62,6 +62,7 @@ export type AssistantResponse = {
   status: string;
   final_answer: string;
   execution_trace: ExecutionTraceStep[];
+  process_trace: ProcessTraceEvent[];
   approval_request: ApprovalRequest | null;
   resume_token_id: string | null;
   session: SessionPayload;
@@ -76,6 +77,18 @@ export type ExecutionTraceStep = {
   name: string;
   status: string;
   detail: string | null;
+};
+
+export type ProcessTraceEvent = {
+  id: string;
+  kind: "plan" | "read" | "search" | "exec" | "edit" | "test" | "reply" | "approval" | "error" | "status";
+  status: "started" | "completed" | "error";
+  title: string;
+  detail: string | null;
+  target: string | null;
+  node_id: string | null;
+  node_type: string | null;
+  metadata: Record<string, unknown>;
 };
 
 export type SessionResponse = {

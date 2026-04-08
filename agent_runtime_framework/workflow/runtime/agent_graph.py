@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
 
+from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 from agent_runtime_framework.workflow.state.models import (
@@ -44,12 +45,14 @@ class AgentGraphRuntime:
     max_iterations: int = 3
     state_store: AgentGraphStateStore = field(default_factory=AgentGraphStateStore)
     system_node_manager: SystemNodeManager = field(default_factory=SystemNodeManager)
+    process_sink: Callable[[dict[str, Any]], None] | None = None
 
     def run(self, goal_envelope: GoalEnvelope, *, run_id: str | None = None, context: Any | None = None, prior_state: dict[str, Any] | None = None, prior_graph: WorkflowGraph | None = None, clarification_response: str | None = None, clarification_resolution: dict[str, Any] | None = None) -> WorkflowRun:
         runtime_context = context if context is not None else self.context
         state = self._restore_state(goal_envelope, run_id=run_id, prior_state=prior_state)
         graph = prior_graph or self._initial_graph(state)
         run = WorkflowRun(goal=goal_envelope.goal, run_id=state.run_id, graph=graph)
+        run.metadata.setdefault("process_events", [])
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
         run.shared_state["agent_graph_state_ref"] = state
         run.shared_state["memory_state"] = state.memory_state.as_payload()
@@ -92,11 +95,23 @@ class AgentGraphRuntime:
     def _execute_iterations(self, goal_envelope: GoalEnvelope, state: AgentGraphState, run: WorkflowRun, runtime_context: Any | None) -> WorkflowRun:
         graph = run.graph
         while state.current_iteration < self.max_iterations:
+            self._emit(run, {"kind": "plan", "status": "started", "title": "规划下一步", "detail": f"iteration {state.current_iteration + 1}"})
             subgraph = self.planner(goal_envelope, state, runtime_context)
+            self._emit(
+                run,
+                {
+                    "kind": "plan",
+                    "status": "completed",
+                    "title": "规划下一步",
+                    "detail": str(subgraph.planner_summary or f"planned {len(subgraph.nodes)} nodes"),
+                    "metadata": {"node_types": [node.node_type for node in subgraph.nodes]},
+                },
+            )
             anchor_node_id = self._anchor_node_id(graph, state)
             graph = append_subgraph(graph, subgraph, after_node_id=anchor_node_id)
             run.graph = graph
             subrun = WorkflowRun(goal=goal_envelope.goal, graph=self._execution_graph(subgraph))
+            subrun.metadata.setdefault("process_events", run.metadata.setdefault("process_events", []))
             subrun.shared_state["node_results"] = dict(run.shared_state.get("node_results") or {})
             executed = self.workflow_runtime.run(subrun)
             outcome = self._consume_subrun(goal_envelope, state, run, executed, subgraph, runtime_context)
@@ -163,6 +178,17 @@ class AgentGraphRuntime:
         state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(evidence_result, "output", {}) or getattr(aggregated_result, "output", {}) or {})
 
         last_decision = self._judge(goal_envelope, state, runtime_context)
+        self._emit(
+            run,
+            {
+                "kind": "plan",
+                "status": "completed" if last_decision.status == "accepted" else "started",
+                "title": "评估进展",
+                "detail": str(last_decision.reason or last_decision.status),
+                "node_id": f"judge_{state.current_iteration}",
+                "node_type": "judge",
+            },
+        )
         state.judge_history.append(last_decision)
         state.open_issues = list(last_decision.missing_evidence)
         state.iteration_summaries.append(
@@ -215,6 +241,10 @@ class AgentGraphRuntime:
             run.shared_state.setdefault("node_results", {})[next_plan_node_id] = plan_result
         run.metadata["agent_graph_state"] = serialize_agent_graph_state(state)
         return None
+
+    def _emit(self, run: WorkflowRun, event: dict[str, Any]) -> None:
+        emitted = emit_process_event(self.process_sink, event)
+        run.metadata.setdefault("process_events", []).append(emitted)
 
     def _restore_workflow_run(self, payload: dict[str, Any]) -> WorkflowRun:
         return self.state_store.restore_workflow_run(payload)

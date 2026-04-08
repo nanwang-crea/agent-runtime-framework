@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
+from agent_runtime_framework.api.process_trace import build_process_trace_from_run, dedupe_process_trace
 from agent_runtime_framework.api.responses.common_payloads import with_router_trace
 from agent_runtime_framework.api.responses.error_responses import ErrorResponseFactory
 from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
@@ -24,16 +27,20 @@ class ChatService:
     session_responses: SessionResponseFactory
     error_responses: ErrorResponseFactory
 
-    def _runtime_context(self):
-        return self.runtime_state.workflow_runtime_context()
+    def _runtime_context(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None):
+        try:
+            return self.runtime_state.workflow_runtime_context(process_sink=process_sink)
+        except TypeError:
+            return self.runtime_state.workflow_runtime_context()
 
-    def _graph_runtime(self) -> GraphExecutionRuntime:
-        return build_workflow_graph_execution_runtime(context=self._runtime_context())
+    def _graph_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> GraphExecutionRuntime:
+        return build_workflow_graph_execution_runtime(context=self._runtime_context(process_sink=process_sink), process_sink=process_sink)
 
-    def _agent_runtime(self) -> AgentGraphRuntime:
+    def _agent_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> AgentGraphRuntime:
         return AgentGraphRuntime(
-            workflow_runtime=self._graph_runtime(),
-            context=self._runtime_context(),
+            workflow_runtime=self._graph_runtime(process_sink=process_sink),
+            context=self._runtime_context(process_sink=process_sink),
+            process_sink=process_sink,
         )
 
     def _register_pending_run(self, run: Any) -> str | None:
@@ -102,6 +109,14 @@ class ChatService:
             "final_answer": final_answer,
             "runtime": "workflow",
             "execution_trace": with_router_trace(self.runtime_state._last_route_decision, execution_trace),
+            "process_trace": dedupe_process_trace(
+                list(run.metadata.get("process_events") or [])
+                or build_process_trace_from_run(
+                    run,
+                    route_decision=self.runtime_state._last_route_decision,
+                    root_graph=run.metadata.get("root_graph") if isinstance(run.metadata.get("root_graph"), dict) else None,
+                )
+            ),
             "evidence": evidence,
             "approval_request": approval_request,
             "pending_interaction": pending_interaction_bundle,
@@ -203,9 +218,17 @@ class ChatService:
                 path = str(resolved.relative_to(workspace)) if resolved.is_relative_to(workspace) else ref.location
                 remember(MemoryRecord(key=f"focus:{path}", text=f"{path} {summary}".strip(), kind="workspace_focus", metadata={"path": path, "summary": summary}))
 
-    def _run_conversation_branch(self, message: str, *, graph: Any, root_graph: RootGraphPayload | None = None) -> RuntimePayload:
-        runtime = self._graph_runtime()
+    def _run_conversation_branch(
+        self,
+        message: str,
+        *,
+        graph: Any,
+        root_graph: RootGraphPayload | None = None,
+        process_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> RuntimePayload:
+        runtime = self._graph_runtime(process_sink=process_sink)
         run = WorkflowRun(goal=message, graph=graph)
+        run.metadata.setdefault("process_events", [])
         if root_graph is not None:
             run.metadata["root_graph"] = dict(root_graph)
         run.shared_state["goal_envelope"] = build_goal_envelope(
@@ -232,8 +255,9 @@ class ChatService:
         build_runtime: Callable[[], Any] | None = None,
         workflow_payload: Callable[[Any], dict[str, Any]] | None = None,
         remember_run: Callable[[str, Any], None] | None = None,
+        process_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> RuntimePayload:
-        runtime = build_runtime() if build_runtime is not None else self._agent_runtime()
+        runtime = build_runtime() if build_runtime is not None else self._agent_runtime(process_sink=process_sink)
         prior_bundle = self._pending_interaction_bundle()
         prior_run = None
         prior_state = None
@@ -314,6 +338,7 @@ class ChatService:
             clarification_response=(message if prior_run is not None else None),
             clarification_resolution=clarification_resolution,
         )
+        run.metadata.setdefault("process_events", [])
         if root_graph is not None:
             run.metadata["root_graph"] = dict(root_graph)
         self.runtime_state._workflow_store.save(run)
@@ -323,14 +348,14 @@ class ChatService:
         self.runtime_state.record_run(payload, message)
         return payload
 
-    def _root_runtime(self) -> RootGraphRuntime:
+    def _root_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> RootGraphRuntime:
         return RootGraphRuntime(
             analyze_goal_fn=lambda message, context: analyze_goal(message, context=context),
-            context=self._runtime_context(),
+            context=self._runtime_context(process_sink=process_sink),
             mark_route_decision=lambda route, source: setattr(self.runtime_state, "_last_route_decision", {"route": route, "source": source}),
             has_pending_clarification=lambda: self._pending_interaction_bundle() is not None,
-            run_conversation=lambda message, graph, root_graph: self._run_conversation_branch(message, graph=graph, root_graph=root_graph),
-            run_agent=lambda message, goal, root_graph: self._run_agent_branch(message, goal_spec=goal, root_graph=root_graph),
+            run_conversation=lambda message, graph, root_graph: self._run_conversation_branch(message, graph=graph, root_graph=root_graph, process_sink=process_sink),
+            run_agent=lambda message, goal, root_graph: self._run_agent_branch(message, goal_spec=goal, root_graph=root_graph, process_sink=process_sink),
         )
 
     def chat(self, message: str) -> dict[str, Any]:
@@ -343,18 +368,40 @@ class ChatService:
     def stream_chat(self, message: str) -> Iterable[dict[str, Any]]:
         yield {"type": "start", "message": message}
         self.runtime_state.ensure_session()
-        yield {"type": "status", "status": {"phase": "routing", "label": "正在规划下一步动作"}}
-        yield {"type": "status", "status": {"phase": "execution", "label": "正在执行工作流"}}
-        payload = self.chat(message)
-        if payload.get("status") == "error":
-            yield {"type": "error", "error": dict(payload.get("error") or {})}
-            return
-        for step in payload.get("execution_trace", []):
-            yield {"type": "step", "step": step}
-        yield {"type": "memory", "memory": self.session_responses.memory_payload()}
-        final_answer = str(payload.get("final_answer") or "")
-        if not final_answer:
+        event_queue: Queue[dict[str, Any]] = Queue()
+
+        def _process_sink(event: dict[str, Any]) -> None:
+            event_queue.put({"type": "process", "process": dict(event)})
+            label = str(event.get("title") or "").strip()
+            if label:
+                event_queue.put({"type": "status", "status": {"phase": str(event.get("kind") or "execution"), "label": label}})
+
+        def _run_chat() -> None:
+            try:
+                payload = self._root_runtime(process_sink=_process_sink).run(message)
+            except Exception as exc:
+                payload = self.error_responses.error_payload(exc)
+            event_queue.put({"type": "payload", "payload": payload})
+
+        worker = Thread(target=_run_chat, daemon=True)
+        worker.start()
+
+        while True:
+            item = event_queue.get()
+            item_type = str(item.get("type") or "")
+            if item_type in {"process", "status"}:
+                yield item
+                continue
+
+            payload = dict(item.get("payload") or {})
+            if payload.get("status") == "error":
+                yield {"type": "error", "error": dict(payload.get("error") or {})}
+                return
+            for step in payload.get("execution_trace", []):
+                yield {"type": "step", "step": step}
+            yield {"type": "memory", "memory": self.session_responses.memory_payload()}
+            final_answer = str(payload.get("final_answer") or "")
+            if final_answer:
+                yield {"type": "delta", "delta": final_answer}
             yield {"type": "final", "payload": payload}
             return
-        yield {"type": "delta", "delta": final_answer}
-        yield {"type": "final", "payload": payload}

@@ -22,6 +22,7 @@ import type {
   ModelCenterResponse,
   ModelsResponse,
   PlanPayload,
+  ProcessTraceEvent,
   SessionPayload,
 } from "./types";
 import type { RunCardState, RunLogEntry, RunStageSummary, ThreadSummary, ViewId } from "./viewModels";
@@ -263,7 +264,30 @@ function App() {
                   ...run,
                   capabilityName: run.capabilityName === "routing" ? inferCapabilityName(label, run.capabilityName) : run.capabilityName,
                   phaseLabel: label || run.phaseLabel,
-                  entries: appendRunEntry(run.entries, "status", label || "处理中"),
+                }),
+              ),
+            );
+          },
+          onProcess: ({ process }) => {
+            setRunCards((current) =>
+              upsertRunCard(
+                current,
+                {
+                  id: runId,
+                  anchorUserTurnIndex,
+                  capabilityName: process.kind || "assistant",
+                  phaseLabel: process.title || "处理中",
+                  status: process.status === "error" ? "error" : "running",
+                  summary: process.title || "运行中",
+                  error: null,
+                  approvalTokenId: null,
+                },
+                (run) => ({
+                  ...run,
+                  capabilityName: inferCapabilityName(process.node_type || process.kind, run.capabilityName),
+                  phaseLabel: formatProcessHeadline(process),
+                  status: process.status === "error" ? "error" : run.status,
+                  entries: appendProcessEntry(run.entries, process),
                 }),
               ),
             );
@@ -287,7 +311,7 @@ function App() {
                   ...run,
                   capabilityName: inferCapabilityName(step.name, run.capabilityName),
                   phaseLabel: normalizeDetail(step.detail) || step.name || run.phaseLabel,
-                  entries: appendRunEntry(run.entries, step.status === "error" ? "error" : "step", formatStepLabel(step)),
+                  entries: mergeFinalTraceEntries(run.entries, [step]),
                 }),
               ),
             );
@@ -314,7 +338,7 @@ function App() {
                   collapsed: false,
                   error,
                   summary: `${error.code} · ${error.message}`,
-                  entries: appendRunEntry(run.entries, "error", `${error.code} · ${error.message}`),
+                  entries: appendLocalEntry(run.entries, "error", `${error.code} · ${error.message}`),
                 }),
               ),
             );
@@ -371,7 +395,7 @@ function App() {
               suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
             },
             summary: message,
-            entries: appendRunEntry(run.entries, "error", `STREAM_BROKEN · ${message}`),
+            entries: appendLocalEntry(run.entries, "error", `STREAM_BROKEN · ${message}`),
           }),
         ),
       );
@@ -713,15 +737,37 @@ function App() {
   );
 }
 
-function appendRunEntry(entries: RunLogEntry[], kind: RunLogEntry["kind"], text: string): RunLogEntry[] {
+function appendLocalEntry(entries: RunLogEntry[], kind: RunLogEntry["kind"], text: string): RunLogEntry[] {
   if (!text.trim()) {
     return entries;
   }
+  return appendProcessEntry(entries, {
+    id: `${kind}-${entries.length}-${text}`,
+    kind,
+    status: kind === "error" ? "error" : "completed",
+    title: text,
+    detail: null,
+    target: null,
+    node_id: null,
+    node_type: null,
+    metadata: {},
+  });
+}
+
+function appendProcessEntry(entries: RunLogEntry[], process: ProcessTraceEvent): RunLogEntry[] {
+  const entry = toRunLogEntry(process);
   const previous = entries[entries.length - 1];
-  if (previous && previous.kind === kind && previous.text === text) {
+  if (
+    previous &&
+    previous.kind === entry.kind &&
+    previous.status === entry.status &&
+    previous.title === entry.title &&
+    previous.detail === entry.detail &&
+    previous.target === entry.target
+  ) {
     return entries;
   }
-  return [...entries, { id: `${kind}-${entries.length}-${text}`, kind, text }];
+  return [...entries, entry];
 }
 
 function upsertRunCard(
@@ -748,12 +794,13 @@ function finalizeRunCard(
   anchorUserTurnIndex?: number,
 ): RunCardState[] {
   const trace = Array.isArray(payload.execution_trace) ? payload.execution_trace : [];
+  const processTrace = Array.isArray(payload.process_trace) ? payload.process_trace : [];
   const summary = buildRunSummary(payload);
   const error = payload.error || null;
   const existing = runs.find((run) => run.id === runId);
 
   if (!existing) {
-    if (!trace.length && !error) {
+    if (!trace.length && !processTrace.length && !error) {
       return runs;
     }
     return [
@@ -762,10 +809,10 @@ function finalizeRunCard(
         id: runId,
         anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
         approvalTokenId: payload.resume_token_id,
-        capabilityName: inferCapabilityName(trace[trace.length - 1]?.name, "assistant"),
+        capabilityName: inferCapabilityName(processTrace[processTrace.length - 1]?.node_type || trace[trace.length - 1]?.name, "assistant"),
         phaseLabel: summary,
         status: mapPayloadStatus(payload),
-        entries: mergeFinalTraceEntries([], trace),
+        entries: mergeFinalProcessEntries(mergeFinalTraceEntries([], trace), processTrace),
         collapsed: !shouldExpandRunCard(payload),
         summary,
         error,
@@ -779,10 +826,14 @@ function finalizeRunCard(
       : {
           ...run,
           approvalTokenId: payload.resume_token_id,
-          capabilityName: trace.length ? inferCapabilityName(trace[trace.length - 1]?.name, run.capabilityName) : run.capabilityName,
+          capabilityName: processTrace.length
+            ? inferCapabilityName(processTrace[processTrace.length - 1]?.node_type || processTrace[processTrace.length - 1]?.kind, run.capabilityName)
+            : trace.length
+              ? inferCapabilityName(trace[trace.length - 1]?.name, run.capabilityName)
+              : run.capabilityName,
           phaseLabel: summary,
           status: mapPayloadStatus(payload),
-          entries: mergeFinalTraceEntries(run.entries, trace),
+          entries: mergeFinalProcessEntries(mergeFinalTraceEntries(run.entries, trace), processTrace),
           collapsed: !shouldExpandRunCard(payload),
           summary,
           error,
@@ -810,9 +861,16 @@ function mergeFinalTraceEntries(entries: RunLogEntry[], trace: AssistantResponse
   }
   let nextEntries = [...entries];
   for (const step of trace) {
-    nextEntries = appendRunEntry(nextEntries, step.status === "error" ? "error" : "step", formatStepLabel(step));
+    nextEntries = appendLocalEntry(nextEntries, step.status === "error" ? "error" : "status", formatStepLabel(step));
   }
   return nextEntries;
+}
+
+function mergeFinalProcessEntries(entries: RunLogEntry[], trace: AssistantResponse["process_trace"]): RunLogEntry[] {
+  if (trace.length === 0) {
+    return entries;
+  }
+  return trace.reduce((current, event) => appendProcessEntry(current, event), entries);
 }
 
 function inferCapabilityName(source: string | null | undefined, fallback: string): string {
@@ -833,10 +891,14 @@ function formatStepLabel(step: AssistantResponse["execution_trace"][number]): st
 }
 
 function buildRunSummary(payload: AssistantResponse): string {
+  const processTrace = Array.isArray(payload.process_trace) ? payload.process_trace : [];
   const trace = Array.isArray(payload.execution_trace) ? payload.execution_trace : [];
   const lastTrace = trace[trace.length - 1];
   if (payload.status === "error" && payload.error) {
     return `${payload.error.code} · ${payload.error.message}`;
+  }
+  if (processTrace.length) {
+    return formatProcessHeadline(processTrace[processTrace.length - 1]);
   }
   if (lastTrace?.detail) {
     return normalizeDetail(lastTrace.detail);
@@ -897,7 +959,7 @@ function summarizeRunEntries(entries: RunLogEntry[], status: RunCardState["statu
   let error = 0;
 
   for (const entry of entries) {
-    if (entry.kind === "step" || entry.kind === "error") {
+    if (entry.kind !== "status") {
       total += 1;
     }
     if (entry.kind === "error") {
@@ -908,6 +970,26 @@ function summarizeRunEntries(entries: RunLogEntry[], status: RunCardState["statu
   const running = status === "running" && total > error ? 1 : 0;
   const completed = Math.max(total - error - running, 0);
   return { total, completed, running, error };
+}
+
+function toRunLogEntry(process: ProcessTraceEvent): RunLogEntry {
+  return {
+    id: process.id,
+    kind: process.kind,
+    status: process.status,
+    title: process.title || "处理中",
+    detail: normalizeDetail(process.detail),
+    target: normalizeDetail(process.target),
+    metadata: process.metadata || {},
+  };
+}
+
+function formatProcessHeadline(process: ProcessTraceEvent): string {
+  const target = normalizeDetail(process.target);
+  if (target) {
+    return `${process.title} ${target}`;
+  }
+  return process.title || "处理中";
 }
 
 export default App;

@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output
+from agent_runtime_framework.api.process_trace import emit_process_event
+from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
+
+repair_structured_output = repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import chat_json
 from agent_runtime_framework.workflow.memory.views import build_judge_memory_view
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
@@ -198,9 +201,32 @@ def _guardrail_decision(
 
 def _record_repair(graph_state: AgentGraphState):
     def _recorder(event: dict[str, Any]) -> None:
-        graph_state.repair_history.append(dict(event))
+        payload = dict(event)
+        graph_state.repair_history.append(payload)
 
     return _recorder
+
+
+def _record_repair_with_process(graph_state: AgentGraphState, context: Any | None):
+    recorder = _record_repair(graph_state)
+
+    def _wrapped(event: dict[str, Any]) -> None:
+        payload = dict(event)
+        recorder(payload)
+        sink = getattr(context, "process_sink", None) if context is not None else None
+        emit_process_event(
+            sink,
+            {
+                "kind": "plan",
+                "status": "completed" if bool(payload.get("success")) else "started",
+                "title": "内部修复判断结果" if bool(payload.get("success")) else "尝试修复判断结果",
+                "detail": f"{str(payload.get('contract_kind') or 'judge_contract')} · {int(payload.get('attempts_used') or 0)} 次尝试",
+                "node_type": "repair",
+                "metadata": {"repair": True, **payload},
+            },
+        )
+
+    return _wrapped
 
 
 def judge_progress(
@@ -236,10 +262,10 @@ def judge_progress(
             contract_kind="judge_contract",
             required_fields=["status", "reason", "allowed_next_node_types"],
             original_output=model_payload,
-            validation_error=contract_error,
             request_payload=judge_payload,
+            validate=_judge_contract_error,
             extra_instructions="status must be either accept or replan. replan requires allowed_next_node_types.",
-            on_record=_record_repair(graph_state),
+            on_record=_record_repair_with_process(graph_state, context),
         )
         if isinstance(repaired, dict) and _judge_contract_error(repaired) is None:
             return _normalize_model_judge_decision(repaired)

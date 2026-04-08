@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output
+from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.state.models import GoalSpec
 from agent_runtime_framework.workflow.planning.prompts import build_goal_analysis_system_prompt
@@ -35,6 +35,18 @@ def _goal_spec_from_payload(user_input: str, parsed: dict[str, Any]) -> GoalSpec
         requires_verification=bool(parsed.get("requires_verification")),
         metadata=dict(parsed.get("metadata") or {}),
     )
+
+
+def _goal_analysis_error(user_input: str, parsed: Any) -> str | None:
+    if not isinstance(parsed, dict):
+        return "invalid model response"
+    goal = _goal_spec_from_payload(user_input, parsed)
+    if goal is None:
+        return "goal_analysis missing primary_intent"
+    allowed = {"generic", "repository_overview", "file_read", "compound", "target_explainer", "change_and_verify", "dangerous_change"}
+    if goal.primary_intent not in allowed:
+        return f"goal_analysis invalid primary_intent: {goal.primary_intent}"
+    return None
 
 
 def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[GoalSpec | None, str | None]:
@@ -71,11 +83,12 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[G
         parsed = json.loads(extract_json_block(raw_content))
     except Exception:
         parsed = None
-    if isinstance(parsed, dict):
+    validation_error = _goal_analysis_error(user_input, parsed)
+    if validation_error is None and isinstance(parsed, dict):
         goal = _goal_spec_from_payload(user_input, parsed)
         if goal is not None:
             return goal, None
-    repaired = repair_structured_output(
+    repaired = repair_structured_output_until_valid(
         context,
         role="planner",
         contract_kind="goal_analysis",
@@ -87,8 +100,8 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[G
             "requires_verification",
         ],
         original_output=parsed if isinstance(parsed, dict) else raw_content,
-        validation_error="invalid model response",
         request_payload={"user_input": user_input},
+        validate=lambda candidate: _goal_analysis_error(user_input, candidate),
         extra_instructions=(
             "Allowed primary_intent values are generic, repository_overview, file_read, compound, "
             "target_explainer, change_and_verify, dangerous_change."

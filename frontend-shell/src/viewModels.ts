@@ -2,8 +2,12 @@ export type ViewId = "chat" | "settings";
 
 export type RunLogEntry = {
   id: string;
-  kind: "status" | "step" | "warning" | "error";
-  text: string;
+  kind: "plan" | "read" | "search" | "exec" | "edit" | "test" | "reply" | "approval" | "error" | "status";
+  status: "started" | "completed" | "error";
+  title: string;
+  detail: string;
+  target: string;
+  metadata: Record<string, unknown>;
 };
 
 export type RunStageSummary = {

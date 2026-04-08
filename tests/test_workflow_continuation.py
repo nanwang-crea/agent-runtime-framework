@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from agent_runtime_framework.api.services.chat_service import ChatService
 from agent_runtime_framework.api.services.run_service import RunService
+from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
 from agent_runtime_framework.workflow.state.models import GoalEnvelope, InteractionRequest, RUN_STATUS_WAITING_INPUT, WorkflowGraph, WorkflowRun
 from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor
 
@@ -238,3 +239,39 @@ def test_run_service_replay_falls_back_to_chat_when_run_is_missing(monkeypatch):
 
     assert payload["status"] == "completed"
     assert payload["final_answer"] == "hello"
+
+
+def test_resolve_clarification_response_repairs_semantically_invalid_payload(monkeypatch):
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.interaction.clarification_resolution.chat_json",
+        lambda *args, **kwargs: {
+            "preferred_path": "",
+            "confirmed_target": "",
+            "updated_target_hints": [],
+            "should_reask": False,
+            "confidence": 0.8,
+            "reason": "still ambiguous",
+        },
+    )
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.interaction.clarification_resolution.repair_structured_output_until_valid",
+        lambda *args, **kwargs: {
+            "preferred_path": "README.md",
+            "confirmed_target": "README.md",
+            "updated_target_hints": ["README.md"],
+            "should_reask": False,
+            "confidence": 0.92,
+            "reason": "user picked README.md",
+        },
+    )
+
+    resolved = resolve_clarification_response(
+        context=SimpleNamespace(),
+        prior_goal_envelope={"goal": "读 README", "target_hints": ["README.md", "frontend-shell/README.md"]},
+        pending_request={"kind": "clarification"},
+        user_response="就看 README.md",
+        prior_state={"memory_state": {}},
+    )
+
+    assert resolved["confirmed_target"] == "README.md"
+    assert resolved["confirmed"] is True

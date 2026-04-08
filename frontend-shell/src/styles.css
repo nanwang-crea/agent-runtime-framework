@@ -437,7 +437,7 @@ select {
 .settings-view {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   min-height: 0;
   flex: 1;
 }
@@ -453,7 +453,7 @@ select {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   padding: 0 6px 8px 0;
 }
 
@@ -466,7 +466,7 @@ select {
 
 .message-bubble {
   max-width: min(920px, 88%);
-  padding: 8px 0;
+  padding: 4px 0;
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -483,7 +483,7 @@ select {
 }
 
 .message-content {
-  margin-top: 6px;
+  margin-top: 4px;
   line-height: 1.7;
 }
 
@@ -500,11 +500,43 @@ select {
 }
 
 .run-status-row {
-  width: min(880px, 82%);
+  width: min(780px, 74%);
   align-self: flex-start;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  margin: -2px 0 2px;
+}
+
+.run-section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8b877e;
+  cursor: pointer;
+}
+
+.run-section-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(36, 39, 43, 0.1);
+}
+
+.run-section-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #7f7a72;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+.run-section-caret {
+  font-size: 11px;
+  color: #9a968f;
 }
 
 .run-status-header {
@@ -512,8 +544,8 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 0;
+  gap: 8px;
+  padding: 1px 0 0;
   background: transparent;
   text-align: center;
 }
@@ -522,20 +554,20 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   align-items: center;
 }
 
 .run-inline-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   justify-content: center;
 }
 
 .run-inline-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-tertiary);
 }
 
@@ -549,38 +581,115 @@ select {
 .run-status-details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
+}
+
+.run-preview-strip {
+  margin-top: -1px;
 }
 
 .run-preview-item,
 .run-inline-panel {
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--bg-softer);
-  border: 1px solid var(--border-subtle);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 
 .run-preview-item {
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
   color: var(--text-secondary);
+  padding-left: 1px;
+}
+
+.run-preview-icon,
+.run-event-icon {
+  width: 16px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #9a968f;
+  font-size: 11px;
+}
+
+.run-preview-copy,
+.run-event-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.run-preview-copy strong,
+.run-event-copy strong {
+  font-size: 12px;
+  font-weight: 450;
+  color: #4d4942;
+}
+
+.run-preview-copy small {
+  color: #8b877e;
+  font-size: 11px;
 }
 
 .run-status-details {
-  padding-left: 18px;
-  border-left: 1px solid rgba(36, 39, 43, 0.08);
+  padding-left: 8px;
+  margin-left: 6px;
+  margin-top: 2px;
+  border-left: 1px solid rgba(36, 39, 43, 0.06);
 }
 
 .run-event-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 7px;
 }
 
 .run-event-item {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 0 0 4px;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  position: relative;
+}
+
+.run-event-item::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  top: 8px;
+  width: 6px;
+  height: 1px;
+  background: rgba(36, 39, 43, 0.09);
+}
+
+.run-event-item p {
+  margin: 0;
+  color: #8b877e;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.run-preview-item.approval .run-preview-icon,
+.run-event-item.approval .run-event-icon {
+  color: #9a7a39;
+}
+
+.run-preview-item.repair .run-preview-icon,
+.run-event-item.repair .run-event-icon {
+  color: #6f7d90;
+}
+
+.run-preview-item.error .run-preview-icon,
+.run-event-item.error .run-event-icon {
+  color: #b1654b;
 }
 
 .approval-actions,

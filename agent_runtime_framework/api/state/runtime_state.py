@@ -37,11 +37,12 @@ class ApiRuntimeState:
             self.context.session = session
         return session
 
-    def workflow_runtime_context(self) -> WorkflowRuntimeContext:
+    def workflow_runtime_context(self, *, process_sink: Any = None) -> WorkflowRuntimeContext:
         return build_runtime_context(
             application_context=self.context.application_context,
             workspace_context=self.context,
             workspace_root=str(self.workspace),
+            process_sink=process_sink,
         )
 
     def record_run(self, payload: dict[str, Any], prompt: str) -> None:

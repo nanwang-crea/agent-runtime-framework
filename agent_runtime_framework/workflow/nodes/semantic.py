@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm.access import get_application_context
@@ -125,6 +126,7 @@ def _shared_memory_state(run: WorkflowRun) -> dict[str, Any]:
 
 def _repair_recorder(run: WorkflowRun):
     state = run.shared_state.get("agent_graph_state_ref")
+    sink = getattr(run.shared_state.get("runtime_context") or {}, "process_sink", None)
 
     def _record(event: dict[str, Any]) -> None:
         event_payload = dict(event)
@@ -133,6 +135,17 @@ def _repair_recorder(run: WorkflowRun):
             run.shared_state["repair_history"] = list(state.repair_history)
         else:
             run.shared_state.setdefault("repair_history", []).append(event_payload)
+        emit_process_event(
+            sink,
+            {
+                "kind": "plan",
+                "status": "completed" if bool(event_payload.get("success")) else "started",
+                "title": "内部修复语义规划" if bool(event_payload.get("success")) else "尝试修复语义规划",
+                "detail": f"{str(event_payload.get('contract_kind') or 'semantic_plan')} · {int(event_payload.get('attempts_used') or 0)} 次尝试",
+                "node_type": "repair",
+                "metadata": {"repair": True, **event_payload},
+            },
+        )
 
     return _record
 

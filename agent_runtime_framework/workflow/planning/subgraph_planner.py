@@ -4,8 +4,9 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
+from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output, repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.memory.views import build_planner_memory_view
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
@@ -35,6 +36,10 @@ _MAX_FAILURE_HISTORY = 2
 _MAX_ITERATION_SUMMARIES = 2
 _MAX_ATTEMPTED_STRATEGIES = 4
 _SEMANTIC_FOUNDATION_ORDER = ("interpret_target", "plan_search", "plan_read")
+_JUDGE_ROUTE_TYPE_ALIASES = {
+    "plan_read": {"chunked_file_read"},
+    "verification": {"verification_step"},
+}
 
 
 def _normalize_node_inputs(value: Any) -> dict[str, Any]:
@@ -61,8 +66,8 @@ def _judge_feedback_payload(decision: Any | None) -> dict[str, Any] | None:
 
 def _enforce_judge_route_contract(nodes: list[PlannedNode], decision: Any | None) -> None:
     payload = _judge_feedback_payload(decision) or {}
-    allowed = {str(item).strip() for item in payload.get("allowed_next_node_types", []) or [] if str(item).strip()}
-    blocked = {str(item).strip() for item in payload.get("blocked_next_node_types", []) or [] if str(item).strip()}
+    allowed = _expand_route_node_types(payload.get("allowed_next_node_types", []) or [])
+    blocked = _expand_route_node_types(payload.get("blocked_next_node_types", []) or [])
     if not allowed and not blocked:
         return
     semantic_foundation = set(_SEMANTIC_FOUNDATION_ORDER)
@@ -75,6 +80,18 @@ def _enforce_judge_route_contract(nodes: list[PlannedNode], decision: Any | None
         forbidden = [node_type for node_type in node_types if node_type in blocked]
         if forbidden:
             raise ValueError(f"planned node types violate judge blocked_next_node_types: {', '.join(forbidden)}")
+
+
+def _expand_route_node_types(values: list[Any]) -> set[str]:
+    expanded: set[str] = set()
+    queue = [str(item).strip() for item in values if str(item).strip()]
+    while queue:
+        node_type = queue.pop(0)
+        if node_type in expanded:
+            continue
+        expanded.add(node_type)
+        queue.extend(sorted(_JUDGE_ROUTE_TYPE_ALIASES.get(node_type, set()) - expanded))
+    return expanded
 
 
 def _has_semantic_value(memory: dict[str, Any], key: str, required_field: str | None = None) -> bool:
@@ -182,9 +199,22 @@ def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
     return summary
 
 
-def _repair_recorder(graph_state: AgentGraphState):
+def _repair_recorder(graph_state: AgentGraphState, context: Any | None = None):
     def _record(event: dict[str, Any]) -> None:
-        graph_state.repair_history.append(dict(event))
+        payload = dict(event)
+        graph_state.repair_history.append(payload)
+        sink = getattr(context, "process_sink", None) if context is not None else None
+        emit_process_event(
+            sink,
+            {
+                "kind": "plan",
+                "status": "completed" if bool(payload.get("success")) else "started",
+                "title": "内部修复规划输出" if bool(payload.get("success")) else "尝试修复规划输出",
+                "detail": f"{str(payload.get('contract_kind') or 'subgraph_plan')} · {int(payload.get('attempts_used') or 0)} 次尝试",
+                "node_type": "repair",
+                "metadata": {"repair": True, **payload},
+            },
+        )
 
     return _record
 
@@ -392,7 +422,7 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
         validation_error=parse_error or "invalid model response",
         request_payload=request_payload,
         extra_instructions="nodes must be a non-empty array of planned workflow nodes.",
-        on_record=_repair_recorder(graph_state),
+        on_record=_repair_recorder(graph_state, context),
     )
     if isinstance(repaired, dict):
         return repaired
@@ -438,6 +468,25 @@ def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_
     return nodes, edges
 
 
+def _validate_subgraph_plan_payload(
+    payload: Any,
+    *,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    iteration: int,
+    max_dynamic_nodes: int,
+) -> str | None:
+    if not isinstance(payload, dict):
+        return "model planner returned invalid json"
+    try:
+        nodes, _ = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
+        nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
+        _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
+    except (ValueError, TypeError) as exc:
+        return str(exc)
+    return None
+
+
 def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> PlannedSubgraph:
     if _should_use_constrained_read_path(goal_envelope, graph_state):
         return _constrained_read_subgraph(goal_envelope, graph_state)
@@ -446,6 +495,39 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
         raise ValueError("model planner unavailable")
     max_dynamic_nodes = _max_dynamic_nodes(goal_envelope, context)
     iteration = graph_state.current_iteration + 1
+    request_payload = _planner_context_payload(goal_envelope, graph_state)
+    validation_error = _validate_subgraph_plan_payload(
+        payload,
+        goal_envelope=goal_envelope,
+        graph_state=graph_state,
+        iteration=iteration,
+        max_dynamic_nodes=max_dynamic_nodes,
+    )
+    if validation_error is not None:
+        repaired = repair_structured_output_until_valid(
+            context,
+            role="planner",
+            contract_kind="subgraph_plan",
+            required_fields=["planner_summary", "nodes"],
+            original_output=payload,
+            request_payload=request_payload,
+            validate=lambda candidate: _validate_subgraph_plan_payload(
+                candidate,
+                goal_envelope=goal_envelope,
+                graph_state=graph_state,
+                iteration=iteration,
+                max_dynamic_nodes=max_dynamic_nodes,
+            ),
+            extra_instructions=(
+                "Return only node types permitted by latest_judge_decision. "
+                "Do not emit blocked node types. "
+                "If verification is allowed, verification_step is also acceptable. "
+                "If plan_read is allowed, chunked_file_read is also acceptable."
+            ),
+            on_record=_repair_recorder(graph_state, context),
+        )
+        if isinstance(repaired, dict):
+            payload = repaired
     nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
     nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
     _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))

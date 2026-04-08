@@ -5,6 +5,7 @@ import type {
   ExecutionTraceStep,
   MemoryPayload,
   ModelCenterResponse,
+  ProcessTraceEvent,
   SessionResponse,
 } from "./types";
 
@@ -75,6 +76,7 @@ function normalizeAssistantResponse(payload: unknown): AssistantResponse {
     status: typeof data.status === "string" ? data.status : "completed",
     final_answer: typeof data.final_answer === "string" ? data.final_answer : "",
     execution_trace: Array.isArray(data.execution_trace) ? (data.execution_trace as ExecutionTraceStep[]) : [],
+    process_trace: Array.isArray(data.process_trace) ? (data.process_trace as ProcessTraceEvent[]) : [],
     approval_request:
       data.approval_request && typeof data.approval_request === "object"
         ? (data.approval_request as AssistantResponse["approval_request"])
@@ -126,6 +128,7 @@ export async function sendMessageStream(
   handlers: {
     onStart?: (event: { message: string }) => void;
     onStatus?: (event: { phase: string; label: string }) => void;
+    onProcess?: (event: { process: ProcessTraceEvent }) => void;
     onDelta?: (event: { delta: string }) => void;
     onStep?: (event: { step: ExecutionTraceStep }) => void;
     onMemory?: (event: { memory: MemoryPayload }) => void;
@@ -177,6 +180,8 @@ export async function sendMessageStream(
           phase: String(payload.status?.phase || ""),
           label: String(payload.status?.label || ""),
         });
+      } else if (eventName === "process") {
+        handlers.onProcess?.({ process: payload.process as ProcessTraceEvent });
       } else if (eventName === "step") {
         handlers.onStep?.({ step: payload.step as ExecutionTraceStep });
       } else if (eventName === "delta") {

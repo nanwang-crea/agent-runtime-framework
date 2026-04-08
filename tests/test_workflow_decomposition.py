@@ -105,7 +105,7 @@ def test_analyze_goal_repairs_invalid_model_output(monkeypatch):
     context = _workflow_context("not json")
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output",
+        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output_until_valid",
         lambda *args, **kwargs: {
             "primary_intent": "file_read",
             "requires_target_interpretation": True,
@@ -119,6 +119,25 @@ def test_analyze_goal_repairs_invalid_model_output(monkeypatch):
 
     assert goal.primary_intent == "file_read"
     assert goal.requires_target_interpretation is True
+
+
+def test_analyze_goal_repairs_semantically_invalid_model_output(monkeypatch):
+    context = _workflow_context('{"primary_intent":"not_real","requires_target_interpretation":true,"requires_search":false,"requires_read":true,"requires_verification":false}')
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output_until_valid",
+        lambda *args, **kwargs: {
+            "primary_intent": "file_read",
+            "requires_target_interpretation": True,
+            "requires_search": False,
+            "requires_read": True,
+            "requires_verification": False,
+        },
+    )
+
+    goal = analyze_goal("随便一句话", context=context)
+
+    assert goal.primary_intent == "file_read"
 
 
 def test_decompose_goal_prefers_model_output_when_available():
@@ -145,6 +164,36 @@ def test_decompose_goal_prefers_model_output_when_available():
         SubTaskSpec(task_id="content_search", task_profile="content_search", target="README.md"),
         SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md", depends_on=["content_search"]),
         SubTaskSpec(task_id="evidence_synthesis", task_profile="evidence_synthesis", depends_on=["workspace_discovery", "content_search", "chunked_file_read"]),
+    ]
+
+
+def test_decompose_goal_repairs_semantically_invalid_subtasks(monkeypatch):
+    context = _workflow_context('{"subtasks":[{"task_id":"","task_profile":""}]}')
+    goal = GoalSpec(
+        original_goal="demo",
+        primary_intent="compound",
+        requires_target_interpretation=True,
+        requires_search=True,
+        requires_read=True,
+        requires_verification=False,
+        metadata={"target_hint": "README.md"},
+    )
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.planning.decomposition.repair_structured_output_until_valid",
+        lambda *args, **kwargs: {
+            "subtasks": [
+                {"task_id": "workspace_discovery", "task_profile": "workspace_discovery", "target": "."},
+                {"task_id": "chunked_file_read", "task_profile": "chunked_file_read", "target": "README.md"},
+            ]
+        },
+    )
+
+    subtasks = decompose_goal(goal, context=context)
+
+    assert subtasks == [
+        SubTaskSpec(task_id="workspace_discovery", task_profile="workspace_discovery", target="."),
+        SubTaskSpec(task_id="chunked_file_read", task_profile="chunked_file_read", target="README.md"),
     ]
 
 
@@ -295,6 +344,81 @@ def test_plan_next_subgraph_rejects_nodes_blocked_by_judge_contract():
 
     with pytest.raises(ValueError, match="blocked_next_node_types"):
         plan_next_subgraph(envelope, state, context=context)
+
+
+def test_plan_next_subgraph_accepts_execution_aliases_permitted_by_judge_contract():
+    context = _workflow_context(
+        '{"planner_summary":"read and verify","nodes":['
+        '{"node_id":"read","node_type":"chunked_file_read","reason":"read target","inputs":{},"depends_on":[],"success_criteria":["collect grounded evidence"]},'
+        '{"node_id":"verify","node_type":"verification_step","reason":"verify result","inputs":{},"depends_on":["read"],"success_criteria":["produce verification result"]}'
+        ']}'
+    )
+    envelope = SimpleNamespace(
+        goal="检查 README",
+        normalized_goal="检查 README",
+        intent="change_and_verify",
+        target_hints=["README.md"],
+        success_criteria=["read target", "verify result"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-judge-aliases", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="replan",
+            reason="Need read and verification.",
+            allowed_next_node_types=["plan_read", "verification"],
+            blocked_next_node_types=["final_response"],
+        )
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert "chunked_file_read" in [node.node_type for node in subgraph.nodes]
+    assert "verification_step" in [node.node_type for node in subgraph.nodes]
+
+
+def test_plan_next_subgraph_repairs_semantic_contract_violations(monkeypatch):
+    context = _workflow_context(
+        '{"planner_summary":"invalid finalizes","nodes":[{"node_id":"finalize","node_type":"final_response","reason":"answer immediately","inputs":{},"depends_on":[],"success_criteria":["deliver final answer"]}]}'
+    )
+    envelope = SimpleNamespace(
+        goal="解释 README",
+        normalized_goal="解释 README",
+        intent="file_read",
+        target_hints=["README.md"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-semantic-repair", goal_envelope=envelope)
+    state.judge_history.append(
+        JudgeDecision(
+            status="replan",
+            reason="Need grounded evidence before answering.",
+            allowed_next_node_types=["plan_read"],
+            blocked_next_node_types=["final_response"],
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.planning.subgraph_planner.repair_structured_output_until_valid",
+        lambda *args, **kwargs: {
+            "planner_summary": "repair to read path",
+            "nodes": [
+                {
+                    "node_id": "read",
+                    "node_type": "chunked_file_read",
+                    "reason": "read target",
+                    "inputs": {},
+                    "depends_on": [],
+                    "success_criteria": ["collect grounded evidence"],
+                }
+            ],
+        },
+    )
+
+    subgraph = plan_next_subgraph(envelope, state, context=context)
+
+    assert [node.node_type for node in subgraph.nodes][-1] == "chunked_file_read"
 
 
 def test_plan_next_subgraph_prepends_semantic_foundation_before_search():
