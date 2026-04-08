@@ -77,10 +77,7 @@ class ChatService:
         current = getattr(self.runtime_state, "_pending_workflow_interaction", None)
         if current is not None:
             return dict(current)
-        legacy = getattr(self.runtime_state, "_pending_workflow_clarification", None)
-        if legacy is None:
-            return None
-        return dict(legacy)
+        return None
 
     def _assistant_text_for_run(self, run: WorkflowRun) -> str:
         pending_interaction = self._interaction_payload(getattr(run, "pending_interaction", None)) or {}
@@ -96,14 +93,8 @@ class ChatService:
         pending_interaction = self._interaction_payload(getattr(run, "pending_interaction", None))
         pending_interaction_bundle = ({**dict(pending_interaction or {}), "run_id": run.run_id} if pending_interaction is not None and run.status == RUN_STATUS_WAITING_INPUT else None)
         setattr(self.runtime_state, "_pending_workflow_interaction", pending_interaction_bundle)
-        if pending_interaction_bundle is not None and str(pending_interaction_bundle.get("kind") or "") == "clarification":
-            setattr(self.runtime_state, "_pending_workflow_clarification", pending_interaction_bundle)
-        else:
-            setattr(self.runtime_state, "_pending_workflow_clarification", None)
         final_answer = str(run.final_output or (pending_interaction or {}).get("prompt") or (approval_request or {}).get("reason") or "")
         evidence = self._workflow_evidence_payload(run)
-        graph_state = dict(run.metadata.get("agent_graph_state") or {})
-        judge_history = list(graph_state.get("judge_history") or [])
         return {
             "status": run.status,
             "run_id": run.run_id,
@@ -117,18 +108,9 @@ class ChatService:
             "resume_token_id": resume_token_id,
             "session": self.session_responses.session_payload(),
             "plan_history": self.session_responses.plan_history_payload(),
-            "run_history": self.session_responses.run_history_payload(),
             "memory": self.session_responses.memory_payload(),
             "context": self.session_responses.context_payload(),
             "workspace": str(self.runtime_state.workspace),
-            "judge": judge_history[-1] if judge_history else None,
-            "planned_subgraphs": list(graph_state.get("planned_subgraphs") or []),
-            "graph_state_summary": {
-                "current_iteration": graph_state.get("current_iteration", 0),
-                "appended_node_ids": list(graph_state.get("appended_node_ids") or []),
-            },
-            "append_history": list(run.graph.metadata.get("append_history") or run.metadata.get("append_history") or []),
-            "root_graph": dict(run.metadata.get("root_graph") or {}),
         }
 
     def _workflow_approval_request(self, run: Any) -> dict[str, Any] | None:
@@ -339,7 +321,6 @@ class ChatService:
         payload_builder = workflow_payload or (lambda workflow_run: self._workflow_payload(workflow_run, resume_token_id=self._register_pending_run(workflow_run)))
         payload = payload_builder(run)
         self.runtime_state.record_run(payload, message)
-        payload["run_history"] = self.session_responses.run_history_payload()
         return payload
 
     def _root_runtime(self) -> RootGraphRuntime:

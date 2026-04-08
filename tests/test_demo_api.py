@@ -11,16 +11,15 @@ def _stub_app():
         workspace=".",
         session_payload=lambda: {"session_id": "s", "turns": []},
         plan_history_payload=lambda: [],
-        run_history_payload=lambda: [],
         memory_payload=lambda: {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-        context_payload=lambda: {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+        context_payload=lambda: {"active_workspace": ".", "available_workspaces": ["."]},
         model_center=SimpleNamespace(payload=lambda: {"config": {}, "runtime": {}, "runtime_checks": {}}, update=lambda payload: {"updated": payload}, run_action=lambda action, payload: {"action": action, "payload": payload}),
-        chat=lambda message: {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."},
+        chat=lambda message: {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."]}, "workspace": "."},
         stream_chat=lambda message: iter([
             {"type": "start", "message": message},
-            {"type": "final", "payload": {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}}, "workspace": "."}},
+            {"type": "final", "payload": {"status": "completed", "final_answer": message, "execution_trace": [], "approval_request": None, "resume_token_id": None, "session": {"session_id": "s", "turns": []}, "plan_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": ".", "available_workspaces": ["."]}, "workspace": "."}},
         ]),
-        switch_context=lambda **kwargs: {"workspace": kwargs.get("workspace") or ".", "session": {"session_id": "s", "turns": []}, "plan_history": [], "run_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}}},
+        switch_context=lambda **kwargs: {"workspace": kwargs.get("workspace") or ".", "session": {"session_id": "s", "turns": []}, "plan_history": [], "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None}, "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."]}},
     )
 
 
@@ -31,9 +30,8 @@ def _stub_services():
                 "workspace": ".",
                 "session": {"session_id": "s", "turns": []},
                 "plan_history": [],
-                "run_history": [],
                 "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-                "context": {"active_workspace": ".", "available_workspaces": ["."], "sandbox": {}},
+                "context": {"active_workspace": ".", "available_workspaces": ["."]},
             }
         ),
         chat=SimpleNamespace(
@@ -48,9 +46,8 @@ def _stub_services():
                 "workspace": kwargs.get("workspace") or ".",
                 "session": {"session_id": "s", "turns": []},
                 "plan_history": [],
-                "run_history": [],
                 "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}},
+                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."]},
             }
         ),
         runs=SimpleNamespace(
@@ -81,9 +78,8 @@ def test_create_demo_api_exposes_core_routes():
                 "workspace": kwargs.get("workspace") or ".",
                 "session": {"session_id": "s", "turns": []},
                 "plan_history": [],
-                "run_history": [],
                 "memory": {"focused_resource": None, "recent_resources": [], "last_summary": None, "active_capability": None},
-                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."], "sandbox": {}},
+                "context": {"active_workspace": kwargs.get("workspace") or ".", "available_workspaces": ["."]},
             }
 
         services.context = SimpleNamespace(switch_context=_switch_context)

@@ -1433,6 +1433,37 @@ def test_judge_progress_repairs_invalid_model_contract(monkeypatch):
     assert "plan_read" in decision.allowed_next_node_types
 
 
+def test_judge_progress_tolerates_non_mapping_optional_sections(monkeypatch):
+    from agent_runtime_framework.workflow.planning.judge import judge_progress
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.planning.judge.chat_json",
+        lambda *args, **kwargs: {
+            "status": "replan",
+            "reason": "Need grounded evidence first.",
+            "coverage_report": ["candidate_only"],
+            "replan_hint": "read the target file",
+            "diagnosis": ["grounded_evidence_missing"],
+            "strategy_guidance": "gather_grounded_evidence",
+            "allowed_next_node_types": ["plan_read"],
+        },
+    )
+
+    goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
+    decision = judge_progress(
+        goal,
+        normalize_aggregated_workflow_payload({"summaries": ["candidate only"]}),
+        new_agent_graph_state(run_id="judge-non-mapping-1", goal_envelope=goal),
+    )
+
+    assert decision.status == "replan"
+    assert decision.coverage_report == {}
+    assert decision.replan_hint == {}
+    assert decision.diagnosis == {}
+    assert decision.strategy_guidance == {}
+    assert decision.allowed_next_node_types == ["plan_read"]
+
+
 def test_judge_progress_uses_model_replan_for_thin_payload(monkeypatch):
     from agent_runtime_framework.workflow.planning.judge import judge_progress
 

@@ -14,7 +14,6 @@ class SessionState:
     session_id: str
     turns: list[SessionTurn] = field(default_factory=list)
     focused_capability: str | None = None
-    active_persona: str | None = None
 
     def add_turn(self, role: str, content: str) -> None:
         self.turns.append(SessionTurn(role=role, content=content))

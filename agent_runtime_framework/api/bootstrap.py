@@ -78,12 +78,10 @@ def create_api_runtime_state(workspace: str | Path, *, seed_config: dict[str, An
         model_router=model_router,
         model_center=model_center,
         _pending_tokens={},
-        _run_history=[],
         _task_history=[],
         _run_inputs={},
         _last_route_decision=None,
         _pending_workflow_interaction=None,
-        _pending_workflow_clarification=None,
         _available_workspaces=[str(workspace_path)],
         _workflow_store=WorkflowPersistenceStore(workspace_path / ".arf" / "workflow-runs.json"),
     )

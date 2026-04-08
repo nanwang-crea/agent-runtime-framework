@@ -88,7 +88,6 @@ def error_payload(
     route_decision: dict[str, str] | None,
     session_payload: dict[str, Any],
     plan_history: list[dict[str, Any]],
-    run_history: list[dict[str, Any]],
     memory_payload: dict[str, Any],
     context_payload: dict[str, Any],
 ) -> tuple[AppError, dict[str, Any]]:
@@ -108,7 +107,6 @@ def error_payload(
         "resume_token_id": None,
         "session": session_payload,
         "plan_history": plan_history,
-        "run_history": run_history,
         "memory": memory_payload,
         "context": context_payload,
         "error": error.as_dict(),

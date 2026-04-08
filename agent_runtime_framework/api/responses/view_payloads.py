@@ -8,15 +8,11 @@ from agent_runtime_framework.api.responses.common_payloads import compact_text, 
 def build_context_payload(
     *,
     workspace: str,
-    active_persona: str,
     available_workspaces: list[str],
-    sandbox_payload: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "active_persona": active_persona,
         "active_workspace": workspace,
         "available_workspaces": list(dict.fromkeys([workspace, *available_workspaces])),
-        "sandbox": sandbox_payload,
     }
 
 
@@ -57,7 +53,3 @@ def build_plan_history_payload(tasks: list[Any], *, limit: int = 40) -> list[dic
         }
         for task in reversed(tasks[:limit])
     ]
-
-
-def build_run_history_payload(run_history: list[dict[str, Any]], *, limit: int = 40) -> list[dict[str, Any]]:
-    return list(run_history[:limit])

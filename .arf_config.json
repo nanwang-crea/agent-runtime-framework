@@ -5,11 +5,11 @@
       "type": "openai_compatible",
       "enabled": true,
       "connection": {
-        "base_url": "http://localhost:8317/v1",
-        "wire_api": "chat_completions"
+        "base_url": "https://wbz-api.939593.xyz/v1",
+        "wire_api": "responses"
       },
       "credentials": {
-        "api_key": "your-api-key-1"
+        "api_key": "sk-f7c071387c4e5c7b2d10543118b3cbb7916fbde30d905ce7b889a6dc4d3cc2cb"
       },
       "catalog": {
         "mode": "static",

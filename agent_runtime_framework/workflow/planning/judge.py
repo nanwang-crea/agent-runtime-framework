@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output
@@ -104,6 +105,12 @@ def _judge_context_payload(goal_envelope: GoalEnvelope, payload: dict[str, Any],
     }
 
 
+def _normalize_optional_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
 def _normalize_model_judge_decision(raw: dict[str, Any]) -> JudgeDecision:
     status = str(raw.get("status") or "replan").strip().lower()
     if status not in {"accept", "accepted", "replan"}:
@@ -113,10 +120,10 @@ def _normalize_model_judge_decision(raw: dict[str, Any]) -> JudgeDecision:
         status=normalized_status,
         reason=str(raw.get("reason") or ""),
         missing_evidence=[str(item) for item in raw.get("missing_evidence", []) or [] if str(item).strip()],
-        coverage_report=dict(raw.get("coverage_report") or {}),
-        replan_hint=dict(raw.get("replan_hint") or {}),
-        diagnosis=dict(raw.get("diagnosis") or {}),
-        strategy_guidance=dict(raw.get("strategy_guidance") or {}),
+        coverage_report=_normalize_optional_mapping(raw.get("coverage_report")),
+        replan_hint=_normalize_optional_mapping(raw.get("replan_hint")),
+        diagnosis=_normalize_optional_mapping(raw.get("diagnosis")),
+        strategy_guidance=_normalize_optional_mapping(raw.get("strategy_guidance")),
         allowed_next_node_types=[str(item) for item in raw.get("allowed_next_node_types", []) or [] if str(item).strip()],
         blocked_next_node_types=[str(item) for item in raw.get("blocked_next_node_types", []) or [] if str(item).strip()],
         must_cover=[str(item) for item in raw.get("must_cover", []) or [] if str(item).strip()],

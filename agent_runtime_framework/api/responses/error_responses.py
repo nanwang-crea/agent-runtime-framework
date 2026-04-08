@@ -23,7 +23,6 @@ class ErrorResponseFactory:
             route_decision=self.runtime_state._last_route_decision,
             session_payload=self.session_responses.session_payload(),
             plan_history=self.session_responses.plan_history_payload(),
-            run_history=self.session_responses.run_history_payload(),
             memory_payload=self.session_responses.memory_payload(),
             context_payload=self.session_responses.context_payload(),
         )

@@ -10,6 +10,9 @@ def test_frontend_shell_scaffold_contains_expected_files():
     assert (root / "package.json").exists()
     assert (root / "src" / "App.tsx").exists()
     assert (root / "src" / "api.ts").exists()
+    assert (root / "src" / "components" / "layout" / "Sidebar.tsx").exists()
+    assert (root / "src" / "components" / "chat" / "ConversationView.tsx").exists()
+    assert (root / "src" / "components" / "settings" / "SettingsView.tsx").exists()
     assert (root / "electron" / "main.cjs").exists()
     assert (root / "electron" / "preload.cjs").exists()
 
@@ -40,7 +43,7 @@ def test_frontend_chat_streaming_keeps_run_card_separate_from_answer_body():
     assert "anchorUserTurnIndex" in app_tsx
     assert "runsByAnchor[userIndex]" in app_tsx
     assert "upsertRunCard" in app_tsx
-    assert 'phaseLabel: "请求已发送"' not in app_tsx
+    assert "ConversationView" in app_tsx
 
 
 def test_frontend_shell_mentions_agent_and_workspace_switching():
@@ -52,12 +55,15 @@ def test_frontend_shell_mentions_agent_and_workspace_switching():
     assert "/api/context" in api_ts
 
 
-def test_frontend_shell_keeps_run_grouping_without_inspector_panel():
+def test_frontend_shell_uses_codex_like_two_column_shell():
     app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
+    styles_css = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "styles.css").read_text(encoding="utf-8")
 
     assert "runsByAnchor" in app_tsx
-    assert "runCards.filter" not in app_tsx
-    assert "inspector-panel" not in app_tsx
+    assert "Sidebar" in app_tsx
+    assert "MainHeader" in app_tsx
+    assert ".codex-shell" in styles_css
+    assert "ContextPanel" not in app_tsx
 
 
 def test_frontend_shell_normalizes_non_string_trace_details():
@@ -65,13 +71,13 @@ def test_frontend_shell_normalizes_non_string_trace_details():
 
     assert "normalizeDetail(" in app_tsx
     assert "return normalizeDetail(lastTrace.detail);" in app_tsx
-    assert "normalizeDetail(run.collapsed ? run.summary : run.phaseLabel)" in app_tsx
+    assert "return detail ? `${step.name} · ${step.status} · ${detail}`" in app_tsx
 
 
 def test_frontend_shell_keeps_pending_user_turn_until_final_payload():
     app_tsx = (Path(__file__).resolve().parents[1] / "frontend-shell" / "src" / "App.tsx").read_text(encoding="utf-8")
 
-    assert "const finalPayload = await sendMessageStream(trimmed, {" in app_tsx
+    assert "const finalPayload = await sendMessageStream(" in app_tsx
     assert "if (finalPayload !== null) {" in app_tsx
     assert 'setPendingUserMessage("");' in app_tsx
 

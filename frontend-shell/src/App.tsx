@@ -1,4 +1,4 @@
-import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiRequestError,
   fetchModelCenter,
@@ -10,7 +10,10 @@ import {
   updateContext,
   updateModelCenter,
 } from "./api";
-import { MarkdownContent } from "./components/MarkdownContent";
+import { ConversationView } from "./components/chat/ConversationView";
+import { MainHeader } from "./components/layout/MainHeader";
+import { Sidebar } from "./components/layout/Sidebar";
+import { SettingsView } from "./components/settings/SettingsView";
 import type {
   AssistantError,
   AssistantResponse,
@@ -20,53 +23,12 @@ import type {
   ModelCenterResponse,
   ModelsResponse,
   PlanPayload,
-  PlanStep,
   SessionPayload,
 } from "./types";
+import type { RunCardState, RunLogEntry, RunStageSummary, ThreadSummary, ViewId } from "./viewModels";
 
-const examples = ["你好", "列出当前目录", "读取 README.md", "总结 README.md"];
 const routedRoles = ["default", "conversation", "capability_selector", "planner", "interpreter", "resolver", "executor", "composer"];
-const views = [
-  { id: "chat", label: "Chat" },
-  { id: "history", label: "History" },
-  { id: "settings", label: "Settings" },
-] as const;
 const defaultWireApi = "chat_completions";
-
-type ViewId = (typeof views)[number]["id"];
-
-type RunLogEntry = {
-  id: string;
-  kind: "status" | "step" | "warning" | "error";
-  text: string;
-};
-
-type RunStageSummary = {
-  total: number;
-  completed: number;
-  running: number;
-  error: number;
-};
-
-type ProcessDetailState = {
-  streamingReply: string;
-  pendingTokenId: string | null;
-  approvalText: string;
-  currentStatus: string;
-};
-
-type RunCardState = {
-  id: string;
-  anchorUserTurnIndex: number;
-  approvalTokenId: string | null;
-  capabilityName: string;
-  phaseLabel: string;
-  status: "running" | "completed" | "error";
-  entries: RunLogEntry[];
-  collapsed: boolean;
-  summary: string;
-  error: AssistantError | null;
-};
 
 function App() {
   const [workspace, setWorkspace] = useState("");
@@ -75,7 +37,7 @@ function App() {
     available_workspaces: [],
   });
   const [session, setSession] = useState<SessionPayload>({ session_id: null, turns: [] });
-  const [plans, setPlans] = useState<PlanPayload[]>([]);
+  const [, setPlans] = useState<PlanPayload[]>([]);
   const [memory, setMemory] = useState<MemoryPayload>({
     focused_resource: null,
     recent_resources: [],
@@ -95,7 +57,7 @@ function App() {
   const [showJumpToLatestRun, setShowJumpToLatestRun] = useState(false);
   const [instanceDrafts, setInstanceDrafts] = useState<Record<string, { apiKey: string; baseUrl: string; wireApi: string }>>({});
   const [globalModelDraft, setGlobalModelDraft] = useState<{ instance: string; model: string }>({ instance: "", model: "" });
-  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const runCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -188,17 +150,15 @@ function App() {
     if (!modelCenter) {
       return { path: "", instances: [], routes: {} };
     }
-    const instances = Object.entries(modelCenter.config.instances || {}).map(([instanceId, instanceCfg]) => {
-      return {
-        instance: instanceId,
-        type: instanceCfg.type,
-        enabled: Boolean(instanceCfg.enabled),
-        api_key_set: Boolean(instanceCfg.api_key_set),
-        api_key_preview: String(instanceCfg.api_key_preview || ""),
-        base_url: String((instanceCfg.connection || {})["base_url"] || ""),
-        wire_api: String((instanceCfg.connection || {})["wire_api"] || defaultWireApi),
-      };
-    });
+    const instances = Object.entries(modelCenter.config.instances || {}).map(([instanceId, instanceCfg]) => ({
+      instance: instanceId,
+      type: instanceCfg.type,
+      enabled: Boolean(instanceCfg.enabled),
+      api_key_set: Boolean(instanceCfg.api_key_set),
+      api_key_preview: String(instanceCfg.api_key_preview || ""),
+      base_url: String((instanceCfg.connection || {})["base_url"] || ""),
+      wire_api: String((instanceCfg.connection || {})["wire_api"] || defaultWireApi),
+    }));
     const routes = Object.fromEntries(
       Object.entries(modelCenter.config.routes || {}).map(([role, route]) => [
         role,
@@ -226,9 +186,7 @@ function App() {
         : "",
     );
     if (runId) {
-      setRunCards((current) =>
-        finalizeRunCard(current, runId, payload, anchorUserTurnIndex),
-      );
+      setRunCards((current) => finalizeRunCard(current, runId, payload, anchorUserTurnIndex));
     }
     setStreamingReply("");
   }
@@ -284,84 +242,88 @@ function App() {
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     try {
-      const finalPayload = await sendMessageStream(trimmed, {
-        onStart: () => {
-          setActiveView("chat");
-        },
-        onStatus: ({ label }) => {
-          setRunCards((current) =>
-            upsertRunCard(current, {
-              id: runId,
-              anchorUserTurnIndex,
-              capabilityName: "routing",
-                phaseLabel: label || "处理中",
-                status: "running",
-                summary: "运行中",
-                error: null,
-                approvalTokenId: null,
-              }, (run) => ({
-                ...run,
-                capabilityName: run.capabilityName === "routing" ? inferCapabilityName(label, run.capabilityName) : run.capabilityName,
-                phaseLabel: label || run.phaseLabel,
-                entries: appendRunEntry(run.entries, "status", label || "处理中"),
-              })),
-          );
-        },
-        onDelta: ({ delta }) => {
-          setStreamingReply((current) => current + delta);
-        },
-        onStep: ({ step }) => {
-          setRunCards((current) =>
-            upsertRunCard(current, {
-              id: runId,
-              anchorUserTurnIndex,
-              capabilityName: "routing",
-                phaseLabel: "处理中",
-                status: "running",
-                summary: "运行中",
-                error: null,
-                approvalTokenId: null,
-              }, (run) => ({
-                ...run,
-                capabilityName: inferCapabilityName(step.name, run.capabilityName),
-                phaseLabel: normalizeDetail(step.detail) || step.name || run.phaseLabel,
-                entries: appendRunEntry(
-                  run.entries,
-                  step.status === "error" ? "error" : "step",
-                formatStepLabel(step),
+      const finalPayload = await sendMessageStream(
+        trimmed,
+        {
+          onStart: () => setActiveView("chat"),
+          onStatus: ({ label }) => {
+            setRunCards((current) =>
+              upsertRunCard(
+                current,
+                {
+                  id: runId,
+                  anchorUserTurnIndex,
+                  capabilityName: "routing",
+                  phaseLabel: label || "处理中",
+                  status: "running",
+                  summary: "运行中",
+                  error: null,
+                  approvalTokenId: null,
+                },
+                (run) => ({
+                  ...run,
+                  capabilityName: run.capabilityName === "routing" ? inferCapabilityName(label, run.capabilityName) : run.capabilityName,
+                  phaseLabel: label || run.phaseLabel,
+                  entries: appendRunEntry(run.entries, "status", label || "处理中"),
+                }),
               ),
-            })),
-          );
+            );
+          },
+          onDelta: ({ delta }) => setStreamingReply((current) => current + delta),
+          onStep: ({ step }) => {
+            setRunCards((current) =>
+              upsertRunCard(
+                current,
+                {
+                  id: runId,
+                  anchorUserTurnIndex,
+                  capabilityName: "routing",
+                  phaseLabel: "处理中",
+                  status: "running",
+                  summary: "运行中",
+                  error: null,
+                  approvalTokenId: null,
+                },
+                (run) => ({
+                  ...run,
+                  capabilityName: inferCapabilityName(step.name, run.capabilityName),
+                  phaseLabel: normalizeDetail(step.detail) || step.name || run.phaseLabel,
+                  entries: appendRunEntry(run.entries, step.status === "error" ? "error" : "step", formatStepLabel(step)),
+                }),
+              ),
+            );
+          },
+          onMemory: ({ memory: nextMemory }) => setMemory(nextMemory),
+          onError: ({ error }) => {
+            setStatus("error");
+            setRunCards((current) =>
+              upsertRunCard(
+                current,
+                {
+                  id: runId,
+                  anchorUserTurnIndex,
+                  capabilityName: "assistant",
+                  phaseLabel: "请求失败",
+                  status: "error",
+                  summary: `${error.code} · ${error.message}`,
+                  error,
+                  approvalTokenId: null,
+                },
+                (run) => ({
+                  ...run,
+                  status: "error",
+                  collapsed: false,
+                  error,
+                  summary: `${error.code} · ${error.message}`,
+                  entries: appendRunEntry(run.entries, "error", `${error.code} · ${error.message}`),
+                }),
+              ),
+            );
+          },
+          onFinal: (finalPayload) => applyResponse(finalPayload, runId, anchorUserTurnIndex),
         },
-        onMemory: ({ memory: nextMemory }) => {
-          setMemory(nextMemory);
-        },
-        onError: ({ error }) => {
-          setStatus("error");
-          setRunCards((current) =>
-            upsertRunCard(current, {
-              id: runId,
-              anchorUserTurnIndex,
-              capabilityName: "assistant",
-              phaseLabel: "请求失败",
-              status: "error",
-              summary: `${error.code} · ${error.message}`,
-              error,
-              approvalTokenId: null,
-            }, (run) => ({
-              ...run,
-              status: "error",
-              collapsed: false,
-              error,
-              summary: `${error.code} · ${error.message}`,
-              entries: appendRunEntry(run.entries, "error", `${error.code} · ${error.message}`),
-            })),
-          );
-        },
-        onFinal: (finalPayload) => {
-          applyResponse(finalPayload, runId, anchorUserTurnIndex);
-        },
-      }, abortController.signal);
+        abortController.signal,
+      );
       abortControllerRef.current = null;
       if (finalPayload !== null) {
         setPendingUserMessage("");
@@ -371,46 +333,48 @@ function App() {
       abortControllerRef.current = null;
       if (error instanceof DOMException && error.name === "AbortError") {
         setRunCards((current) =>
-          current.map((run) =>
-            run.id === runId ? { ...run, status: "completed", phaseLabel: "已中止", summary: "用户已停止" } : run,
-          ),
+          current.map((run) => (run.id === runId ? { ...run, status: "completed", phaseLabel: "已中止", summary: "用户已停止" } : run)),
         );
         return;
       }
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
       setRunCards((current) =>
-        upsertRunCard(current, {
-          id: runId,
-          anchorUserTurnIndex,
-          capabilityName: "assistant",
+        upsertRunCard(
+          current,
+          {
+            id: runId,
+            anchorUserTurnIndex,
+            capabilityName: "assistant",
             phaseLabel: "请求失败",
             status: "error",
             summary: message,
             approvalTokenId: null,
             error: {
               code: "STREAM_BROKEN",
-            message,
-            detail: message,
-            stage: "stream",
-            retriable: true,
-            suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+              message,
+              detail: message,
+              stage: "stream",
+              retriable: true,
+              suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+            },
           },
-        }, (run) => ({
-          ...run,
-          status: "error",
-          collapsed: false,
-          error: {
-            code: "STREAM_BROKEN",
-            message,
-            detail: message,
-            stage: "stream",
-            retriable: true,
-            suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
-          },
-          summary: message,
-          entries: appendRunEntry(run.entries, "error", `STREAM_BROKEN · ${message}`),
-        })),
+          (run) => ({
+            ...run,
+            status: "error",
+            collapsed: false,
+            error: {
+              code: "STREAM_BROKEN",
+              message,
+              detail: message,
+              stage: "stream",
+              retriable: true,
+              suggestion: "可以重试一次；如果持续失败，请检查后端日志。",
+            },
+            summary: message,
+            entries: appendRunEntry(run.entries, "error", `STREAM_BROKEN · ${message}`),
+          }),
+        ),
       );
     }
   }
@@ -470,9 +434,7 @@ function App() {
       return;
     }
     try {
-      const routes = Object.fromEntries(
-        routedRoles.map((role) => [role, { instance: instanceId, model: modelName }]),
-      );
+      const routes = Object.fromEntries(routedRoles.map((role) => [role, { instance: instanceId, model: modelName }]));
       const payload = await updateModelCenter({ routes });
       setModelCenter(payload);
       setUiError(null);
@@ -487,25 +449,21 @@ function App() {
     if (!instanceState) {
       return "";
     }
-    const routed = routedRoles
-      .map((role) => models.routes[role])
-      .find((route) => route?.instance === instanceId);
+    const routed = routedRoles.map((role) => models.routes[role]).find((route) => route?.instance === instanceId);
     return routed?.model_name || instanceState.models[0]?.model_name || "";
   }
 
   async function handleSaveConfig(instanceId: string) {
     try {
       const draft = instanceDrafts[instanceId] || { apiKey: "", baseUrl: "", wireApi: defaultWireApi };
-      const payload = await updateModelCenter(
-        {
-          instances: {
-            [instanceId]: {
-              credentials: { api_key: draft.apiKey },
-              connection: { base_url: draft.baseUrl, wire_api: draft.wireApi },
-            },
+      const payload = await updateModelCenter({
+        instances: {
+          [instanceId]: {
+            credentials: { api_key: draft.apiKey },
+            connection: { base_url: draft.baseUrl, wire_api: draft.wireApi },
           },
         },
-      );
+      });
       setModelCenter(payload);
       updateDraft(instanceId, "apiKey", "");
       setUiError(null);
@@ -518,22 +476,13 @@ function App() {
   const selectedGlobalInstance = models.active_model.instance || models.default_instance || models.instances[0]?.instance || "";
   const selectedGlobalInstanceState = models.instances.find((item) => item.instance === selectedGlobalInstance) || models.instances[0];
   const selectedGlobalModel = models.active_model.model_name || selectedGlobalInstanceState?.models[0]?.model_name || "";
-  const readyInstanceCount = models.instances.filter((item) => item.authenticated).length;
-  const selectedGlobalBaseUrl =
-    config.instances.find((item) => item.instance === selectedGlobalInstance)?.base_url || "未配置";
 
   useEffect(() => {
     setGlobalModelDraft((current) => {
-      if (
-        current.instance === selectedGlobalInstance &&
-        current.model === selectedGlobalModel
-      ) {
+      if (current.instance === selectedGlobalInstance && current.model === selectedGlobalModel) {
         return current;
       }
-      return {
-        instance: selectedGlobalInstance,
-        model: selectedGlobalModel,
-      };
+      return { instance: selectedGlobalInstance, model: selectedGlobalModel };
     });
   }, [selectedGlobalInstance, selectedGlobalModel]);
 
@@ -548,9 +497,7 @@ function App() {
     const latestTurn = turns[turns.length - 1];
     const hasCommittedAssistant =
       latestTurn?.role === "assistant" &&
-      (latestTurn.content === streamingReply ||
-        latestTurn.content.startsWith(streamingReply) ||
-        streamingReply.startsWith(latestTurn.content));
+      (latestTurn.content === streamingReply || latestTurn.content.startsWith(streamingReply) || streamingReply.startsWith(latestTurn.content));
     if (streamingReply && !hasCommittedAssistant) {
       turns.push({ role: "assistant", content: streamingReply });
     }
@@ -570,28 +517,16 @@ function App() {
   }, [runCards]);
 
   const chatItems = useMemo(() => {
-    const items: Array<
-      | { id: string; kind: "message"; role: string; content: string }
-      | { id: string; kind: "run"; run: RunCardState }
-    > = [];
+    const items: Array<{ id: string; kind: "message"; role: string; content: string } | { id: string; kind: "run"; run: RunCardState }> = [];
     let userIndex = 0;
 
     for (let index = 0; index < displayedTurns.length; index += 1) {
       const turn = displayedTurns[index];
-      items.push({
-        id: `message-${index}-${turn.role}`,
-        kind: "message",
-        role: turn.role,
-        content: turn.content,
-      });
+      items.push({ id: `message-${index}-${turn.role}`, kind: "message", role: turn.role, content: turn.content });
       if (turn.role === "user") {
         const runsForTurn = runsByAnchor[userIndex] || [];
         for (const run of runsForTurn) {
-          items.push({
-            id: `run-${run.id}`,
-            kind: "run",
-            run,
-          });
+          items.push({ id: `run-${run.id}`, kind: "run", run });
         }
         userIndex += 1;
       }
@@ -601,6 +536,19 @@ function App() {
   }, [displayedTurns, runsByAnchor]);
 
   const activeWorkspace = contextState.active_workspace || workspace;
+  const threads = useMemo<ThreadSummary[]>(() => {
+    const userTurns = session.turns
+      .map((turn, index) => ({ turn, index }))
+      .filter(({ turn }) => turn.role === "user")
+      .slice(-8)
+      .reverse();
+    return userTurns.map(({ turn, index }, listIndex) => ({
+      id: `thread-${index}`,
+      title: compactText(turn.content, 26) || `对话 ${index + 1}`,
+      subtitle: `${session.turns.length - listIndex} 条上下文 · ${compactText(turn.content, 40)}`,
+      active: activeView === "chat" && listIndex === 0,
+    }));
+  }, [activeView, session.turns]);
 
   const latestRunCardId = runCards.length > 0 ? runCards[runCards.length - 1].id : null;
   const latestRun = runCards.length > 0 ? runCards[runCards.length - 1] : null;
@@ -610,22 +558,7 @@ function App() {
     if (!activeRun) {
       return { total: 0, completed: 0, running: 0, error: 0 };
     }
-
-    let total = 0;
-    let error = 0;
-
-    for (const entry of activeRun.entries) {
-      if (entry.kind === "step" || entry.kind === "error") {
-        total += 1;
-      }
-      if (entry.kind === "error") {
-        error += 1;
-      }
-    }
-
-    const running = activeRun.status === "running" && total > error ? 1 : 0;
-    const completed = Math.max(total - error - running, 0);
-    return { total, completed, running, error };
+    return summarizeRunEntries(activeRun.entries, activeRun.status);
   }, [activeRun]);
 
   const isBusy = status === "running" || status === "streaming";
@@ -681,34 +614,37 @@ function App() {
   }, [activeView, chatItems, latestRunCardId, streamingReply]);
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <p className="kicker">Agent Runtime Framework</p>
-          <h1>Agent Shell</h1>
-          <p className="brand-copy">围绕默认 workspace agent 展开对话，让执行过程、历史和配置中心都收进同一个会话视图里。</p>
-        </div>
+    <main className="codex-shell">
+      <Sidebar
+        activeView={activeView}
+        workspace={activeWorkspace}
+        status={status}
+        session={session}
+        threads={threads}
+        onNewChat={() => {
+          setActiveView("chat");
+          setMessage("");
+          setPendingUserMessage("");
+          setStreamingReply("");
+          setRunCards([]);
+          setPendingTokenId(null);
+          setApprovalText("");
+          setStatus("idle");
+        }}
+        onSelectChat={() => setActiveView("chat")}
+        onSelectSettings={() => setActiveView("settings")}
+      />
 
-        <nav className="nav">
-          {views.map((view) => (
-            <button
-              key={view.id}
-              type="button"
-              className={`nav-item ${activeView === view.id ? "active" : ""}`}
-              onClick={() => setActiveView(view.id)}
-            >
-              {view.label}
-            </button>
-          ))}
-        </nav>
+      <section className="main-shell">
+        <MainHeader
+          activeView={activeView}
+          workspace={compactText(activeWorkspace || "workspace", 36)}
+          status={status}
+          title={activeView === "chat" ? "Agent Shell" : "设置"}
+        />
 
-        <div className="sidebar-card">
-          <span>当前工作区</span>
-          <code>{activeWorkspace || "加载中..."}</code>
-        </div>
-
-        <div className="sidebar-card">
-          <span>切换工作区</span>
+        <div className="workspace-switch-row">
+          <span className="conversation-label">切换工作区</span>
           <select value={contextState.active_workspace || workspace} onChange={(event) => void handleWorkspaceSwitch(event.target.value)}>
             {(contextState.available_workspaces.length > 0 ? contextState.available_workspaces : [workspace]).filter(Boolean).map((item) => (
               <option key={item} value={item}>
@@ -718,365 +654,64 @@ function App() {
           </select>
         </div>
 
-        <div className="sidebar-stats">
-          <div className="stat-card">
-            <span>轮次</span>
-            <strong>{session.turns.length}</strong>
-          </div>
-          <div className="stat-card">
-            <span>运行次数</span>
-            <strong>{runCards.length}</strong>
-          </div>
-          <div className="stat-card">
-            <span>状态</span>
-            <strong>{status}</strong>
-          </div>
-        </div>
-
-      </aside>
-
-      <section className="main-stage">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">{activeView === "chat" ? "对话工作区" : activeView === "history" ? "运行历史" : "模型与配置"}</p>
-            <h2>{activeView === "chat" ? "Agent Shell" : activeView === "history" ? "历史" : "设置"}</h2>
-          </div>
-          <div className="topbar-meta">
-            <span className="pill">{compactText(activeWorkspace || "workspace", 28)}</span>
-            <span className={`pill ${status}`}>{status}</span>
-          </div>
-        </header>
-
-        {uiError ? (
-          <section className="panel">
-            <div className="run-error-card">
-              <strong>{uiError.code} · {uiError.message}</strong>
-              {uiError.suggestion ? <p>{uiError.suggestion}</p> : null}
-              <code>
-                {uiError.stage ? `${uiError.stage} · ` : ""}
-                {uiError.trace_id ? `trace_id=${uiError.trace_id}` : "trace_id=unknown"}
-              </code>
-            </div>
-          </section>
-        ) : null}
-
         {activeView === "chat" ? (
-          <section className="chat-layout">
-            <section className="panel conversation-panel">
-              <div className="panel-head conversation-head">
-                <div>
-                  <h3>对话</h3>
-                  <p className="panel-subcopy">把 Agent 过程收进对话流里：默认只显示简短状态和少量步骤，需要时再展开细节。</p>
-                </div>
-                <div className="live-shell-meta">
-                  <span className={`pill ${status}`}>{status === "streaming" ? "live" : status}</span>
-                  <span className="pill">{runCards.length} runs</span>
-                </div>
-              </div>
-
-              <div className="conversation-intro">
-                <div className="conversation-intro-copy">
-                  <strong>{activeWorkspace ? compactText(activeWorkspace, 56) : "当前工作区"}</strong>
-                  <span>对话是主视图；流程、审批、记忆和计划摘要都以内联方式跟随消息出现。</span>
-                </div>
-                <div className="example-row compact">
-                  {examples.map((item) => (
-                    <button key={item} type="button" className="ghost" onClick={() => setMessage(item)}>
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div ref={messagesRef} className="messages" onScroll={handleMessagesScroll}>
-                {chatItems.length === 0 ? (
-                  <div className="empty-state conversation-empty-state">
-                    <strong>开始一段对话</strong>
-                    <p>发送消息后，系统会先在消息下方显示一个轻量流程块，再自然过渡到 assistant 的最终回答。</p>
-                  </div>
-                ) : (
-                  chatItems.map((item) => (
-                    <Fragment key={item.id}>
-                      {item.kind === "message" ? (
-                        <div className={`message ${item.role} ${item.role === "assistant" && item.content === streamingReply ? "streaming" : ""}`}>
-                          <small>{item.role === "user" ? "You" : "Assistant"}</small>
-                          {item.role === "assistant" ? <MarkdownContent content={item.content} /> : <div>{item.content}</div>}
-                        </div>
-                      ) : (
-                        <RunCard
-                          run={item.run}
-                          setContainerRef={(element) => {
-                            runCardRefs.current[item.run.id] = element;
-                          }}
-                          onToggle={() =>
-                            setRunCards((current) =>
-                              current.map((run) =>
-                                run.id !== item.run.id
-                                  ? run
-                                  : {
-                                      ...run,
-                                      collapsed: !run.collapsed,
-                                    },
-                              ),
-                            )
-                          }
-                          stageSummary={item.run.id === activeRun?.id ? runStageSummary : summarizeRunEntries(item.run.entries, item.run.status)}
-                          processDetails={item.run.id === latestRunCardId ? {
-                            streamingReply,
-                            pendingTokenId,
-                            approvalText,
-                            currentStatus: status,
-                          } : null}
-                          onApproval={(approved) => void handleApproval(approved)}
-                          onReplay={() => void handleReplay(item.run.id)}
-                        />
-                      )}
-                    </Fragment>
-                  ))
-                )}
-              </div>
-
-              {showJumpToLatestRun ? (
-                <div className="run-jump-wrap">
-                  <button type="button" className="ghost" onClick={handleJumpToLatestRun}>
-                    跳到最新流程
-                  </button>
-                </div>
-              ) : null}
-
-              <form className="composer" onSubmit={handleSubmit}>
-                <textarea
-                  value={message}
-                  onChange={(event) => setMessage(event.target.value)}
-                  placeholder="输入消息，支持正常聊天，也支持列目录、读取文件、总结文档"
-                  disabled={isBusy}
-                />
-                <div className="composer-bar">
-                  <span className="composer-hint">过程状态会内联显示在对话里，最终回复仍然保持视觉主导。</span>
-                  {(status === "streaming" || status === "running") ? (
-                    <button type="button" className="stop-btn" onClick={handleStop}>
-                      停止
-                    </button>
-                  ) : (
-                    <button type="submit" className="primary" disabled={isBusy || !message.trim()}>
-                      发送
-                    </button>
-                  )}
-                </div>
-              </form>
-            </section>
-          </section>
-        ) : null}
-
-        {activeView === "history" ? (
-          <section className="history-layout">
-            <section className="panel history-panel">
-              <div className="panel-head">
-                <h3>聊天历史</h3>
-              </div>
-              <div className="history-list">
-                {session.turns.length === 0 ? (
-                  <div className="empty-state">
-                    <strong>暂无聊天历史</strong>
-                    <p>发送消息后，这里会按时间顺序展示对话记录。</p>
-                  </div>
-                ) : (
-                  session.turns.map((turn, index) => (
-                    <div key={`${turn.role}-${index}`} className="history-item">
-                      <span className={`history-role ${turn.role}`}>{turn.role}</span>
-                      <p>{compactText(turn.content, 220)}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-
-            <section className="panel history-panel">
-              <div className="panel-head">
-                <h3>计划时间线</h3>
-              </div>
-              <div className="timeline">
-                {plans.length === 0 ? (
-                  <div className="empty-state">
-                    <strong>暂无计划历史</strong>
-                    <p>当 assistant 执行桌面任务时，这里会记录计划和步骤结果。</p>
-                  </div>
-                ) : (
-                  [...plans].reverse().map((plan) => (
-                    <div key={plan.plan_id} className="timeline-card">
-                      <h3>{plan.goal}</h3>
-                      {plan.steps.map((step: PlanStep, index: number) => (
-                        <div key={`${plan.plan_id}-${index}`} className="timeline-step">
-                          <span className="step-status">{step.status}</span>
-                          <strong>{step.capability_name}</strong>
-                          <p>{compactText(step.instruction, 220)}</p>
-                          {step.observation ? <code>{compactText(step.observation, 240)}</code> : null}
-                        </div>
-                      ))}
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-          </section>
-        ) : null}
-
-        {activeView === "settings" ? (
-          <section className="settings-layout">
-            <section className="panel settings-panel">
-              <div className="panel-head">
-                <h3>模型控制台</h3>
-              </div>
-              <div className="model-console-hero">
-                <div className="hero-copy">
-                  <span className="eyebrow">Global Runtime</span>
-                  <h3>{selectedGlobalModel || "未选择模型"}</h3>
-                  <p>当前界面只保留一个全局生效模型。被选中的实例和模型会统一驱动对话、规划和内部解析流程，其他实例只作为候选资源存在。</p>
-                </div>
-                <div className="hero-metrics">
-                  <div className="metric-tile">
-                    <span>当前实例</span>
-                    <strong>{selectedGlobalInstance || "无"}</strong>
-                  </div>
-                  <div className="metric-tile">
-                    <span>可用实例</span>
-                    <strong>{readyInstanceCount}/{models.instances.length}</strong>
-                  </div>
-                  <div className="metric-tile">
-                    <span>路由范围</span>
-                    <strong>全局</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="settings-card featured-model-card">
-                <div className="instance-head">
-                  <strong>当前生效模型</strong>
-                  <span className="pill ready">单一全局模型</span>
-                </div>
-                <p className="instance-meta">选择草稿后显式应用，避免误操作。当前 endpoint：{selectedGlobalBaseUrl}</p>
-                <div className="form-pair">
-                  <select
-                    value={globalModelDraft.instance}
-                    onChange={(event) => {
-                      const nextInstance = models.instances.find((item) => item.instance === event.target.value);
-                      setGlobalModelDraft({
-                        instance: event.target.value,
-                        model: nextInstance?.models[0]?.model_name || "",
-                      });
-                    }}
-                  >
-                    <option value="">选择实例</option>
-                    {models.instances.map((item) => (
-                      <option key={item.instance} value={item.instance}>
-                        {item.instance}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={globalModelDraft.model}
-                    onChange={(event) => setGlobalModelDraft((current) => ({ ...current, model: event.target.value }))}
-                  >
-                    <option value="">选择模型</option>
-                    {(models.instances.find((item) => item.instance === globalModelDraft.instance)?.models || []).map((model) => (
-                      <option key={`${globalModelDraft.instance}-${model.model_name}`} value={model.model_name}>
-                        {model.display_name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="action-row">
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => void handleDefaultModelSelect(globalModelDraft.instance, globalModelDraft.model)}
-                  >
-                    应用为全局模型
-                  </button>
-                  <span className="inline-hint">
-                    当前已生效：{selectedGlobalInstance || "未选择实例"} / {selectedGlobalModel || "未选择模型"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="config-summary compact">
-                <span>配置文件路径</span>
-                <code>{config.path || "加载中..."}</code>
-              </div>
-
-              <div className="settings-grid">
-                {config.instances.map((instanceConfig) => {
-                  const draft = instanceDrafts[instanceConfig.instance] || {
-                    apiKey: "",
-                    baseUrl: instanceConfig.base_url || "",
-                    wireApi: instanceConfig.wire_api || defaultWireApi,
-                  };
-                  const runtimeInstance = models.instances.find((item) => item.instance === instanceConfig.instance);
-                  return (
-                    <div key={`config-${instanceConfig.instance}`} className="settings-card instance-card">
-                      <div className="instance-head">
-                        <div>
-                          <strong>{instanceConfig.instance}</strong>
-                          <p className="instance-type">{instanceConfig.type}</p>
-                        </div>
-                        <span className={`pill ${runtimeInstance?.authenticated ? "ready" : "idle"}`}>
-                          {runtimeInstance?.authenticated ? "authenticated" : (instanceConfig.api_key_set ? instanceConfig.api_key_preview : "not configured")}
-                        </span>
-                      </div>
-                      <p className="instance-meta">
-                        {instanceConfig.type} · catalog: {runtimeInstance?.catalog_mode || "static"} · {runtimeInstance?.auth_error || `base URL: ${instanceConfig.base_url || "未配置"} · wire API: ${instanceConfig.wire_api || defaultWireApi}`}
-                      </p>
-                      <div className="instance-capabilities">
-                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_stream ? "on" : ""}`}>stream</span>
-                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_tools ? "on" : ""}`}>tools</span>
-                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_vision ? "on" : ""}`}>vision</span>
-                        <span className={`mini-pill ${runtimeInstance?.capabilities.supports_json_mode ? "on" : ""}`}>json</span>
-                      </div>
-                      <div className="form-pair">
-                        <input
-                          value={draft.apiKey}
-                          onChange={(event) => updateDraft(instanceConfig.instance, "apiKey", event.target.value)}
-                          placeholder={`${instanceConfig.instance} API key`}
-                        />
-                        <input
-                          value={draft.baseUrl}
-                          onChange={(event) => updateDraft(instanceConfig.instance, "baseUrl", event.target.value)}
-                          placeholder={instanceConfig.base_url || "base URL"}
-                        />
-                        <select
-                          value={draft.wireApi}
-                          onChange={(event) => updateDraft(instanceConfig.instance, "wireApi", event.target.value)}
-                        >
-                          <option value="chat_completions">chat_completions</option>
-                          <option value="responses">responses</option>
-                        </select>
-                      </div>
-                      <div className="action-row">
-                        <button
-                          type="button"
-                          className="primary"
-                          onClick={() => void handleSaveConfig(instanceConfig.instance)}
-                        >
-                          保存实例
-                        </button>
-                        <button type="button" className="ghost" onClick={() => void handleAuth(instanceConfig.instance)}>
-                          认证
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => void handleDefaultModelSelect(instanceConfig.instance, preferredModelForInstance(instanceConfig.instance))}
-                        >
-                          设为当前模型
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </section>
-        ) : null}
+          <ConversationView
+            activeWorkspace={activeWorkspace}
+            chatItems={chatItems}
+            isBusy={isBusy}
+            message={message}
+            status={status}
+            uiError={uiError}
+            showJumpToLatestRun={showJumpToLatestRun}
+            latestRunCardId={latestRunCardId}
+            activeRun={activeRun || null}
+            messagesRef={messagesRef}
+            runCardRefs={runCardRefs}
+            onMessagesScroll={handleMessagesScroll}
+            onJumpToLatestRun={handleJumpToLatestRun}
+            onMessageChange={setMessage}
+            onSubmit={handleSubmit}
+            onStop={handleStop}
+            onApproval={(approved) => void handleApproval(approved)}
+            onReplay={(runId) => void handleReplay(runId)}
+            onToggleRun={(runId) =>
+              setRunCards((current) => current.map((run) => (run.id === runId ? { ...run, collapsed: !run.collapsed } : run)))
+            }
+            summarizeRunEntries={summarizeRunEntries}
+            runStageSummary={runStageSummary}
+            getProcessDetails={(runId) =>
+              runId === latestRunCardId
+                ? {
+                    streamingReply,
+                    pendingTokenId,
+                    approvalText,
+                    currentStatus: status,
+                  }
+                : null
+            }
+          />
+        ) : (
+          <SettingsView
+            config={config}
+            models={models}
+            globalModelDraft={globalModelDraft}
+            instanceDrafts={instanceDrafts}
+            defaultWireApi={defaultWireApi}
+            onGlobalInstanceChange={(instance) => {
+              const nextInstance = models.instances.find((item) => item.instance === instance);
+              setGlobalModelDraft({
+                instance,
+                model: nextInstance?.models[0]?.model_name || "",
+              });
+            }}
+            onGlobalModelChange={(model) => setGlobalModelDraft((current) => ({ ...current, model }))}
+            onApplyGlobalModel={() => void handleDefaultModelSelect(globalModelDraft.instance, globalModelDraft.model)}
+            onUpdateDraft={updateDraft}
+            onSaveInstance={(instanceId) => void handleSaveConfig(instanceId)}
+            onAuthInstance={(instanceId) => void handleAuth(instanceId)}
+            onSetCurrentModel={(instanceId) => void handleDefaultModelSelect(instanceId, preferredModelForInstance(instanceId))}
+          />
+        )}
       </section>
     </main>
   );
@@ -1127,25 +762,25 @@ function finalizeRunCard(
     }
     return [
       ...runs,
-        {
-          id: runId,
-          anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
-          approvalTokenId: payload.resume_token_id,
-          capabilityName: inferCapabilityName(trace[trace.length - 1]?.name, "assistant"),
-          phaseLabel: summary,
-          status: mapPayloadStatus(payload),
-          entries: mergeFinalTraceEntries([], trace),
-          collapsed: !shouldExpandRunCard(payload),
-          summary,
-          error,
-        },
+      {
+        id: runId,
+        anchorUserTurnIndex: anchorUserTurnIndex ?? 0,
+        approvalTokenId: payload.resume_token_id,
+        capabilityName: inferCapabilityName(trace[trace.length - 1]?.name, "assistant"),
+        phaseLabel: summary,
+        status: mapPayloadStatus(payload),
+        entries: mergeFinalTraceEntries([], trace),
+        collapsed: !shouldExpandRunCard(payload),
+        summary,
+        error,
+      },
     ];
   }
 
   return runs.map((run) =>
     run.id !== runId
       ? run
-        : {
+      : {
           ...run,
           approvalTokenId: payload.resume_token_id,
           capabilityName: trace.length ? inferCapabilityName(trace[trace.length - 1]?.name, run.capabilityName) : run.capabilityName,
@@ -1177,7 +812,6 @@ function mergeFinalTraceEntries(entries: RunLogEntry[], trace: AssistantResponse
   if (trace.length === 0) {
     return entries;
   }
-
   let nextEntries = [...entries];
   for (const step of trace) {
     nextEntries = appendRunEntry(nextEntries, step.status === "error" ? "error" : "step", formatStepLabel(step));
@@ -1191,10 +825,7 @@ function inferCapabilityName(source: string | null | undefined, fallback: string
     return fallback;
   }
   const firstSegment = text.split(/[·:|]/)[0]?.trim();
-  if (!firstSegment) {
-    return fallback;
-  }
-  if (firstSegment.length > 32) {
+  if (!firstSegment || firstSegment.length > 32) {
     return fallback;
   }
   return firstSegment;
@@ -1227,11 +858,7 @@ function normalizeDetail(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
-  if (
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) {
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
     return String(value);
   }
   try {
@@ -1267,176 +894,6 @@ function compactText(value: string | null | undefined, limit = 120): string {
     return text;
   }
   return `${text.slice(0, limit)}... (${text.length} chars)`;
-}
-
-function maskApiKey(value: string): string {
-  if (!value) {
-    return "";
-  }
-  if (value.length <= 8) {
-    return "*".repeat(value.length);
-  }
-  return `${value.slice(0, 5)}...${value.slice(-4)}`;
-}
-
-function RunCard({
-  run,
-  onToggle,
-  setContainerRef,
-  stageSummary,
-  processDetails,
-  onApproval,
-  onReplay,
-}: {
-  run: RunCardState;
-  onToggle: () => void;
-  setContainerRef?: (element: HTMLDivElement | null) => void;
-  stageSummary: RunStageSummary;
-  processDetails: ProcessDetailState | null;
-  onApproval: (approved: boolean) => void;
-  onReplay?: () => void;
-}) {
-  const summaryText =
-    normalizeDetail(run.collapsed ? run.summary : run.phaseLabel).trim() ||
-    normalizeDetail(run.phaseLabel) ||
-    normalizeDetail(run.summary) ||
-    "运行中";
-  const recentEntries = run.entries.slice(-2).reverse();
-  const hasDetails = Boolean(
-    run.error ||
-      processDetails?.streamingReply ||
-      processDetails?.pendingTokenId,
-  );
-  const subtleMeta = [
-    stageSummary.total > 0 ? `${stageSummary.total} steps` : null,
-    stageSummary.running ? "live" : null,
-    stageSummary.error ? `${stageSummary.error} error` : null,
-  ].filter(Boolean).join(" · ");
-
-  return (
-    <div ref={setContainerRef} className={`run-card ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
-      <button type="button" className="run-card-header" onClick={onToggle}>
-        <div className="run-card-header-main">
-          <div className="run-header-topline">
-            <span className={`run-status ${run.status}`}>{run.status}</span>
-            <span className="run-header-label">执行 Agent</span>
-          </div>
-          <div className="run-header-copy">
-            <strong>{run.capabilityName || "assistant"}</strong>
-            <span className="run-summary">{summaryText}</span>
-            {subtleMeta ? <span className="run-subtle-meta">{subtleMeta}</span> : null}
-          </div>
-        </div>
-        <span className="run-toggle" aria-hidden="true">
-          <span className={`run-toggle-chevron ${run.collapsed ? "collapsed" : "expanded"}`}>⌄</span>
-          <span className="run-toggle-label">详情</span>
-        </span>
-      </button>
-      {recentEntries.length > 0 ? (
-        <div className="run-card-preview">
-          {recentEntries.map((entry) => (
-            <div key={entry.id} className={`run-preview-item ${entry.kind}`}>
-              <span className="timeline-dot" />
-              <span>{compactText(entry.text, 110)}</span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="run-card-preview empty">
-          <div className="run-preview-item status">
-            <span className="timeline-dot" />
-            <span>{run.status === "running" ? "等待事件流返回..." : "当前流程暂无步骤详情。"}</span>
-          </div>
-        </div>
-      )}
-      {!run.collapsed ? (
-        <div className="run-card-body">
-          <div className="run-detail-grid">
-            <section className="run-detail-section">
-              <div className="run-detail-head">
-                <strong>Process</strong>
-                <span className="section-meta">{run.entries.length} events</span>
-              </div>
-              <div className="agent-timeline compact-timeline">
-                {run.entries.length === 0 ? (
-                  <div className="compact-empty-state">
-                    <strong>等待事件流</strong>
-                    <p>{run.status === "running" ? "状态和步骤返回后会立即显示在这里。" : "这个流程没有附带更多执行细节。"}</p>
-                  </div>
-                ) : (
-                  run.entries.map((entry, index) => (
-                    <div key={entry.id} className={`agent-timeline-item ${entry.kind}`}>
-                      <span className="timeline-dot" />
-                      <div>
-                        <div className="timeline-row">
-                          <strong>{entry.kind === "status" ? "Status" : entry.kind === "step" ? `Step ${index + 1}` : entry.kind === "error" ? "Error" : "Notice"}</strong>
-                          <span className={`mini-pill ${entry.kind === "status" ? "on" : ""} ${entry.kind === "error" ? "danger" : ""}`}>{entry.kind}</span>
-                        </div>
-                        <p>{entry.text}</p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-
-            {hasDetails ? (
-              <section className="run-detail-section subtle-detail-panel">
-                <div className="run-detail-head">
-                  <strong>Actions</strong>
-                  <span className="section-meta">optional</span>
-                </div>
-
-                {processDetails?.pendingTokenId ? (
-                  <div className="approval approval-inline-card">
-                    <div className="run-detail-head approval-inline-head">
-                      <strong>Approval required</strong>
-                      <span className="mini-pill">pending</span>
-                    </div>
-                    <p>{processDetails.approvalText}</p>
-                    <div className="approval-actions">
-                      <button type="button" className="primary" onClick={() => onApproval(true)}>
-                        批准继续
-                      </button>
-                      <button type="button" className="ghost" onClick={() => onApproval(false)}>
-                        拒绝
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {processDetails?.streamingReply && processDetails.currentStatus === "streaming" ? (
-                  <div className="workspace-section streaming-preview inline-streaming-preview compact-streaming-note">
-                    <div className="workspace-section-head">
-                      <span className="section-label">Answer</span>
-                      <span className="typing-indicator">Generating</span>
-                    </div>
-                    <p>{compactText(processDetails.streamingReply, 140)}</p>
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-          </div>
-
-          {run.error ? (
-            <div className="run-error-card">
-              <strong>{run.error.message}</strong>
-              {run.error.suggestion ? <p>{run.error.suggestion}</p> : null}
-              <p className="error-meta">
-                {run.error.code}
-                {run.error.stage ? ` · ${run.error.stage}` : ""}
-              </p>
-              {run.error.retriable && onReplay ? (
-                <button type="button" className="retry-btn" onClick={onReplay}>
-                  重试
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function summarizeRunEntries(entries: RunLogEntry[], status: RunCardState["status"]): RunStageSummary {
