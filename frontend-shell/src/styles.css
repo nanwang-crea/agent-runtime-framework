@@ -571,6 +571,11 @@ select {
   color: var(--text-tertiary);
 }
 
+.run-status-copy small {
+  font-size: 12px;
+  color: #8b877e;
+}
+
 .run-status-line {
   flex: 1;
   height: 1px;
@@ -690,6 +695,11 @@ select {
 .run-preview-item.error .run-preview-icon,
 .run-event-item.error .run-event-icon {
   color: #b1654b;
+}
+
+.run-toggle {
+  font-size: 12px;
+  color: #8b877e;
 }
 
 .approval-actions,

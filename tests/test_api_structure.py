@@ -39,15 +39,15 @@ def test_demo_assistant_app_is_not_backend_main_entrypoint():
 
 
 def test_api_service_modules_expose_route_facing_services():
+    from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
     from agent_runtime_framework.api.services.chat_service import ChatService
     from agent_runtime_framework.api.services.context_service import ContextService
     from agent_runtime_framework.api.services.run_service import RunService
-    from agent_runtime_framework.api.services.session_service import SessionService
 
     assert ChatService is not None
     assert ContextService is not None
     assert RunService is not None
-    assert SessionService is not None
+    assert SessionResponseFactory is not None
 
 
 def test_api_route_modules_exist_for_split_http_surface():
@@ -157,15 +157,15 @@ def test_runtime_state_is_now_state_container_only():
 
 def test_api_services_depend_on_runtime_state_type_instead_of_any():
     from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
+    from agent_runtime_framework.api.responses.session_responses import SessionResponseFactory
     from agent_runtime_framework.api.services.chat_service import ChatService
     from agent_runtime_framework.api.services.context_service import ContextService
     from agent_runtime_framework.api.services.run_service import RunService
-    from agent_runtime_framework.api.services.session_service import SessionService
 
     assert get_type_hints(ChatService)["runtime_state"] is ApiRuntimeState
     assert get_type_hints(ContextService)["runtime_state"] is ApiRuntimeState
     assert get_type_hints(RunService)["runtime_state"] is ApiRuntimeState
-    assert get_type_hints(SessionService)["runtime_state"] is ApiRuntimeState
+    assert get_type_hints(SessionResponseFactory)["runtime_state"] is ApiRuntimeState
 
 
 def test_api_package_no_longer_keeps_demo_naming():

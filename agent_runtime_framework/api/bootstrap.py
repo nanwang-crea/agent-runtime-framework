@@ -11,7 +11,6 @@ from agent_runtime_framework.api.services.chat_service import ChatService
 from agent_runtime_framework.api.services.context_service import ContextService
 from agent_runtime_framework.api.services.model_center_service import ModelCenterService, ModelCenterStore
 from agent_runtime_framework.api.services.run_service import RunService
-from agent_runtime_framework.api.services.session_service import SessionService
 from agent_runtime_framework.api.state.runtime_state import ApiRuntimeState
 from agent_runtime_framework.api.state.session_state import SessionState
 from agent_runtime_framework.memory import InMemorySessionMemory
@@ -95,7 +94,7 @@ def create_api_services(workspace: str | Path, *, seed_config: dict[str, Any] | 
     error_responses = ErrorResponseFactory(runtime_state, session_responses)
     chat_service = ChatService(runtime_state, session_responses, error_responses)
     return ApiServices(
-        session=SessionService(runtime_state, session_responses),
+        session=session_responses,
         chat=chat_service,
         context=ContextService(runtime_state, session_responses),
         runs=RunService(runtime_state, session_responses, chat_service=chat_service),

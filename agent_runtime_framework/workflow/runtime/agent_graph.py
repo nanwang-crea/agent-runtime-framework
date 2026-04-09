@@ -76,7 +76,7 @@ class AgentGraphRuntime:
             run.status = RUN_STATUS_FAILED
             run.error = "missing pending agent graph approval state"
             return run
-        subrun = self._restore_workflow_run(pending_subrun_payload)
+        subrun = self.state_store.restore_workflow_run(pending_subrun_payload)
         subgraph = PlannedSubgraph(
             iteration=int(pending_subgraph_payload.get("iteration") or 0),
             planner_summary=str(pending_subgraph_payload.get("planner_summary") or ""),
@@ -169,11 +169,10 @@ class AgentGraphRuntime:
         planner_summary = str(subgraph.planner_summary or "").strip()
         if planner_summary and planner_summary not in state.attempted_strategies:
             state.attempted_strategies.append(planner_summary)
-        aggregated_result, evidence_result = self._materialize_iteration_system_nodes(
+        aggregated_result, evidence_result = self.system_node_manager.materialize_iteration_system_nodes(
             run,
             executed,
             subgraph,
-            JudgeDecision(status="accepted", reason="pending"),
         )
         state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(evidence_result, "output", {}) or getattr(aggregated_result, "output", {}) or {})
 
@@ -246,9 +245,6 @@ class AgentGraphRuntime:
         emitted = emit_process_event(self.process_sink, event)
         run.metadata.setdefault("process_events", []).append(emitted)
 
-    def _restore_workflow_run(self, payload: dict[str, Any]) -> WorkflowRun:
-        return self.state_store.restore_workflow_run(payload)
-
     def _recovery_for_decision(self, decision: JudgeDecision, iteration: int) -> dict[str, Any]:
         action = "replan"
         return self._recovery_decision(
@@ -288,9 +284,6 @@ class AgentGraphRuntime:
 
     def _seed_system_nodes(self, run: WorkflowRun, goal_envelope: GoalEnvelope, runtime_context: Any | None) -> None:
         self.system_node_manager.seed_system_nodes(run, goal_envelope, runtime_context)
-
-    def _materialize_iteration_system_nodes(self, run: WorkflowRun, executed: WorkflowRun, subgraph: PlannedSubgraph, last_decision: JudgeDecision) -> tuple[NodeResult, NodeResult]:
-        return self.system_node_manager.materialize_iteration_system_nodes(run, executed, subgraph)
 
     def _judge(self, goal_envelope: GoalEnvelope, state: AgentGraphState, runtime_context: Any | None = None) -> JudgeDecision:
         if self.judge is None:

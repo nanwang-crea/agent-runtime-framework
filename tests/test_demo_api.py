@@ -26,7 +26,7 @@ def _stub_app():
 def _stub_services():
     return SimpleNamespace(
         session=SimpleNamespace(
-            get_session=lambda: {
+            session_snapshot=lambda: {
                 "workspace": ".",
                 "session": {"session_id": "s", "turns": []},
                 "plan_history": [],

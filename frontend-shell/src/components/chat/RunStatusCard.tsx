@@ -21,14 +21,9 @@ export function RunStatusCard({
 }: RunStatusCardProps) {
   const recentEntries = run.entries.slice(-3).reverse();
   const groupedSummary = summarizeEntries(run.entries);
-  const subtleMeta = [
-    stageSummary.total > 0 ? `${stageSummary.total} 项过程` : null,
-    stageSummary.running ? "处理中" : null,
-    stageSummary.error ? `${stageSummary.error} 个异常` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const headline = run.collapsed ? run.summary : run.phaseLabel;
+  const subtleMeta = summarizeProgress(stageSummary, run.status);
+  const headline = displayHeadline(run);
+  const statusTone = statusToneLabel(run.status);
 
   return (
     <section ref={setContainerRef} className={`run-status-row ${run.status} ${run.collapsed ? "collapsed" : "expanded"}`}>
@@ -36,7 +31,7 @@ export function RunStatusCard({
         <button type="button" className="run-section-toggle" onClick={onToggle}>
           <span className="run-section-line" />
           <span className="run-section-label">{groupedSummary}</span>
-          <span className="run-section-caret">{run.collapsed ? "⌄" : "⌃"}</span>
+          <span className="run-section-caret" aria-hidden="true">{run.collapsed ? "⌄" : "⌃"}</span>
           <span className="run-section-line" />
         </button>
       ) : null}
@@ -45,13 +40,13 @@ export function RunStatusCard({
         <span className="run-status-line" />
         <span className="run-status-copy">
           <span className="run-inline-meta">
-            <span className="run-inline-label">{run.capabilityName || "assistant"}</span>
-            <span className={`run-badge ${run.status}`}>{statusLabel(run.status)}</span>
+            <span className="run-inline-label">{capabilityLabel(run.capabilityName)}</span>
+            <span className={`run-badge ${run.status}`}>{statusTone}</span>
           </span>
           <strong>{headline}</strong>
           {subtleMeta ? <small>{subtleMeta}</small> : null}
         </span>
-        <span className="run-toggle">{run.collapsed ? "查看" : "隐藏"}</span>
+        <span className="run-toggle" aria-hidden="true">{run.collapsed ? "⌄" : "⌃"}</span>
         <span className="run-status-line" />
       </button>
 
@@ -81,7 +76,7 @@ export function RunStatusCard({
                 <div key={entry.id} className={`run-event-item ${entry.kind} ${entry.metadata.repair ? "repair" : ""}`}>
                   <span className="run-event-icon">{iconForEntry(entry)}</span>
                   <div className="run-event-copy">
-                    <strong>{entry.title}</strong>
+                    <strong>{eventTitle(entry)}</strong>
                     {renderSecondary(entry) ? <p>{renderSecondary(entry)}</p> : null}
                   </div>
                 </div>
@@ -91,11 +86,11 @@ export function RunStatusCard({
 
           {processDetails?.pendingTokenId ? (
             <div className="run-inline-panel approval-card">
-              <strong>需要审批</strong>
+              <strong>需要确认</strong>
               <p>{processDetails.approvalText}</p>
               <div className="approval-actions">
                 <button type="button" className="primary-button" onClick={() => onApproval(true)}>
-                  批准继续
+                  继续
                 </button>
                 <button type="button" className="secondary-button" onClick={() => onApproval(false)}>
                   拒绝
@@ -135,7 +130,7 @@ function summarizeEntries(entries: RunCardState["entries"]): string {
     counts.set(entry.kind, (counts.get(entry.kind) || 0) + 1);
   }
   const labels: Record<string, string> = {
-    read: "已浏览",
+    read: "已查看",
     search: "已搜索",
     edit: "已修改",
     exec: "已执行",
@@ -148,6 +143,29 @@ function summarizeEntries(entries: RunCardState["entries"]): string {
     .slice(0, 3)
     .map(([kind, count]) => `${labels[kind] || kind} ${count} ${kind === "approval" || kind === "error" ? "项" : "次"}`)
     .join("，");
+}
+
+function summarizeProgress(stageSummary: RunStageSummary, status: RunCardState["status"]): string {
+  const parts = [];
+  if (stageSummary.total > 0) {
+    parts.push(`已完成 ${stageSummary.completed}/${stageSummary.total}`);
+  }
+  if (stageSummary.running > 0) {
+    parts.push(`当前 ${stageSummary.running} 项进行中`);
+  } else if (status === "completed") {
+    parts.push("本轮处理完成");
+  }
+  if (stageSummary.error > 0) {
+    parts.push(`${stageSummary.error} 项异常`);
+  }
+  return parts.join(" · ") || "正在准备处理步骤";
+}
+
+function displayHeadline(run: RunCardState): string {
+  if (run.phaseLabel && run.phaseLabel !== run.summary) {
+    return normalizeText(run.phaseLabel);
+  }
+  return normalizeText(run.summary || "正在处理");
 }
 
 function renderSecondary(entry: RunCardState["entries"][number]): string {
@@ -169,28 +187,28 @@ function renderSecondary(entry: RunCardState["entries"][number]): string {
 }
 
 function previewLabel(entry: RunCardState["entries"][number]): string {
-  const subject = firstSubject(entry);
+  const subject = shorten(firstSubject(entry), 44);
   switch (entry.kind) {
     case "read":
-      return subject ? `Read ${subject}` : "Read";
+      return subject ? `查看 ${subject}` : "查看内容";
     case "search":
-      return subject ? `Searched ${subject}` : "Searched";
+      return subject ? `搜索 ${subject}` : "搜索线索";
     case "edit":
-      return subject ? `Edited ${subject}` : "Edited";
+      return subject ? `修改 ${subject}` : "修改内容";
     case "exec":
-      return subject ? `Ran ${subject}` : "Ran";
+      return subject ? `执行 ${subject}` : "执行命令";
     case "test":
-      return subject ? `Verified ${subject}` : "Verified";
+      return subject ? `验证 ${subject}` : "执行验证";
     case "plan":
-      return subject ? `Planned ${subject}` : "Planned";
+      return subject ? `规划 ${subject}` : "规划下一步";
     case "approval":
-      return subject ? `Awaiting approval for ${subject}` : "Awaiting approval";
+      return subject ? `等待确认 ${subject}` : "等待确认";
     case "error":
-      return subject ? `Failed ${subject}` : "Failed";
+      return subject ? `${subject} 出现问题` : "处理遇到问题";
     case "reply":
-      return "Drafted reply";
+      return "整理答复";
     default:
-      return entry.title;
+      return normalizeText(entry.title);
   }
 }
 
@@ -218,6 +236,22 @@ function firstSubject(entry: RunCardState["entries"][number]): string {
     return entry.metadata.command.trim();
   }
   return entry.target || "";
+}
+
+function eventTitle(entry: RunCardState["entries"][number]): string {
+  if (entry.kind === "reply") {
+    return "生成最终答复";
+  }
+  if (entry.kind === "plan") {
+    return entry.title === "规划下一步" ? "规划下一步" : normalizeText(entry.title);
+  }
+  if (entry.kind === "approval") {
+    return "等待人工确认";
+  }
+  if (entry.kind === "error") {
+    return normalizeText(entry.title || "处理失败");
+  }
+  return normalizeText(entry.title || previewLabel(entry));
 }
 
 function iconForEntry(entry: RunCardState["entries"][number]): string {
@@ -252,15 +286,46 @@ function iconForKind(kind: RunCardState["entries"][number]["kind"]): string {
   }
 }
 
-function statusLabel(status: RunCardState["status"]): string {
+function capabilityLabel(value: string): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "assistant";
+  }
+  if (normalized.toLowerCase() === "final_response") {
+    return "reply";
+  }
+  return normalized.toLowerCase();
+}
+
+function statusToneLabel(status: RunCardState["status"]): string {
   switch (status) {
     case "running":
       return "进行中";
     case "completed":
-      return "已处理";
+      return "已完成";
     case "error":
       return "异常";
     default:
       return status;
   }
+}
+
+function normalizeText(value: string): string {
+  return value
+    .replace(/^Planned\s+/i, "已规划 ")
+    .replace(/^Read\s+/i, "查看 ")
+    .replace(/^Searched\s+/i, "搜索 ")
+    .replace(/^Edited\s+/i, "修改 ")
+    .replace(/^Ran\s+/i, "执行 ")
+    .replace(/^Verified\s+/i, "验证 ")
+    .replace(/^Drafted reply$/i, "生成回答")
+    .replace(/^FINAL_RESPONSE$/i, "生成最终答复")
+    .trim();
+}
+
+function shorten(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit - 1)}…`;
 }
