@@ -114,3 +114,26 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
     assert restored.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
     assert restored.metadata["agent_graph_state"]["memory_state"]["semantic_memory"]["confirmed_targets"] == ["README.md"]
     assert restored.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"
+
+
+def test_workflow_persistence_store_omits_runtime_only_shared_state(tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    store = WorkflowPersistenceStore(tmp_path / "workflow-runs.json")
+    run = WorkflowRun(goal="demo")
+    run.shared_state["runtime_context"] = SimpleNamespace(
+        workspace_root=Path(tmp_path),
+        application_context=SimpleNamespace(config={"default_directory": Path(tmp_path) / "workspace"}),
+    )
+    run.shared_state["agent_graph_state_ref"] = SimpleNamespace(run_id=run.run_id)
+    run.shared_state["session_memory_snapshot"] = SimpleNamespace(last_summary="focused")
+    run.shared_state["safe_value"] = {"workspace_root": Path(tmp_path)}
+
+    store.save(run)
+    restored = store.load(run.run_id)
+
+    assert "runtime_context" not in restored.shared_state
+    assert "agent_graph_state_ref" not in restored.shared_state
+    assert "session_memory_snapshot" not in restored.shared_state
+    assert restored.shared_state["safe_value"]["workspace_root"] == str(tmp_path)

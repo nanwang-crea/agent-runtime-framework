@@ -567,12 +567,19 @@ select {
 }
 
 .run-inline-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.run-status-copy strong {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .run-status-copy small {
-  font-size: 12px;
+  font-size: 11px;
   color: #8b877e;
 }
 
@@ -698,7 +705,7 @@ select {
 }
 
 .run-toggle {
-  font-size: 12px;
+  font-size: 11px;
   color: #8b877e;
 }
 
@@ -889,10 +896,20 @@ select {
   padding: 14px;
   border-radius: 16px;
   background: #141a23;
+  color: #e6edf3;
 }
 
 .markdown-content code {
   font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.markdown-content pre code,
+.markdown-content .diff-block code,
+.markdown-content .diff-add,
+.markdown-content .diff-del,
+.markdown-content .diff-hunk,
+.markdown-content .diff-ctx {
+  color: inherit;
 }
 
 @media (max-width: 1024px) {

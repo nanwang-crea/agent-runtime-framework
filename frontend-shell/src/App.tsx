@@ -233,6 +233,7 @@ function App() {
     if (!trimmed) {
       return;
     }
+    setUiError(null);
     setStatus("streaming");
     const anchorUserTurnIndex = displayedTurns.filter((turn) => turn.role === "user").length;
     setPendingUserMessage(trimmed);
@@ -350,6 +351,18 @@ function App() {
       abortControllerRef.current = null;
       if (finalPayload !== null) {
         setPendingUserMessage("");
+      } else {
+        setSession((current) => {
+          const lastTurn = current.turns[current.turns.length - 1];
+          if (lastTurn?.role === "user" && lastTurn.content === trimmed) {
+            return current;
+          }
+          return {
+            ...current,
+            turns: [...current.turns, { role: "user", content: trimmed }],
+          };
+        });
+        setPendingUserMessage("");
       }
       setUiError(null);
     } catch (error) {
@@ -360,6 +373,17 @@ function App() {
         );
         return;
       }
+      setSession((current) => {
+        const lastTurn = current.turns[current.turns.length - 1];
+        if (lastTurn?.role === "user" && lastTurn.content === trimmed) {
+          return current;
+        }
+        return {
+          ...current,
+          turns: [...current.turns, { role: "user", content: trimmed }],
+        };
+      });
+      setPendingUserMessage("");
       const message = error instanceof Error ? error.message : "流式请求失败";
       setStatus("error");
       setRunCards((current) =>

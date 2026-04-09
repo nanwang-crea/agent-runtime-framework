@@ -24,7 +24,7 @@ class WorkflowPersistenceStore:
 
     def save(self, run: WorkflowRun) -> None:
         payload = self._read_all()
-        payload[run.run_id] = asdict(run)
+        payload[run.run_id] = self._json_safe_run_payload(run)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -38,6 +38,35 @@ class WorkflowPersistenceStore:
         if not self.path.exists():
             return {}
         return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def _json_safe_run_payload(self, run: WorkflowRun) -> dict[str, Any]:
+        payload = asdict(run)
+        shared_state = dict(payload.get("shared_state", {}))
+        for volatile_key in ("runtime_context", "agent_graph_state_ref", "session_memory_snapshot"):
+            shared_state.pop(volatile_key, None)
+        payload["shared_state"] = self._json_safe_value(shared_state)
+        payload["metadata"] = self._json_safe_value(dict(payload.get("metadata", {})))
+        payload["graph"] = self._json_safe_value(dict(payload.get("graph", {})))
+        payload["node_states"] = self._json_safe_value(dict(payload.get("node_states", {})))
+        payload["pending_interaction"] = self._json_safe_value(payload.get("pending_interaction"))
+        payload["final_output"] = self._json_safe_value(payload.get("final_output"))
+        payload["error"] = self._json_safe_value(payload.get("error"))
+        return payload
+
+    def _json_safe_value(self, value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(key): self._json_safe_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._json_safe_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._json_safe_value(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if hasattr(value, "__dict__"):
+            return self._json_safe_value(vars(value))
+        return str(value)
 
     def _restore_run(self, payload: dict[str, Any]) -> WorkflowRun:
         graph_payload = payload.get("graph", {})
