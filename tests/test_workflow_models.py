@@ -375,25 +375,23 @@ def test_memory_views_compact_structured_workflow_memory():
     assert working_view["open_issues"] == ["verification"]
 
 
-def test_semantic_state_helpers_write_session_and_working_memory():
-    from agent_runtime_framework.workflow.nodes.semantic import (
-        _update_state_session_memory,
-        _update_state_working_memory,
-    )
+def test_memory_manager_writes_session_and_working_memory():
+    from agent_runtime_framework.memory import MemoryManager
     from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = new_agent_graph_state(run_id="run-memory-update", goal_envelope=goal)
+    manager = MemoryManager()
 
-    _update_state_session_memory(
-        state,
+    manager.update_session_memory(
+        state.memory_state,
         last_active_target="README.md",
         recent_paths=["README.md", "docs/README.md"],
         last_action_summary="read readme",
         last_clarification={"preferred_path": "README.md"},
     )
-    _update_state_working_memory(
-        state,
+    manager.update_working_memory(
+        state.memory_state,
         active_target="README.md",
         confirmed_targets=["README.md"],
         excluded_targets=["docs/README.md"],

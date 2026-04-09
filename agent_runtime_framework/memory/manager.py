@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent_runtime_framework.memory.task_snapshot import TaskSnapshot, trim_task_snapshot
-from agent_runtime_framework.workflow.state.models import ConversationTurn, SessionMemoryState, WorkingMemory
+from agent_runtime_framework.workflow.state.models import ConversationTurn, SessionMemoryState, WorkflowMemoryState, WorkingMemory
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -19,6 +19,44 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 class MemoryManager:
+    def update_session_memory(
+        self,
+        memory_state: WorkflowMemoryState,
+        *,
+        last_active_target: str | None = None,
+        recent_paths: list[str] | None = None,
+        last_action_summary: str | None = None,
+        last_clarification: dict[str, Any] | None = None,
+    ) -> None:
+        session_memory = memory_state.session_memory
+        if last_active_target is not None:
+            session_memory.last_active_target = str(last_active_target).strip() or None
+        if recent_paths is not None:
+            session_memory.recent_paths = [str(item) for item in recent_paths if str(item).strip()]
+        if last_action_summary is not None:
+            session_memory.last_action_summary = str(last_action_summary).strip() or None
+        if last_clarification is not None:
+            session_memory.last_clarification = dict(last_clarification) or None
+
+    def update_working_memory(
+        self,
+        memory_state: WorkflowMemoryState,
+        *,
+        active_target: str | None = None,
+        confirmed_targets: list[str] | None = None,
+        excluded_targets: list[str] | None = None,
+        current_step: str | None = None,
+    ) -> None:
+        working_memory = memory_state.working_memory
+        if active_target is not None:
+            working_memory.active_target = str(active_target).strip() or None
+        if confirmed_targets is not None:
+            working_memory.confirmed_targets = [str(item) for item in confirmed_targets if str(item).strip()]
+        if excluded_targets is not None:
+            working_memory.excluded_targets = [str(item) for item in excluded_targets if str(item).strip()]
+        if current_step is not None:
+            working_memory.current_step = str(current_step).strip() or None
+
     def build_task_snapshot(
         self,
         *,

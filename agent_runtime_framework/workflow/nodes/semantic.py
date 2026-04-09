@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.api.process_trace import emit_process_event
+from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm.access import get_application_context
@@ -121,46 +122,9 @@ def _require_state(run: WorkflowRun):
     return state
 
 
-def _normalize_string_list(values: list[str]) -> list[str]:
-    return [str(item) for item in values if str(item).strip()]
-
-
-def _update_state_session_memory(
-    state: Any,
-    *,
-    last_active_target: str | None = None,
-    recent_paths: list[str] | None = None,
-    last_action_summary: str | None = None,
-    last_clarification: dict[str, Any] | None = None,
-) -> None:
-    session_memory = state.memory_state.session_memory
-    if last_active_target is not None:
-        session_memory.last_active_target = str(last_active_target).strip() or None
-    if recent_paths is not None:
-        session_memory.recent_paths = _normalize_string_list(recent_paths)
-    if last_action_summary is not None:
-        session_memory.last_action_summary = str(last_action_summary).strip() or None
-    if last_clarification is not None:
-        session_memory.last_clarification = dict(last_clarification) or None
-
-
-def _update_state_working_memory(
-    state: Any,
-    *,
-    active_target: str | None = None,
-    confirmed_targets: list[str] | None = None,
-    excluded_targets: list[str] | None = None,
-    current_step: str | None = None,
-) -> None:
-    working_memory = state.memory_state.working_memory
-    if active_target is not None:
-        working_memory.active_target = str(active_target).strip() or None
-    if confirmed_targets is not None:
-        working_memory.confirmed_targets = _normalize_string_list(confirmed_targets)
-    if excluded_targets is not None:
-        working_memory.excluded_targets = _normalize_string_list(excluded_targets)
-    if current_step is not None:
-        working_memory.current_step = str(current_step).strip() or None
+def _memory_manager(context: RuntimeContextLike) -> MemoryManager:
+    application_context = get_application_context(context)
+    return getattr(application_context, "memory_manager", None) or MemoryManager()
 
 
 def _repair_recorder(run: WorkflowRun):
@@ -254,6 +218,7 @@ def _structured_semantic_plan_with_repair(
 class InterpretTargetExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = _require_state(run)
+        memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
         task_snapshot = build_task_snapshot_view(state)
         working_view = build_working_memory_view(state)
@@ -305,15 +270,15 @@ class InterpretTargetExecutor:
             ),
         )
         run.shared_state["interpreted_target"] = interpreted
-        _update_state_working_memory(
-            state,
+        memory_manager.update_working_memory(
+            state.memory_state,
             active_target=interpreted["preferred_path"],
             confirmed_targets=[interpreted["preferred_path"]] if interpreted["confirmed"] else [],
             excluded_targets=list(interpreted.get("exclude_paths") or []),
             current_step=run.goal,
         )
-        _update_state_session_memory(
-            state,
+        memory_manager.update_session_memory(
+            state.memory_state,
             last_active_target=interpreted["preferred_path"],
             recent_paths=[interpreted["preferred_path"], *list(state.memory_state.session_memory.recent_paths)],
             last_action_summary=str(interpreted.get("rationale") or ""),
@@ -344,6 +309,7 @@ class InterpretTargetExecutor:
 class PlanSearchExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = _require_state(run)
+        memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
         task_snapshot = build_task_snapshot_view(state)
         working_view = build_working_memory_view(state)
@@ -383,7 +349,10 @@ class PlanSearchExecutor:
             interpreted_target=interpreted_target,
         )
         run.shared_state["search_plan"] = search_plan
-        _update_state_working_memory(state, current_step=search_plan["search_goal"])
+        memory_manager.update_working_memory(
+            state.memory_state,
+            current_step=search_plan["search_goal"],
+        )
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -405,6 +374,7 @@ class PlanSearchExecutor:
 class PlanReadExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = _require_state(run)
+        memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
         task_snapshot = build_task_snapshot_view(state)
         working_view = build_working_memory_view(state)
@@ -448,8 +418,8 @@ class PlanReadExecutor:
             search_plan=search_plan,
         )
         run.shared_state["read_plan"] = read_plan
-        _update_state_working_memory(
-            state,
+        memory_manager.update_working_memory(
+            state.memory_state,
             active_target=read_plan["target_path"],
             confirmed_targets=[read_plan["target_path"]],
             current_step=read_plan["read_goal"],

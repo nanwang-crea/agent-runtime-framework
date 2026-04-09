@@ -174,3 +174,28 @@ def test_memory_manager_invalidates_stale_working_memory_against_session_memory(
     assert validated.confirmed_targets == []
     assert validated.excluded_targets == ["other.txt"]
     assert validated.current_step is None
+
+
+def test_memory_manager_updates_workflow_memory_state_in_place():
+    manager = MemoryManager()
+    memory_state = WorkflowMemoryState()
+
+    manager.update_session_memory(
+        memory_state,
+        last_active_target="README.md",
+        recent_paths=["README.md", "docs/README.md"],
+        last_action_summary="read readme",
+        last_clarification={"preferred_path": "README.md"},
+    )
+    manager.update_working_memory(
+        memory_state,
+        active_target="README.md",
+        confirmed_targets=["README.md"],
+        excluded_targets=["docs/README.md"],
+        current_step="explain readme",
+    )
+
+    assert memory_state.session_memory.last_active_target == "README.md"
+    assert memory_state.session_memory.last_clarification == {"preferred_path": "README.md"}
+    assert memory_state.working_memory.confirmed_targets == ["README.md"]
+    assert memory_state.working_memory.excluded_targets == ["docs/README.md"]
