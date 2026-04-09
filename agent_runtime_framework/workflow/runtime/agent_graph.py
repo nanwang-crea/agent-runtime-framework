@@ -5,6 +5,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from agent_runtime_framework.api.process_trace import emit_process_event
+from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
 from agent_runtime_framework.workflow.planning.graph_mutation import append_subgraph
 from agent_runtime_framework.workflow.state.models import (
@@ -36,6 +37,17 @@ JudgeFn = Callable[[GoalEnvelope, dict[str, Any], AgentGraphState], JudgeDecisio
 PlannerFn = Callable[[GoalEnvelope, AgentGraphState, Any | None], PlannedSubgraph]
 
 
+def _resolve_memory_manager(runtime_context: Any | None, fallback: MemoryManager) -> MemoryManager:
+    if runtime_context is None:
+        return fallback
+    application_context = None
+    if isinstance(runtime_context, dict):
+        application_context = runtime_context.get("application_context")
+    else:
+        application_context = getattr(runtime_context, "application_context", None)
+    return getattr(application_context, "memory_manager", None) or fallback
+
+
 @dataclass(slots=True)
 class AgentGraphRuntime:
     workflow_runtime: GraphExecutionRuntime
@@ -44,12 +56,18 @@ class AgentGraphRuntime:
     context: dict[str, Any] = field(default_factory=dict)
     max_iterations: int = 3
     state_store: AgentGraphStateStore = field(default_factory=AgentGraphStateStore)
+    memory_manager: MemoryManager = field(default_factory=MemoryManager)
     system_node_manager: SystemNodeManager = field(default_factory=SystemNodeManager)
     process_sink: Callable[[dict[str, Any]], None] | None = None
 
     def run(self, goal_envelope: GoalEnvelope, *, run_id: str | None = None, context: Any | None = None, prior_state: dict[str, Any] | None = None, prior_graph: WorkflowGraph | None = None, clarification_response: str | None = None, clarification_resolution: dict[str, Any] | None = None) -> WorkflowRun:
         runtime_context = context if context is not None else self.context
+        memory_manager = _resolve_memory_manager(runtime_context, self.memory_manager)
         state = self._restore_state(goal_envelope, run_id=run_id, prior_state=prior_state)
+        state.memory_state.working_memory = memory_manager.validate_working_memory(
+            state.memory_state.working_memory,
+            session_memory=state.memory_state.session_memory,
+        )
         graph = prior_graph or self._initial_graph(state)
         run = WorkflowRun(goal=goal_envelope.goal, run_id=state.run_id, graph=graph)
         run.metadata.setdefault("process_events", [])
@@ -68,8 +86,13 @@ class AgentGraphRuntime:
 
     def resume(self, run: WorkflowRun, *, resume_token: Any, approved: bool, context: Any | None = None) -> WorkflowRun:
         runtime_context = context if context is not None else self.context
+        memory_manager = _resolve_memory_manager(runtime_context, self.memory_manager)
         goal_envelope = GoalEnvelope(**dict(run.metadata.get("goal_envelope") or {}))
         state = self._restore_state(goal_envelope, run_id=run.run_id, prior_state=dict(run.metadata.get("agent_graph_state") or {}))
+        state.memory_state.working_memory = memory_manager.validate_working_memory(
+            state.memory_state.working_memory,
+            session_memory=state.memory_state.session_memory,
+        )
         pending_subrun_payload = dict(run.metadata.get("pending_subrun") or {})
         pending_subgraph_payload = dict(run.metadata.get("pending_subgraph") or {})
         if not pending_subrun_payload or not pending_subgraph_payload:

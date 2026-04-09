@@ -247,6 +247,56 @@ def test_runtime_executes_create_path_node_with_workspace_tool(tmp_path):
     assert (tmp_path / "docs" / "notes.md").read_text(encoding="utf-8") == "hello\n"
 
 
+def test_tool_call_executor_uses_application_memory_manager(tmp_path):
+    from agent_runtime_framework.workflow.executors.tool_call import ToolCallExecutor
+    from agent_runtime_framework.workflow.workspace import build_default_workspace_tools, WorkspaceContext
+    from agent_runtime_framework.workflow.context.app_context import ApplicationContext
+
+    class RecordingMemoryManager:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def update_session_from_tool_result(self, session_memory, result):
+            self.calls.append(dict(result))
+            return session_memory
+
+        def checkpoint_working_memory(self, working_memory):
+            return working_memory.as_payload()
+
+        def restore_working_memory(self, payload):
+            return __import__("agent_runtime_framework.workflow.state.models", fromlist=["WorkingMemory"]).WorkingMemory(**payload)
+
+    app_context = ApplicationContext(
+        resource_repository=LocalFileResourceRepository([tmp_path]),
+        config={"default_directory": str(tmp_path)},
+    )
+    memory_manager = RecordingMemoryManager()
+    app_context.memory_manager = memory_manager
+    for tool in build_default_workspace_tools():
+        app_context.tools.register(tool)
+
+    run = WorkflowRun(goal="创建 docs/notes.md", shared_state={})
+    result = ToolCallExecutor().execute(
+        WorkflowNode(
+            node_id="tool_call_1",
+            node_type="tool_call",
+            metadata={
+                "tool_name": "create_workspace_path",
+                "arguments": {"path": "docs/notes.md", "kind": "file", "content": "hello\n"},
+            },
+        ),
+        run,
+        context={
+            "application_context": app_context,
+            "workspace_context": WorkspaceContext(application_context=app_context),
+            "workspace_root": str(tmp_path),
+        },
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert memory_manager.calls[0]["path"] == "docs/notes.md"
+
+
 def test_target_resolution_executor_prefers_interpreted_target_constraints(tmp_path):
     from agent_runtime_framework.workflow.executors.target_resolution import TargetResolutionExecutor
 
@@ -770,7 +820,8 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
     assert result.output["quality_signals"][0]["progress_contribution"] == "target_constraints_defined"
     assert seen_payload["payload"]["prior_candidates"] == ["README.md", "frontend-shell/README.md"]
     assert seen_payload["payload"]["failure_history"][0]["status"] == "needs_clarification"
-    assert run.shared_state["memory_state"]["semantic_memory"]["interpreted_target"]["preferred_path"] == "README.md"
+    assert run.shared_state["memory_state"]["working_memory"]["active_target"] == "README.md"
+    assert run.shared_state["memory_state"]["working_memory"]["confirmed_targets"] == ["README.md"]
 
 
 def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeypatch):
@@ -789,6 +840,50 @@ def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeyp
 
     with pytest.raises(ValueError, match="preferred_path"):
         InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
+
+
+def test_interpret_target_executor_uses_recent_focus_as_fallback_path(monkeypatch):
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_kind": "file",
+            "scope_preference": "workspace_root",
+            "exclude_paths": [],
+            "confirmed": True,
+            "confidence": 0.9,
+            "rationale": "user referred to the file created in the previous turn",
+        },
+    )
+    state = new_agent_graph_state(
+        run_id="focus-fallback",
+        goal_envelope=GoalEnvelope(
+            goal="现在我需要你将刚刚创建的这个文件给删除掉",
+            normalized_goal="现在我需要你将刚刚创建的这个文件给删除掉",
+            intent="change_and_verify",
+            memory_snapshot={
+                "focused_resources": ["testes.txt"],
+                "last_summary": "created testes.txt",
+            },
+        ),
+    )
+    run = WorkflowRun(
+        goal="现在我需要你将刚刚创建的这个文件给删除掉",
+        shared_state={
+            "agent_graph_state_ref": state,
+        },
+    )
+
+    result = InterpretTargetExecutor().execute(
+        WorkflowNode(node_id="interpret", node_type="interpret_target"),
+        run,
+        context={},
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert run.shared_state["interpreted_target"]["preferred_path"] == "testes.txt"
+    assert run.shared_state["interpreted_target"]["confirmed"] is True
 
 
 def test_plan_search_executor_stores_search_plan(monkeypatch):
@@ -825,7 +920,7 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
     assert run.shared_state["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
     assert result.output["reasoning_trace"][0]["kind"] == "search_plan"
     assert seen_payload["payload"]["attempted_strategies"] == ["search readme broadly"]
-    assert run.shared_state["memory_state"]["semantic_memory"]["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
+    assert run.shared_state["memory_state"]["working_memory"]["current_step"] == "find backend readme"
 
 
 def test_plan_search_executor_requires_semantic_queries(monkeypatch):
@@ -879,7 +974,7 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
     assert run.shared_state["read_plan"]["preferred_regions"] == ["head"]
     assert result.output["quality_signals"][0]["progress_contribution"] == "read_strategy_defined"
     assert seen_payload["payload"]["search_plan"]["search_goal"] == "find backend readme"
-    assert run.shared_state["memory_state"]["semantic_memory"]["read_plan"]["target_path"] == "README.md"
+    assert run.shared_state["memory_state"]["working_memory"]["active_target"] == "README.md"
 
 
 def test_plan_read_executor_requires_target_path(monkeypatch):
@@ -1708,7 +1803,7 @@ def test_judge_progress_uses_memory_excluded_targets_as_conflicts():
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-1", goal_envelope=goal)
-    state.memory_state.semantic_memory = {"excluded_targets": ["frontend-shell/README.md"]}
+    state.memory_state.working_memory.excluded_targets = ["frontend-shell/README.md"]
 
     decision = judge_progress(
         goal,
@@ -1730,10 +1825,8 @@ def test_judge_progress_rejects_evidence_when_confirmed_target_differs():
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-2", goal_envelope=goal)
-    state.memory_state.semantic_memory = {
-        "confirmed_targets": ["README.md"],
-        "read_plan": {"target_path": "README.md"},
-    }
+    state.memory_state.working_memory.confirmed_targets = ["README.md"]
+    state.memory_state.working_memory.active_target = "README.md"
 
     decision = judge_progress(
         goal,
@@ -1756,7 +1849,7 @@ def test_judge_progress_rejects_read_plan_path_mismatch():
 
     goal = GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read")
     state = new_agent_graph_state(run_id="judge-memory-3", goal_envelope=goal)
-    state.memory_state.semantic_memory = {"read_plan": {"target_path": "README.md"}}
+    state.memory_state.working_memory.active_target = "README.md"
 
     decision = judge_progress(
         goal,
@@ -1894,13 +1987,22 @@ def test_agent_graph_runtime_confirmed_read_short_path_skips_search_and_clarific
         "run_id": "confirmed-read-run",
         "goal_envelope": goal.as_payload(),
         "memory_state": {
-            "clarification_memory": {},
-            "semantic_memory": {
-                "confirmed_targets": ["README.md"],
-                "interpreted_target": {"confirmed": True, "preferred_path": "README.md"},
+            "session_memory": {
+                "last_active_target": "README.md",
+                "recent_paths": ["README.md"],
+                "last_action_summary": "read readme",
+                "last_read_files": ["README.md"],
+                "last_clarification": None,
             },
-            "execution_memory": {},
-            "preference_memory": {},
+            "working_memory": {
+                "active_target": "README.md",
+                "confirmed_targets": ["README.md"],
+                "excluded_targets": [],
+                "current_step": "read readme",
+                "open_issues": [],
+                "last_tool_result_summary": None,
+            },
+            "long_term_memory": {},
         },
     }
 
@@ -2320,3 +2422,55 @@ def test_agent_graph_runtime_fails_when_planner_emits_unsupported_node_type():
 
     assert result.status == RUN_STATUS_FAILED
     assert "unsupported_node" in str(result.error or result.node_states["bad_1"].error)
+
+
+def test_agent_graph_runtime_validates_stale_working_memory_before_planning():
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="解释刚刚创建的文件", normalized_goal="解释刚刚创建的文件", intent="file_read")
+    seen: dict[str, object] = {}
+
+    def _planner(goal_envelope, state, context):
+        seen["active_target"] = state.memory_state.working_memory.active_target
+        return PlannedSubgraph(
+            iteration=1,
+            planner_summary="validated memory before planning",
+            nodes=[],
+            edges=[],
+            metadata={},
+        )
+
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={}),
+        planner=_planner,
+        max_iterations=1,
+    )
+
+    runtime.run(
+        goal,
+        prior_state={
+            "run_id": "resume-validated",
+            "goal_envelope": goal.as_payload(),
+            "memory_state": {
+                "session_memory": {
+                    "last_active_target": "fresh.txt",
+                    "recent_paths": ["fresh.txt"],
+                    "last_action_summary": "Created fresh.txt",
+                    "last_read_files": ["fresh.txt"],
+                    "last_clarification": None,
+                },
+                "working_memory": {
+                    "active_target": "stale.txt",
+                    "confirmed_targets": ["stale.txt"],
+                    "excluded_targets": [],
+                    "current_step": "read stale file",
+                    "open_issues": [],
+                    "last_tool_result_summary": None,
+                },
+                "long_term_memory": {},
+            },
+        },
+        context={},
+    )
+
+    assert seen["active_target"] is None

@@ -7,9 +7,8 @@ from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm.access import get_application_context
-from agent_runtime_framework.workflow.memory.updates import remember_clarification, remember_semantic_plan
-from agent_runtime_framework.workflow.memory.views import build_semantic_memory_view
-from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
+from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, SessionMemoryState, WorkflowNode, WorkflowRun, WorkingMemory
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
@@ -59,7 +58,7 @@ def _structured_semantic_plan(
 
 
 def _normalize_interpreted_target(payload: dict[str, Any], *, fallback_hint: str = "") -> dict[str, Any]:
-    preferred_path = str(payload.get("preferred_path") or "").strip()
+    preferred_path = str(payload.get("preferred_path") or fallback_hint or "").strip()
     scope_preference = str(payload.get("scope_preference") or "").strip()
     if not preferred_path:
         raise ValueError("semantic target interpretation missing preferred_path")
@@ -117,11 +116,60 @@ def _normalize_read_plan(payload: dict[str, Any], *, interpreted_target: dict[st
 
 def _shared_memory_state(run: WorkflowRun) -> dict[str, Any]:
     memory_state = dict(run.shared_state.get("memory_state") or {})
-    memory_state.setdefault("clarification_memory", {})
-    memory_state.setdefault("semantic_memory", {})
-    memory_state.setdefault("execution_memory", {})
-    memory_state.setdefault("preference_memory", {})
+    memory_state.setdefault("session_memory", {})
+    memory_state.setdefault("working_memory", {})
+    memory_state.setdefault("long_term_memory", {})
     return memory_state
+
+
+def _session_memory(run: WorkflowRun) -> SessionMemoryState:
+    return SessionMemoryState(**dict(_shared_memory_state(run).get("session_memory") or {}))
+
+
+def _working_memory(run: WorkflowRun) -> WorkingMemory:
+    return WorkingMemory(**dict(_shared_memory_state(run).get("working_memory") or {}))
+
+
+def _normalize_string_list(values: list[str]) -> list[str]:
+    return [str(item) for item in values if str(item).strip()]
+
+
+def _update_state_session_memory(
+    state: Any,
+    *,
+    last_active_target: str | None = None,
+    recent_paths: list[str] | None = None,
+    last_action_summary: str | None = None,
+    last_clarification: dict[str, Any] | None = None,
+) -> None:
+    session_memory = state.memory_state.session_memory
+    if last_active_target is not None:
+        session_memory.last_active_target = str(last_active_target).strip() or None
+    if recent_paths is not None:
+        session_memory.recent_paths = _normalize_string_list(recent_paths)
+    if last_action_summary is not None:
+        session_memory.last_action_summary = str(last_action_summary).strip() or None
+    if last_clarification is not None:
+        session_memory.last_clarification = dict(last_clarification) or None
+
+
+def _update_state_working_memory(
+    state: Any,
+    *,
+    active_target: str | None = None,
+    confirmed_targets: list[str] | None = None,
+    excluded_targets: list[str] | None = None,
+    current_step: str | None = None,
+) -> None:
+    working_memory = state.memory_state.working_memory
+    if active_target is not None:
+        working_memory.active_target = str(active_target).strip() or None
+    if confirmed_targets is not None:
+        working_memory.confirmed_targets = _normalize_string_list(confirmed_targets)
+    if excluded_targets is not None:
+        working_memory.excluded_targets = _normalize_string_list(excluded_targets)
+    if current_step is not None:
+        working_memory.current_step = str(current_step).strip() or None
 
 
 def _repair_recorder(run: WorkflowRun):
@@ -216,12 +264,14 @@ class InterpretTargetExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = run.shared_state.get("agent_graph_state_ref")
         repair_record = _repair_recorder(run)
-        semantic_view = build_semantic_memory_view(state) if state is not None else {}
+        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
+        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
+        session_memory = state.memory_state.session_memory if state is not None else _session_memory(run)
         prior_candidates = list(getattr(getattr(run, "pending_interaction", None), "items", []) or [])
         if not prior_candidates:
             prior_candidates = list((run.shared_state.get("clarification_request") or {}).get("items") or [])
         if not prior_candidates:
-            prior_candidates = list(((semantic_view.get("clarification_memory") or {}).get("candidate_items") or []))
+            prior_candidates = list((((task_snapshot.get("last_clarification") or {}).get("candidate_items")) or []))
         payload = {
             "goal": run.goal,
             "clarification_response": run.shared_state.get("clarification_response"),
@@ -229,7 +279,8 @@ class InterpretTargetExecutor:
             "prior_candidates": prior_candidates,
             "target_hints": list(node.metadata.get("target_hints") or []),
             "failure_history": list(run.shared_state.get("failure_history") or []),
-            "memory_view": semantic_view,
+            "task_snapshot": task_snapshot,
+            "working_memory_view": working_view,
         }
         raw_interpreted = _structured_semantic_plan_with_repair(
             context,
@@ -255,23 +306,55 @@ class InterpretTargetExecutor:
             normalizer=_normalize_interpreted_target,
             extra_instructions="preferred_path must be concrete and scope_preference must be non-empty.",
             on_record=repair_record,
-            fallback_hint=str((node.metadata.get("target_hints") or [""])[0] or ""),
+            fallback_hint=str(
+                (node.metadata.get("target_hints") or [""])[0]
+                or session_memory.last_active_target
+                or (task_snapshot.get("recent_focus") or [""])[0]
+                or ""
+            ),
         )
         run.shared_state["interpreted_target"] = interpreted
         if state is not None:
-            remember_semantic_plan(state, interpreted_target=interpreted)
-            remember_clarification(
+            _update_state_working_memory(
                 state,
-                candidate_items=payload["prior_candidates"],
-                last_resolution={"preferred_path": interpreted["preferred_path"], "confidence": interpreted["confidence"]},
+                active_target=interpreted["preferred_path"],
+                confirmed_targets=[interpreted["preferred_path"]] if interpreted["confirmed"] else [],
+                excluded_targets=list(interpreted.get("exclude_paths") or []),
+                current_step=run.goal,
+            )
+            _update_state_session_memory(
+                state,
+                last_active_target=interpreted["preferred_path"],
+                recent_paths=[interpreted["preferred_path"], *list(state.memory_state.session_memory.recent_paths)],
+                last_action_summary=str(interpreted.get("rationale") or ""),
+                last_clarification={
+                    "candidate_items": list(payload["prior_candidates"]),
+                    "preferred_path": interpreted["preferred_path"],
+                    "confidence": interpreted["confidence"],
+                },
             )
             run.shared_state["memory_state"] = state.memory_state.as_payload()
         else:
             memory_state = _shared_memory_state(run)
-            memory_state["semantic_memory"]["interpreted_target"] = dict(interpreted)
-            if payload["prior_candidates"]:
-                memory_state["clarification_memory"]["candidate_items"] = list(payload["prior_candidates"])
-            memory_state["clarification_memory"]["last_resolution"] = {"preferred_path": interpreted["preferred_path"], "confidence": interpreted["confidence"]}
+            session_payload = _session_memory(run).as_payload()
+            session_payload["last_active_target"] = interpreted["preferred_path"]
+            session_payload["recent_paths"] = [
+                interpreted["preferred_path"],
+                *[str(item) for item in session_payload.get("recent_paths", []) if str(item).strip() and str(item) != interpreted["preferred_path"]],
+            ]
+            session_payload["last_action_summary"] = str(interpreted.get("rationale") or "")
+            session_payload["last_clarification"] = {
+                "candidate_items": list(payload["prior_candidates"]),
+                "preferred_path": interpreted["preferred_path"],
+                "confidence": interpreted["confidence"],
+            }
+            working_payload = _working_memory(run).as_payload()
+            working_payload["active_target"] = interpreted["preferred_path"]
+            working_payload["confirmed_targets"] = [interpreted["preferred_path"]] if interpreted["confirmed"] else []
+            working_payload["excluded_targets"] = list(interpreted.get("exclude_paths") or [])
+            working_payload["current_step"] = run.goal
+            memory_state["session_memory"] = session_payload
+            memory_state["working_memory"] = working_payload
             run.shared_state["memory_state"] = memory_state
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
@@ -295,7 +378,8 @@ class PlanSearchExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = run.shared_state.get("agent_graph_state_ref")
         repair_record = _repair_recorder(run)
-        semantic_view = build_semantic_memory_view(state) if state is not None else {}
+        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
+        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         payload = {
             "goal": run.goal,
@@ -303,7 +387,8 @@ class PlanSearchExecutor:
             "open_issues": list(run.shared_state.get("open_issues") or []),
             "failure_history": list(run.shared_state.get("failure_history") or []),
             "attempted_strategies": list(run.shared_state.get("attempted_strategies") or []),
-            "memory_view": semantic_view,
+            "task_snapshot": task_snapshot,
+            "working_memory_view": working_view,
         }
         raw_search_plan = _structured_semantic_plan_with_repair(
             context,
@@ -332,11 +417,13 @@ class PlanSearchExecutor:
         )
         run.shared_state["search_plan"] = search_plan
         if state is not None:
-            remember_semantic_plan(state, search_plan=search_plan)
+            _update_state_working_memory(state, current_step=search_plan["search_goal"])
             run.shared_state["memory_state"] = state.memory_state.as_payload()
         else:
             memory_state = _shared_memory_state(run)
-            memory_state["semantic_memory"]["search_plan"] = dict(search_plan)
+            working_payload = _working_memory(run).as_payload()
+            working_payload["current_step"] = search_plan["search_goal"]
+            memory_state["working_memory"] = working_payload
             run.shared_state["memory_state"] = memory_state
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
@@ -360,7 +447,8 @@ class PlanReadExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         state = run.shared_state.get("agent_graph_state_ref")
         repair_record = _repair_recorder(run)
-        semantic_view = build_semantic_memory_view(state) if state is not None else {}
+        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
+        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         search_plan = dict(run.shared_state.get("search_plan") or {})
         payload = {
@@ -369,7 +457,8 @@ class PlanReadExecutor:
             "search_plan": search_plan,
             "open_issues": list(run.shared_state.get("open_issues") or []),
             "failure_history": list(run.shared_state.get("failure_history") or []),
-            "memory_view": semantic_view,
+            "task_snapshot": task_snapshot,
+            "working_memory_view": working_view,
         }
         raw_read_plan = _structured_semantic_plan_with_repair(
             context,
@@ -401,11 +490,20 @@ class PlanReadExecutor:
         )
         run.shared_state["read_plan"] = read_plan
         if state is not None:
-            remember_semantic_plan(state, read_plan=read_plan)
+            _update_state_working_memory(
+                state,
+                active_target=read_plan["target_path"],
+                confirmed_targets=[read_plan["target_path"]],
+                current_step=read_plan["read_goal"],
+            )
             run.shared_state["memory_state"] = state.memory_state.as_payload()
         else:
             memory_state = _shared_memory_state(run)
-            memory_state["semantic_memory"]["read_plan"] = dict(read_plan)
+            working_payload = _working_memory(run).as_payload()
+            working_payload["active_target"] = read_plan["target_path"]
+            working_payload["confirmed_targets"] = [read_plan["target_path"]]
+            working_payload["current_step"] = read_plan["read_goal"]
+            memory_state["working_memory"] = working_payload
             run.shared_state["memory_state"] = memory_state
         return NodeResult(
             status=NODE_STATUS_COMPLETED,

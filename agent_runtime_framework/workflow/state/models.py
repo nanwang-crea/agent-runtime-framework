@@ -150,6 +150,13 @@ class InteractionRequest:
 
 
 @dataclass(slots=True)
+class ConversationTurn:
+    role: str
+    content: str
+    run_id: str | None = None
+
+
+@dataclass(slots=True)
 class NodeResult:
     status: str
     output: Any = None
@@ -310,18 +317,66 @@ class JudgeDecision:
 
 
 @dataclass(slots=True)
-class WorkflowMemoryState:
-    clarification_memory: dict[str, Any] = field(default_factory=dict)
-    semantic_memory: dict[str, Any] = field(default_factory=dict)
-    execution_memory: dict[str, Any] = field(default_factory=dict)
-    preference_memory: dict[str, Any] = field(default_factory=dict)
+class SessionMemoryState:
+    last_active_target: str | None = None
+    recent_paths: list[str] = field(default_factory=list)
+    last_action_summary: str | None = None
+    last_read_files: list[str] = field(default_factory=list)
+    last_clarification: dict[str, Any] | None = None
 
     def as_payload(self) -> dict[str, Any]:
         return {
-            "clarification_memory": dict(self.clarification_memory),
-            "semantic_memory": dict(self.semantic_memory),
-            "execution_memory": dict(self.execution_memory),
-            "preference_memory": dict(self.preference_memory),
+            "last_active_target": self.last_active_target,
+            "recent_paths": list(self.recent_paths),
+            "last_action_summary": self.last_action_summary,
+            "last_read_files": list(self.last_read_files),
+            "last_clarification": dict(self.last_clarification) if isinstance(self.last_clarification, dict) else None,
+        }
+
+
+@dataclass(slots=True)
+class WorkingMemory:
+    active_target: str | None = None
+    confirmed_targets: list[str] = field(default_factory=list)
+    excluded_targets: list[str] = field(default_factory=list)
+    current_step: str | None = None
+    open_issues: list[str] = field(default_factory=list)
+    last_tool_result_summary: dict[str, Any] | None = None
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "active_target": self.active_target,
+            "confirmed_targets": list(self.confirmed_targets),
+            "excluded_targets": list(self.excluded_targets),
+            "current_step": self.current_step,
+            "open_issues": list(self.open_issues),
+            "last_tool_result_summary": dict(self.last_tool_result_summary) if isinstance(self.last_tool_result_summary, dict) else None,
+        }
+
+
+def _goal_session_memory(goal_envelope: GoalEnvelope) -> SessionMemoryState:
+    snapshot = dict(getattr(goal_envelope, "memory_snapshot", None) or {})
+    recent_paths = [str(item) for item in snapshot.get("focused_resources", []) or [] if str(item).strip()]
+    return SessionMemoryState(
+        last_active_target=recent_paths[0] if recent_paths else None,
+        recent_paths=recent_paths,
+        last_action_summary=str(snapshot.get("last_summary") or "").strip() or None,
+        last_read_files=recent_paths,
+        last_clarification=None,
+    )
+
+
+@dataclass(slots=True)
+class WorkflowMemoryState:
+    session_memory: SessionMemoryState = field(default_factory=SessionMemoryState)
+    working_memory: WorkingMemory = field(default_factory=WorkingMemory)
+    long_term_memory: dict[str, Any] = field(default_factory=dict)
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "session_memory": self.session_memory.as_payload(),
+            "working_memory": self.working_memory.as_payload(),
+            "long_term_memory": dict(self.long_term_memory),
         }
 
 
@@ -347,7 +402,11 @@ class AgentGraphState:
 
 
 def new_agent_graph_state(*, run_id: str, goal_envelope: GoalEnvelope) -> AgentGraphState:
-    return AgentGraphState(run_id=run_id, goal_envelope=goal_envelope)
+    return AgentGraphState(
+        run_id=run_id,
+        goal_envelope=goal_envelope,
+        memory_state=WorkflowMemoryState(session_memory=_goal_session_memory(goal_envelope)),
+    )
 
 
 def build_agent_graph_execution_summary(state: AgentGraphState) -> dict[str, Any]:

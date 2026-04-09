@@ -6,6 +6,7 @@ from pathlib import Path
 
 def test_public_surface_exports_new_agent_layers():
     assert hasattr(arf, "SkillAttachment")
+    assert hasattr(arf, "MemoryManager")
     assert hasattr(arf, "McpServiceRef")
     assert arf.create_app is create_app
 

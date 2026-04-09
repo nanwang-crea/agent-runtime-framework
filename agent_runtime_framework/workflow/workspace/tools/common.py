@@ -68,8 +68,6 @@ def build_agent_output(*, context: Any, path: str, text: str, summary: str, chan
 
 
 def remember_focus(context: Any, path: Path, summary: str) -> None:
-    ref = ResourceRef.for_path(path)
-    context.application_context.session_memory.remember_focus([ref], summary=summary)
     remember = getattr(getattr(context.application_context, "index_memory", None), "remember", None)
     if callable(remember):
         rel_path = relative_workspace_path(context, path)

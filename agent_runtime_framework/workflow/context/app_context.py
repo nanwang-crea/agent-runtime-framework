@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory, MarkdownIndexMemory, WorkingMemory
+from agent_runtime_framework.memory import InMemoryIndexMemory, InMemorySessionMemory, MarkdownIndexMemory, MemoryManager, WorkingMemory
 from agent_runtime_framework.observability import InMemoryRunObserver, RunObserver
 from agent_runtime_framework.resources import LocalResourceResolver
 from agent_runtime_framework.tools.registry import ToolRegistry
@@ -15,6 +15,7 @@ class ApplicationContext:
     resource_repository: Any
     session_memory: Any = field(default_factory=InMemorySessionMemory)
     index_memory: Any | None = None
+    memory_manager: MemoryManager = field(default_factory=MemoryManager)
     policy: Any = None
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     config: dict[str, Any] = field(default_factory=dict)

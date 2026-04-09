@@ -8,7 +8,7 @@ from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output, repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import get_application_context
-from agent_runtime_framework.workflow.memory.views import build_planner_memory_view
+from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.state.models import build_agent_graph_execution_summary
 from agent_runtime_framework.workflow.planning.prompts import build_subgraph_planner_system_prompt
@@ -94,15 +94,6 @@ def _expand_route_node_types(values: list[Any]) -> set[str]:
     return expanded
 
 
-def _has_semantic_value(memory: dict[str, Any], key: str, required_field: str | None = None) -> bool:
-    value = dict(memory.get(key) or {})
-    if not value:
-        return False
-    if required_field is None:
-        return True
-    return bool(str(value.get(required_field) or "").strip())
-
-
 def _semantic_foundation_targets(nodes: list[PlannedNode]) -> dict[str, bool]:
     node_types = {node.node_type for node in nodes}
     needs_interpret = bool(node_types & {"target_resolution", "plan_search", "content_search", "plan_read", "chunked_file_read"})
@@ -116,7 +107,7 @@ def _semantic_foundation_targets(nodes: list[PlannedNode]) -> dict[str, bool]:
 
 
 def _inject_semantic_foundation(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, nodes: list[PlannedNode], iteration: int) -> list[PlannedNode]:
-    semantic_memory = dict(graph_state.memory_state.semantic_memory or {})
+    working_memory = graph_state.memory_state.working_memory
     existing_by_type = {node.node_type: node for node in nodes}
     required = _semantic_foundation_targets(nodes)
     foundation_nodes: list[PlannedNode] = []
@@ -128,11 +119,13 @@ def _inject_semantic_foundation(goal_envelope: GoalEnvelope, graph_state: AgentG
                 if dependency and dependency not in node.depends_on:
                     node.depends_on.append(dependency)
             return node.node_id
-        if node_type == "interpret_target" and _has_semantic_value(semantic_memory, "interpreted_target", "preferred_path"):
+        if node_type == "interpret_target" and str(working_memory.active_target or "").strip():
             return None
-        if node_type == "plan_search" and _has_semantic_value(semantic_memory, "search_plan", "search_goal"):
-            return None
-        if node_type == "plan_read" and _has_semantic_value(semantic_memory, "read_plan", "target_path"):
+        if (
+            node_type == "plan_search"
+            and str(working_memory.active_target or "").strip()
+            and working_memory.confirmed_targets
+        ):
             return None
         node_id = f"{node_type}_{iteration}"
         if any(existing.node_id == node_id for existing in [*foundation_nodes, *nodes]):
@@ -309,7 +302,8 @@ def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGrap
         "iteration": graph_state.current_iteration + 1,
         "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
         "execution_summary": _compact_execution_summary(graph_state),
-        "planner_memory_view": build_planner_memory_view(graph_state),
+        "task_snapshot": build_task_snapshot_view(graph_state),
+        "working_memory_view": build_working_memory_view(graph_state),
     }
 
 
@@ -325,12 +319,8 @@ def _resolved_target_payload(graph_state: AgentGraphState) -> dict[str, Any]:
 def _should_use_constrained_read_path(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> bool:
     if str(goal_envelope.intent or "").strip() != "file_read":
         return False
-    semantic_memory = dict(graph_state.memory_state.semantic_memory or {})
-    interpreted_target = dict(semantic_memory.get("interpreted_target") or {})
-    if bool(interpreted_target.get("confirmed")) and str(interpreted_target.get("preferred_path") or "").strip():
-        return True
-    confirmed_targets = [str(item).strip() for item in semantic_memory.get("confirmed_targets", []) or [] if str(item).strip()]
-    if len(confirmed_targets) == 1:
+    working_memory = graph_state.memory_state.working_memory
+    if working_memory.confirmed_targets and str(working_memory.active_target or "").strip():
         return True
     resolved_target = _resolved_target_payload(graph_state)
     return str(resolved_target.get("resolution_status") or "").strip() == "resolved"

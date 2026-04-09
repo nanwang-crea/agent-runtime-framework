@@ -291,24 +291,23 @@ class ChatService:
             updated_hints = list(dict.fromkeys([*list(prior_goal_envelope.get("target_hints") or []), *list(clarification_resolution.get("updated_target_hints") or [])]))
             prior_goal_envelope["target_hints"] = updated_hints
             memory_state = dict((prior_state or {}).get("memory_state") or {})
-            semantic_memory = dict(memory_state.get("semantic_memory") or {})
-            clarification_memory = dict(memory_state.get("clarification_memory") or {})
+            session_memory = dict(memory_state.get("session_memory") or {})
+            working_memory = dict(memory_state.get("working_memory") or {})
             if confirmed_target := str(clarification_resolution.get("confirmed_target") or "").strip():
-                semantic_memory["confirmed_targets"] = [confirmed_target]
+                working_memory["confirmed_targets"] = [confirmed_target]
             if excluded_targets := [str(item) for item in clarification_resolution.get("excluded_targets", []) or [] if str(item).strip()]:
-                semantic_memory["excluded_targets"] = excluded_targets
+                working_memory["excluded_targets"] = excluded_targets
             if str(clarification_resolution.get("preferred_path") or "").strip():
-                semantic_memory["interpreted_target"] = {
-                    "target_kind": "file",
-                    "preferred_path": str(clarification_resolution.get("preferred_path") or "").strip(),
-                    "scope_preference": "any",
-                    "exclude_paths": [str(item) for item in clarification_resolution.get("excluded_targets", []) or [] if str(item).strip()],
-                    "confirmed": bool(clarification_resolution.get("confirmed")),
-                    "confidence": float(clarification_resolution.get("confidence") or 0.8),
-                }
-            clarification_memory["last_resolution"] = dict(clarification_resolution)
-            memory_state["semantic_memory"] = semantic_memory
-            memory_state["clarification_memory"] = clarification_memory
+                preferred_path = str(clarification_resolution.get("preferred_path") or "").strip()
+                working_memory["active_target"] = preferred_path
+                session_memory["last_active_target"] = preferred_path
+                session_memory["recent_paths"] = [
+                    preferred_path,
+                    *[str(item) for item in session_memory.get("recent_paths", []) or [] if str(item).strip() and str(item) != preferred_path],
+                ]
+            session_memory["last_clarification"] = dict(clarification_resolution)
+            memory_state["working_memory"] = working_memory
+            memory_state["session_memory"] = session_memory
             prior_state = {**dict(prior_state or {}), "memory_state": memory_state}
             goal_envelope = build_goal_envelope(
                 str(prior_goal_envelope.get("goal") or message),

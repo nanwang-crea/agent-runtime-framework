@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
+from agent_runtime_framework.memory import MemoryManager
+from agent_runtime_framework.resources import ResourceRef
 from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context
 from typing import Any
 
@@ -57,6 +60,62 @@ class ToolCallExecutor:
             )
 
         output = dict(result.output or {})
+        memory_manager = getattr(application_context, "memory_manager", None) or MemoryManager()
+        state = run.shared_state.get("agent_graph_state_ref")
+        if state is not None:
+            state.memory_state.session_memory = memory_manager.update_session_from_tool_result(
+                state.memory_state.session_memory,
+                {
+                    "path": output.get("path") or output.get("resolved_path"),
+                    "summary": output.get("summary"),
+                },
+            )
+            state.memory_state.working_memory = memory_manager.restore_working_memory(
+                {
+                    **memory_manager.checkpoint_working_memory(state.memory_state.working_memory),
+                    "last_tool_result_summary": {
+                        "tool_name": tool_name,
+                        "path": output.get("path") or output.get("resolved_path"),
+                        "summary": output.get("summary"),
+                    },
+                }
+            )
+            run.shared_state["memory_state"] = state.memory_state.as_payload()
+        else:
+            memory_state = dict(run.shared_state.get("memory_state") or {})
+            memory_state.setdefault("session_memory", {})
+            memory_state.setdefault("working_memory", {})
+            memory_state["session_memory"] = memory_manager.update_session_from_tool_result(
+                __import__("agent_runtime_framework.workflow.state.models", fromlist=["SessionMemoryState"]).SessionMemoryState(
+                    **dict(memory_state.get("session_memory") or {})
+                ),
+                {
+                    "path": output.get("path") or output.get("resolved_path"),
+                    "summary": output.get("summary"),
+                },
+            ).as_payload()
+            working_payload = dict(memory_state.get("working_memory") or {})
+            working_payload["last_tool_result_summary"] = {
+                "tool_name": tool_name,
+                "path": output.get("path") or output.get("resolved_path"),
+                "summary": output.get("summary"),
+            }
+            memory_state["working_memory"] = working_payload
+            run.shared_state["memory_state"] = memory_state
+
+        session_memory = getattr(application_context, "session_memory", None)
+        path_value = str(output.get("path") or output.get("resolved_path") or "").strip()
+        summary_value = str(output.get("summary") or "").strip() or None
+        if session_memory is not None and hasattr(session_memory, "remember_focus"):
+            refs = []
+            if path_value:
+                try:
+                    root = Path(runtime_context.get("workspace_root", ".")).expanduser()
+                    refs = [ResourceRef.for_path((root / path_value).resolve())]
+                except Exception:
+                    refs = []
+            session_memory.remember_focus(refs, summary=summary_value)
+
         summary = str(output.get("summary") or output.get("text") or output.get("content") or output.get("stdout") or "")
         references: list[str] = []
         for key in ("path", "resolved_path", "source"):

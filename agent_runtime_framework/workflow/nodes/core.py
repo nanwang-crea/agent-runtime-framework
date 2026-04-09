@@ -9,7 +9,7 @@ from agent_runtime_framework.workflow.orchestration.aggregation import aggregate
 from agent_runtime_framework.workflow.interaction.conversation_messages import build_conversation_messages
 from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context, get_workspace_root
 from agent_runtime_framework.workflow.llm.synthesis import synthesize_text
-from agent_runtime_framework.workflow.memory.views import build_response_memory_view_from_payload
+from agent_runtime_framework.workflow.context.memory_views import build_response_context_view
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
@@ -322,7 +322,7 @@ class FinalResponseExecutor:
             facts = aggregated.output.get("facts", []) if aggregated and isinstance(aggregated.output, dict) else []
             evidence_items = aggregated.output.get("evidence_items", []) if aggregated and isinstance(aggregated.output, dict) else []
             verification = aggregated.output.get("verification") if aggregated and isinstance(aggregated.output, dict) else None
-            response_memory_view = build_response_memory_view_from_payload(run.shared_state.get("memory_state"))
+            response_memory_view = build_response_context_view(run.shared_state.get("memory_state"))
             final_response = synthesize_text(
                 context,
                 role="composer",

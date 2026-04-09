@@ -338,7 +338,6 @@ def delete_workspace_path(task: Any, context: Any, arguments: dict[str, Any]) ->
         raise IsADirectoryError(path)
     path.unlink()
     task.state.modified_paths.append(rel_path)
-    context.application_context.session_memory.remember_focus([], summary=f"deleted: {rel_path}")
     return build_agent_output(context=context, path=rel_path, text=f"Deleted {rel_path}", summary=f"Deleted {rel_path}", changed_paths=[rel_path])
 
 

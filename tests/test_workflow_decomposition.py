@@ -261,7 +261,8 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     assert '"latest_judge_decision"' in request_body
     assert '"needs_verification"' in request_body
     assert '"execution_summary"' in request_body
-    assert '"planner_memory_view"' in request_body
+    assert '"task_snapshot"' in request_body
+    assert '"working_memory_view"' in request_body
     assert '"confirmed_targets"' in request_body
     assert '"ineffective_actions"' in request_body
     assert '"verification_missing"' in request_body
@@ -512,10 +513,8 @@ def test_plan_next_subgraph_uses_constrained_read_path_for_confirmed_file_read()
         constraints={},
     )
     state = new_agent_graph_state(run_id="run-constrained-read", goal_envelope=envelope)
-    state.memory_state.semantic_memory = {
-        "confirmed_targets": ["README.md"],
-        "interpreted_target": {"confirmed": True, "preferred_path": "README.md"},
-    }
+    state.memory_state.working_memory.active_target = "README.md"
+    state.memory_state.working_memory.confirmed_targets = ["README.md"]
 
     subgraph = plan_next_subgraph(envelope, state, context=context)
 
@@ -606,20 +605,20 @@ def test_planner_context_payload_compacts_histories_and_surfaces_ineffective_act
     payload = _planner_context_payload(envelope, state)
 
     assert payload["iteration"] == 5
-    assert payload["planner_memory_view"]["ineffective_actions"] == [
+    assert payload["working_memory_view"]["ineffective_actions"] == [
         "compare entrypoints",
         "verify answer",
     ]
-    assert payload["planner_memory_view"]["open_issues"] == ["grounded evidence", "resolved conflict"]
-    assert payload["planner_memory_view"]["recent_failures"][0]["iteration"] == 3
-    assert payload["planner_memory_view"]["recent_failures"][-1]["diagnosis"]["primary_gap"] == "verification_missing"
+    assert payload["working_memory_view"]["open_issues"] == ["grounded evidence", "resolved conflict"]
+    assert payload["working_memory_view"]["recent_failures"][0]["iteration"] == 3
+    assert payload["working_memory_view"]["recent_failures"][-1]["diagnosis"]["primary_gap"] == "verification_missing"
     assert payload["execution_summary"]["attempted_strategies"] == [
         "search service",
         "read service file",
         "summarize candidate",
         "compare entrypoints",
     ]
-    assert "recent_recovery" in payload["planner_memory_view"]
+    assert "recent_recovery" in payload["working_memory_view"]
 
 
 def test_planner_context_payload_derives_execution_summary_without_cached_state():
@@ -695,6 +694,7 @@ def test_plan_next_subgraph_request_body_uses_compacted_context():
     assert client is not None
     request_body = client.completions.last_kwargs["messages"][1]["content"]
     assert request_body.count('"iteration"') < 7
-    assert '"planner_memory_view"' in request_body
+    assert '"task_snapshot"' in request_body
+    assert '"working_memory_view"' in request_body
     assert '"ineffective_actions"' in request_body
     assert '"workspace scan"' not in request_body

@@ -39,10 +39,22 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
         "run_id": prior_run.run_id,
         "goal_envelope": prior_goal.as_payload(),
         "memory_state": {
-            "clarification_memory": {"candidate_items": ["README.md", "frontend-shell/README.md"]},
-            "semantic_memory": {},
-            "execution_memory": {},
-            "preference_memory": {},
+            "session_memory": {
+                "last_active_target": None,
+                "recent_paths": [],
+                "last_action_summary": None,
+                "last_read_files": [],
+                "last_clarification": {"candidate_items": ["README.md", "frontend-shell/README.md"]},
+            },
+            "working_memory": {
+                "active_target": None,
+                "confirmed_targets": [],
+                "excluded_targets": [],
+                "current_step": None,
+                "open_issues": [],
+                "last_tool_result_summary": None,
+            },
+            "long_term_memory": {},
         },
     }
     runtime = _FakeRuntime(WorkflowRun(goal=prior_goal.goal, graph=WorkflowGraph()))
@@ -106,9 +118,9 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
     assert call["goal_envelope"].target_hints == ["README.md"]
     assert call["clarification_resolution"]["confirmed_target"] == "README.md"
     assert call["clarification_resolution"]["confirmed"] is True
-    assert call["prior_state"]["memory_state"]["semantic_memory"]["confirmed_targets"] == ["README.md"]
-    assert call["prior_state"]["memory_state"]["semantic_memory"]["interpreted_target"]["confirmed"] is True
-    assert call["prior_state"]["memory_state"]["semantic_memory"]["interpreted_target"]["preferred_path"] == "README.md"
+    assert call["prior_state"]["memory_state"]["working_memory"]["confirmed_targets"] == ["README.md"]
+    assert call["prior_state"]["memory_state"]["working_memory"]["active_target"] == "README.md"
+    assert call["prior_state"]["memory_state"]["session_memory"]["last_clarification"]["confirmed_target"] == "README.md"
 
 
 def test_chat_service_workflow_payload_exposes_pending_interaction():
@@ -161,10 +173,22 @@ def test_final_response_executor_includes_response_memory_view(monkeypatch):
         references=["README.md"],
     )
     run.shared_state["memory_state"] = {
-        "clarification_memory": {"last_resolution": {"preferred_path": "README.md"}},
-        "semantic_memory": {"confirmed_targets": ["README.md"], "excluded_targets": ["frontend-shell/README.md"]},
-        "execution_memory": {},
-        "preference_memory": {},
+        "session_memory": {
+            "last_active_target": "README.md",
+            "recent_paths": ["README.md"],
+            "last_action_summary": "read readme",
+            "last_read_files": ["README.md"],
+            "last_clarification": {"preferred_path": "README.md"},
+        },
+        "working_memory": {
+            "active_target": "README.md",
+            "confirmed_targets": ["README.md"],
+            "excluded_targets": ["frontend-shell/README.md"],
+            "current_step": "explain readme",
+            "open_issues": [],
+            "last_tool_result_summary": None,
+        },
+        "long_term_memory": {},
     }
 
     result = FinalResponseExecutor().execute(SimpleNamespace(node_id="final", node_type="final_response", metadata={}), run, context={})

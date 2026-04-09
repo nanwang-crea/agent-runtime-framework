@@ -7,6 +7,7 @@ from agent_runtime_framework.memory import (
     InMemoryIndexMemory,
     InMemorySessionMemory,
     MarkdownIndexMemory,
+    MemoryManager,
     MemoryRecord,
     WorkingMemory,
 )
@@ -184,6 +185,18 @@ def test_application_context_uses_markdown_index_memory_for_workspace_defaults(t
 
     assert isinstance(context.index_memory, MarkdownIndexMemory)
     assert context.index_memory.path == workspace / ".arf" / "memory.md"
+
+
+def test_application_context_exposes_global_memory_manager(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    context = ApplicationContext(
+        resource_repository=LocalFileResourceRepository([workspace]),
+        config={"default_directory": str(workspace)},
+    )
+
+    assert isinstance(context.memory_manager, MemoryManager)
 
 
 def test_simple_desktop_policy_requires_confirmation_for_safe_write():

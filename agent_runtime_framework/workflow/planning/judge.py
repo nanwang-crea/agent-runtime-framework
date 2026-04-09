@@ -8,7 +8,7 @@ from agent_runtime_framework.workflow.llm.structured_output_repair import repair
 
 repair_structured_output = repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import chat_json
-from agent_runtime_framework.workflow.memory.views import build_judge_memory_view
+from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
 from agent_runtime_framework.workflow.planning.prompts import build_judge_system_prompt
 
@@ -64,8 +64,7 @@ def _semantic_path_consistency_conflicts(payload: dict[str, Any], judge_memory_v
     conflicts: list[str] = []
     confirmed_targets = [_normalize_path(item) for item in judge_memory_view.get("confirmed_targets", []) or [] if _normalize_path(item)]
     excluded_targets = [_normalize_path(item) for item in judge_memory_view.get("excluded_targets", []) or [] if _normalize_path(item)]
-    read_plan = dict((judge_memory_view.get("semantic_constraints") or {}).get("read_plan") or {})
-    planned_read_path = _normalize_path(read_plan.get("target_path"))
+    planned_read_path = _normalize_path(judge_memory_view.get("active_target"))
 
     if confirmed_targets and observed_paths:
         for path in observed_paths:
@@ -104,7 +103,8 @@ def _judge_context_payload(goal_envelope: GoalEnvelope, payload: dict[str, Any],
         "current_iteration": graph_state.current_iteration,
         "aggregated_payload": payload,
         "execution_summary": build_agent_graph_execution_summary(graph_state),
-        "judge_memory_view": build_judge_memory_view(graph_state),
+        "task_snapshot": build_task_snapshot_view(graph_state),
+        "working_memory_view": build_working_memory_view(graph_state),
     }
 
 
@@ -152,7 +152,7 @@ def _guardrail_decision(
     payload: dict[str, Any],
     graph_state: AgentGraphState,
 ) -> JudgeDecision | None:
-    judge_memory_view = build_judge_memory_view(graph_state)
+    judge_memory_view = build_working_memory_view(graph_state)
     max_iterations = int(goal_envelope.constraints.get("max_iterations") or 0)
     if max_iterations and graph_state.current_iteration >= max_iterations:
         return JudgeDecision(

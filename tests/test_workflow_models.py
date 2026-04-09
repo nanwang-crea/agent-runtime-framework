@@ -173,10 +173,11 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert state.attempted_strategies == []
     assert state.recovery_history == []
     assert state.repair_history == []
-    assert state.memory_state.clarification_memory == {}
-    assert state.memory_state.semantic_memory == {}
-    assert state.memory_state.execution_memory == {}
-    assert state.memory_state.preference_memory == {}
+    assert state.memory_state.session_memory.last_active_target is None
+    assert state.memory_state.session_memory.recent_paths == []
+    assert state.memory_state.working_memory.active_target is None
+    assert state.memory_state.working_memory.confirmed_targets == []
+    assert state.memory_state.long_term_memory == {}
 
     payload = serialize_agent_graph_state(state)
 
@@ -193,10 +194,22 @@ def test_agent_graph_models_support_defaults_and_serialization_helpers():
     assert payload["recovery_history"] == []
     assert payload["repair_history"] == []
     assert payload["memory_state"] == {
-        "clarification_memory": {},
-        "semantic_memory": {},
-        "execution_memory": {},
-        "preference_memory": {},
+        "session_memory": {
+            "last_active_target": None,
+            "recent_paths": [],
+            "last_action_summary": None,
+            "last_read_files": [],
+            "last_clarification": None,
+        },
+        "working_memory": {
+            "active_target": None,
+            "confirmed_targets": [],
+            "excluded_targets": [],
+            "current_step": None,
+            "open_issues": [],
+            "last_tool_result_summary": None,
+        },
+        "long_term_memory": {},
     }
 
     serialized_subgraph = subgraph.as_payload()
@@ -282,8 +295,8 @@ def test_subgraph_planner_prompt_mentions_strategy_change_and_failure_history():
 
     prompt = build_subgraph_planner_system_prompt()
 
-    assert "planner_memory_view" in prompt
-    assert "canonical compact memory context" in prompt
+    assert "task_snapshot" in prompt
+    assert "working_memory_view" in prompt
     assert "change strategy" in prompt.lower()
 
 
@@ -298,22 +311,35 @@ def test_agent_graph_state_store_restores_workflow_memory_state():
             "run_id": "run-memory",
             "goal_envelope": goal.as_payload(),
             "memory_state": {
-                "clarification_memory": {"active_question": "which readme"},
-                "semantic_memory": {"confirmed_targets": ["README.md"]},
-                "execution_memory": {"ineffective_actions": ["search broadly"]},
-                "preference_memory": {"path_preferences": ["README.md"]},
+                "session_memory": {
+                    "last_active_target": "README.md",
+                    "recent_paths": ["README.md"],
+                    "last_action_summary": "read readme",
+                    "last_read_files": ["README.md"],
+                    "last_clarification": {"preferred_path": "README.md"},
+                },
+                "working_memory": {
+                    "active_target": "README.md",
+                    "confirmed_targets": ["README.md"],
+                    "excluded_targets": ["docs/README.md"],
+                    "current_step": "explain readme",
+                    "open_issues": ["need summary"],
+                    "last_tool_result_summary": {"tool_name": "read_file"},
+                },
+                "long_term_memory": {"path_aliases": {"readme": "README.md"}},
             },
         },
     )
 
-    assert state.memory_state.clarification_memory["active_question"] == "which readme"
-    assert state.memory_state.semantic_memory["confirmed_targets"] == ["README.md"]
-    assert state.memory_state.execution_memory["ineffective_actions"] == ["search broadly"]
-    assert state.memory_state.preference_memory["path_preferences"] == ["README.md"]
+    assert state.memory_state.session_memory.last_active_target == "README.md"
+    assert state.memory_state.session_memory.last_clarification == {"preferred_path": "README.md"}
+    assert state.memory_state.working_memory.confirmed_targets == ["README.md"]
+    assert state.memory_state.working_memory.excluded_targets == ["docs/README.md"]
+    assert state.memory_state.long_term_memory["path_aliases"]["readme"] == "README.md"
 
 
 def test_memory_views_compact_structured_workflow_memory():
-    from agent_runtime_framework.workflow.memory.views import build_planner_memory_view, build_semantic_memory_view
+    from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
     from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
@@ -329,51 +355,55 @@ def test_memory_views_compact_structured_workflow_memory():
         {"trigger": "needs_verification", "action": "replan"},
         {"trigger": "needs_clarification", "action": "request_clarification"},
     ]
-    state.memory_state.semantic_memory = {
-        "confirmed_targets": ["README.md"],
-        "excluded_targets": ["frontend-shell/README.md"],
-        "search_plan": {"semantic_queries": ["README"]},
-        "read_plan": {"target_path": "README.md"},
-    }
-    state.memory_state.execution_memory = {
-        "ineffective_actions": ["search broadly", "search broadly", "inspect docs"],
-    }
-    state.memory_state.clarification_memory = {
-        "candidate_items": ["README.md", "frontend-shell/README.md"],
-        "clarification_history": [{"question": "which readme"}],
-    }
+    state.memory_state.session_memory.last_active_target = "README.md"
+    state.memory_state.session_memory.recent_paths = ["README.md", "frontend-shell/README.md"]
+    state.memory_state.session_memory.last_read_files = ["README.md"]
+    state.memory_state.session_memory.last_clarification = {"candidate_items": ["README.md", "frontend-shell/README.md"]}
+    state.memory_state.working_memory.confirmed_targets = ["README.md"]
+    state.memory_state.working_memory.excluded_targets = ["frontend-shell/README.md"]
+    state.memory_state.working_memory.open_issues = ["verification"]
+    state.memory_state.working_memory.last_tool_result_summary = {"summary": "inspect docs"}
 
-    planner_view = build_planner_memory_view(state)
-    semantic_view = build_semantic_memory_view(state)
+    task_snapshot = build_task_snapshot_view(state)
+    working_view = build_working_memory_view(state)
 
-    assert planner_view["confirmed_targets"] == ["README.md"]
-    assert planner_view["excluded_targets"] == ["frontend-shell/README.md"]
-    assert planner_view["open_issues"] == ["verification"]
-    assert planner_view["ineffective_actions"] == ["search broadly", "inspect docs"]
-    assert len(planner_view["recent_failures"]) == 2
-    assert len(planner_view["recent_recovery"]) == 2
-    assert semantic_view["clarification_memory"]["candidate_items"] == ["README.md", "frontend-shell/README.md"]
+    assert task_snapshot["recent_focus"] == ["README.md"]
+    assert task_snapshot["recent_paths"] == ["README.md", "frontend-shell/README.md"]
+    assert task_snapshot["last_clarification"]["candidate_items"] == ["README.md", "frontend-shell/README.md"]
+    assert working_view["confirmed_targets"] == ["README.md"]
+    assert working_view["excluded_targets"] == ["frontend-shell/README.md"]
+    assert working_view["open_issues"] == ["verification"]
 
 
-def test_memory_updates_write_semantic_and_execution_memory():
-    from agent_runtime_framework.workflow.memory.updates import remember_execution_feedback, remember_semantic_plan
+def test_semantic_state_helpers_write_session_and_working_memory():
+    from agent_runtime_framework.workflow.nodes.semantic import (
+        _update_state_session_memory,
+        _update_state_working_memory,
+    )
     from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
     state = new_agent_graph_state(run_id="run-memory-update", goal_envelope=goal)
 
-    remember_semantic_plan(state, interpreted_target={"preferred_path": "README.md"}, search_plan={"semantic_queries": ["README"]})
-    remember_execution_feedback(
+    _update_state_session_memory(
         state,
-        ineffective_actions=["search broadly", "inspect docs"],
-        conflicts=["multiple readmes"],
-        quality_summary={"coverage": "partial"},
+        last_active_target="README.md",
+        recent_paths=["README.md", "docs/README.md"],
+        last_action_summary="read readme",
+        last_clarification={"preferred_path": "README.md"},
+    )
+    _update_state_working_memory(
+        state,
+        active_target="README.md",
+        confirmed_targets=["README.md"],
+        excluded_targets=["docs/README.md"],
+        current_step="explain readme",
     )
 
-    assert state.memory_state.semantic_memory["interpreted_target"]["preferred_path"] == "README.md"
-    assert state.memory_state.semantic_memory["search_plan"]["semantic_queries"] == ["README"]
-    assert state.memory_state.execution_memory["ineffective_actions"] == ["search broadly", "inspect docs"]
-    assert state.memory_state.execution_memory["conflicts"] == ["multiple readmes"]
+    assert state.memory_state.session_memory.last_active_target == "README.md"
+    assert state.memory_state.session_memory.last_clarification == {"preferred_path": "README.md"}
+    assert state.memory_state.working_memory.confirmed_targets == ["README.md"]
+    assert state.memory_state.working_memory.excluded_targets == ["docs/README.md"]
 
 
 def test_workflow_prompt_helpers_extract_json_and_build_context_block():

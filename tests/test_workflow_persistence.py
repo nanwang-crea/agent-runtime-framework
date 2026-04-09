@@ -100,10 +100,22 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
         "judge_history": [{"status": "accepted", "reason": "ok", "missing_evidence": [], "coverage_report": {}, "replan_hint": {}}],
         "appended_node_ids": ["content_search_1"],
         "memory_state": {
-            "clarification_memory": {"active_question": "which readme", "candidate_items": ["README.md"]},
-            "semantic_memory": {"confirmed_targets": ["README.md"]},
-            "execution_memory": {"ineffective_actions": ["search readme broadly"]},
-            "preference_memory": {"path_preferences": ["README.md"]},
+            "session_memory": {
+                "last_active_target": "README.md",
+                "recent_paths": ["README.md"],
+                "last_action_summary": "read readme",
+                "last_read_files": ["README.md"],
+                "last_clarification": {"preferred_path": "README.md"},
+            },
+            "working_memory": {
+                "active_target": "README.md",
+                "confirmed_targets": ["README.md"],
+                "excluded_targets": [],
+                "current_step": "read readme",
+                "open_issues": [],
+                "last_tool_result_summary": None,
+            },
+            "long_term_memory": {},
         },
     }
 
@@ -112,7 +124,7 @@ def test_workflow_persistence_store_restores_agent_graph_state_metadata(tmp_path
 
     assert restored.metadata["agent_graph_state"]["current_iteration"] == 1
     assert restored.metadata["agent_graph_state"]["execution_summary"]["current_iteration"] == 1
-    assert restored.metadata["agent_graph_state"]["memory_state"]["semantic_memory"]["confirmed_targets"] == ["README.md"]
+    assert restored.metadata["agent_graph_state"]["memory_state"]["working_memory"]["confirmed_targets"] == ["README.md"]
     assert restored.graph.metadata["append_history"][0]["parent_judge_id"] == "plan_1"
 
 

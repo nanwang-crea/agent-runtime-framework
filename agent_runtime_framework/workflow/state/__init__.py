@@ -2,6 +2,8 @@ from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphS
 from agent_runtime_framework.workflow.state.approval import WorkflowResumeToken, create_resume_token
 from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
+    ConversationTurn,
+    SessionMemoryState,
     InteractionRequest,
     NODE_STATUS_COMPLETED,
     NODE_STATUS_FAILED,
@@ -21,6 +23,7 @@ from agent_runtime_framework.workflow.state.models import (
     RUN_STATUS_RUNNING,
     RUN_STATUS_WAITING_APPROVAL,
     RUN_STATUS_WAITING_INPUT,
+    WorkingMemory,
     SubTaskSpec,
     WorkflowEdge,
     WorkflowGraph,
@@ -36,6 +39,7 @@ from agent_runtime_framework.workflow.state.persistence import WorkflowPersisten
 __all__ = [
     "AgentGraphState",
     "AgentGraphStateStore",
+    "ConversationTurn",
     "GoalEnvelope",
     "GoalSpec",
     "InteractionRequest",
@@ -55,7 +59,9 @@ __all__ = [
     "RUN_STATUS_RUNNING",
     "RUN_STATUS_WAITING_APPROVAL",
     "RUN_STATUS_WAITING_INPUT",
+    "SessionMemoryState",
     "SubTaskSpec",
+    "WorkingMemory",
     "WorkflowEdge",
     "WorkflowGraph",
     "WorkflowNode",
