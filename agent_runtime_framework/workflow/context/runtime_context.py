@@ -12,7 +12,6 @@ class WorkflowRuntimeContext:
     workspace_context: Any = None
     workspace_root: str = "."
     memory: dict[str, Any] = field(default_factory=dict)
-    session_memory_snapshot: Any = None
     policy_context: dict[str, Any] = field(default_factory=dict)
     process_sink: Any = None
 
@@ -26,7 +25,7 @@ class WorkflowRuntimeContext:
         return isinstance(key, str) and hasattr(self, key)
 
     def keys(self):
-        return ("application_context", "workspace_context", "workspace_root", "memory", "session_memory_snapshot", "policy_context", "process_sink")
+        return ("application_context", "workspace_context", "workspace_root", "memory", "policy_context", "process_sink")
 
     def items(self):
         return [(key, getattr(self, key)) for key in self.keys()]
@@ -75,14 +74,11 @@ def _policy_context(application_context: Any | None) -> dict[str, Any]:
 
 
 def build_runtime_context(*, application_context: Any, workspace_context: Any, workspace_root: str | None = None, process_sink: Any = None) -> WorkflowRuntimeContext:
-    session_memory = getattr(application_context, "session_memory", None)
-    session_snapshot = session_memory.snapshot() if session_memory is not None and hasattr(session_memory, "snapshot") else None
     return WorkflowRuntimeContext(
         application_context=application_context,
         workspace_context=workspace_context,
         workspace_root=str(workspace_root or "."),
         memory=_memory_payload(application_context),
-        session_memory_snapshot=session_snapshot,
         policy_context=_policy_context(application_context),
         process_sink=process_sink,
     )

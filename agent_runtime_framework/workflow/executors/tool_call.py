@@ -62,46 +62,25 @@ class ToolCallExecutor:
         output = dict(result.output or {})
         memory_manager = getattr(application_context, "memory_manager", None) or MemoryManager()
         state = run.shared_state.get("agent_graph_state_ref")
-        if state is not None:
-            state.memory_state.session_memory = memory_manager.update_session_from_tool_result(
-                state.memory_state.session_memory,
-                {
-                    "path": output.get("path") or output.get("resolved_path"),
-                    "summary": output.get("summary"),
-                },
-            )
-            state.memory_state.working_memory = memory_manager.restore_working_memory(
-                {
-                    **memory_manager.checkpoint_working_memory(state.memory_state.working_memory),
-                    "last_tool_result_summary": {
-                        "tool_name": tool_name,
-                        "path": output.get("path") or output.get("resolved_path"),
-                        "summary": output.get("summary"),
-                    },
-                }
-            )
-            run.shared_state["memory_state"] = state.memory_state.as_payload()
-        else:
-            memory_state = dict(run.shared_state.get("memory_state") or {})
-            memory_state.setdefault("session_memory", {})
-            memory_state.setdefault("working_memory", {})
-            memory_state["session_memory"] = memory_manager.update_session_from_tool_result(
-                __import__("agent_runtime_framework.workflow.state.models", fromlist=["SessionMemoryState"]).SessionMemoryState(
-                    **dict(memory_state.get("session_memory") or {})
-                ),
-                {
-                    "path": output.get("path") or output.get("resolved_path"),
-                    "summary": output.get("summary"),
-                },
-            ).as_payload()
-            working_payload = dict(memory_state.get("working_memory") or {})
-            working_payload["last_tool_result_summary"] = {
-                "tool_name": tool_name,
+        if state is None:
+            return NodeResult(status=NODE_STATUS_FAILED, error="Missing agent_graph_state_ref for tool_call executor")
+        state.memory_state.session_memory = memory_manager.update_session_from_tool_result(
+            state.memory_state.session_memory,
+            {
                 "path": output.get("path") or output.get("resolved_path"),
                 "summary": output.get("summary"),
+            },
+        )
+        state.memory_state.working_memory = memory_manager.restore_working_memory(
+            {
+                **memory_manager.checkpoint_working_memory(state.memory_state.working_memory),
+                "last_tool_result_summary": {
+                    "tool_name": tool_name,
+                    "path": output.get("path") or output.get("resolved_path"),
+                    "summary": output.get("summary"),
+                },
             }
-            memory_state["working_memory"] = working_payload
-            run.shared_state["memory_state"] = memory_state
+        )
 
         session_memory = getattr(application_context, "session_memory", None)
         path_value = str(output.get("path") or output.get("resolved_path") or "").strip()

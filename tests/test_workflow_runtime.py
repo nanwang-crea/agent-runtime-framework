@@ -275,7 +275,11 @@ def test_tool_call_executor_uses_application_memory_manager(tmp_path):
     for tool in build_default_workspace_tools():
         app_context.tools.register(tool)
 
-    run = WorkflowRun(goal="创建 docs/notes.md", shared_state={})
+    state = new_agent_graph_state(
+        run_id="tool-memory-manager",
+        goal_envelope=GoalEnvelope(goal="创建 docs/notes.md", normalized_goal="创建 docs/notes.md", intent="change_and_verify"),
+    )
+    run = WorkflowRun(goal="创建 docs/notes.md", shared_state={"agent_graph_state_ref": state})
     result = ToolCallExecutor().execute(
         WorkflowNode(
             node_id="tool_call_1",
@@ -472,6 +476,14 @@ def test_semantic_planning_pipeline_resolves_root_readme_after_clarification(mon
         goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
         pending_interaction=InteractionRequest(kind="clarification", prompt="Which README?", items=["README.md", "frontend-shell/README.md"]),
         shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="semantic-pipeline",
+                goal_envelope=GoalEnvelope(
+                    goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
+                    normalized_goal="我需要你帮我看一下当前项目根目录当中的README在讲什么内容呢？",
+                    intent="file_read",
+                ),
+            ),
             "clarification_response": "当前工作区的README文件，在最外层的",
             "node_results": {},
         },
@@ -808,6 +820,10 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
         goal="看根目录 README",
         pending_interaction=InteractionRequest(kind="clarification", prompt="Which README?", items=["README.md", "frontend-shell/README.md"]),
         shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="interpret-readme",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            ),
             "clarification_response": "最外层那个 README",
             "failure_history": [{"iteration": 1, "status": "needs_clarification"}],
         },
@@ -820,8 +836,6 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
     assert result.output["quality_signals"][0]["progress_contribution"] == "target_constraints_defined"
     assert seen_payload["payload"]["prior_candidates"] == ["README.md", "frontend-shell/README.md"]
     assert seen_payload["payload"]["failure_history"][0]["status"] == "needs_clarification"
-    assert run.shared_state["memory_state"]["working_memory"]["active_target"] == "README.md"
-    assert run.shared_state["memory_state"]["working_memory"]["confirmed_targets"] == ["README.md"]
 
 
 def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeypatch):
@@ -836,7 +850,15 @@ def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeyp
             "confidence": 0.9,
         },
     )
-    run = WorkflowRun(goal="看根目录 README", shared_state={})
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="interpret-invalid",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            )
+        },
+    )
 
     with pytest.raises(ValueError, match="preferred_path"):
         InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
@@ -908,6 +930,10 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
     run = WorkflowRun(
         goal="看根目录 README",
         shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="search-plan",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            ),
             "interpreted_target": {"preferred_path": "README.md"},
             "failure_history": [{"iteration": 2, "status": "needs_more_evidence"}],
             "attempted_strategies": ["search readme broadly"],
@@ -920,7 +946,6 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
     assert run.shared_state["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
     assert result.output["reasoning_trace"][0]["kind"] == "search_plan"
     assert seen_payload["payload"]["attempted_strategies"] == ["search readme broadly"]
-    assert run.shared_state["memory_state"]["working_memory"]["current_step"] == "find backend readme"
 
 
 def test_plan_search_executor_requires_semantic_queries(monkeypatch):
@@ -935,7 +960,16 @@ def test_plan_search_executor_requires_semantic_queries(monkeypatch):
             "confidence": 0.81,
         },
     )
-    run = WorkflowRun(goal="看根目录 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+    run = WorkflowRun(
+        goal="看根目录 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="search-invalid",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            ),
+            "interpreted_target": {"preferred_path": "README.md"},
+        },
+    )
 
     with pytest.raises(ValueError, match="semantic_queries"):
         PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
@@ -962,6 +996,10 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
     run = WorkflowRun(
         goal="看根目录 README",
         shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="read-plan",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            ),
             "interpreted_target": {"preferred_path": "README.md"},
             "search_plan": {"search_goal": "find backend readme"},
             "failure_history": [{"iteration": 3, "status": "needs_more_evidence"}],
@@ -974,7 +1012,6 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
     assert run.shared_state["read_plan"]["preferred_regions"] == ["head"]
     assert result.output["quality_signals"][0]["progress_contribution"] == "read_strategy_defined"
     assert seen_payload["payload"]["search_plan"]["search_goal"] == "find backend readme"
-    assert run.shared_state["memory_state"]["working_memory"]["active_target"] == "README.md"
 
 
 def test_plan_read_executor_requires_target_path(monkeypatch):
@@ -991,6 +1028,10 @@ def test_plan_read_executor_requires_target_path(monkeypatch):
     run = WorkflowRun(
         goal="看根目录 README",
         shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="read-invalid",
+                goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+            ),
             "interpreted_target": {"preferred_path": "README.md"},
             "search_plan": {"search_goal": "find backend readme"},
         },
@@ -998,6 +1039,31 @@ def test_plan_read_executor_requires_target_path(monkeypatch):
 
     with pytest.raises(ValueError, match="target_path"):
         PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+
+
+def test_semantic_executors_require_agent_graph_state_reference(monkeypatch):
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_kind": "file",
+            "preferred_path": "README.md",
+            "scope_preference": "workspace_root",
+            "exclude_paths": [],
+            "confirmed": True,
+            "confidence": 0.9,
+            "rationale": "resolved",
+        },
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={})
+
+    with pytest.raises(RuntimeError, match="agent_graph_state_ref"):
+        InterpretTargetExecutor().execute(
+            WorkflowNode(node_id="interpret", node_type="interpret_target"),
+            run,
+            context={},
+        )
 
 
 def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
@@ -1011,7 +1077,16 @@ def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
             "must_avoid": None,
         },
     )
-    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+    run = WorkflowRun(
+        goal="看 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="search-partial-invalid",
+                goal_envelope=GoalEnvelope(goal="看 README", normalized_goal="看 README", intent="file_read"),
+            ),
+            "interpreted_target": {"preferred_path": "README.md"},
+        },
+    )
 
     with pytest.raises(ValueError, match="search_goal"):
         PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
@@ -1035,7 +1110,16 @@ def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
             "path_bias": ["README.md"],
         },
     )
-    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+    run = WorkflowRun(
+        goal="看 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="search-partial-repair",
+                goal_envelope=GoalEnvelope(goal="看 README", normalized_goal="看 README", intent="file_read"),
+            ),
+            "interpreted_target": {"preferred_path": "README.md"},
+        },
+    )
 
     result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
 
@@ -1054,7 +1138,16 @@ def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
             "confidence": "0.6",
         },
     )
-    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}})
+    run = WorkflowRun(
+        goal="看 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="read-partial-invalid",
+                goal_envelope=GoalEnvelope(goal="看 README", normalized_goal="看 README", intent="file_read"),
+            ),
+            "interpreted_target": {"preferred_path": "README.md"},
+        },
+    )
 
     with pytest.raises(ValueError, match="read_goal"):
         PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
@@ -1080,7 +1173,17 @@ def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
             "confidence": 0.6,
         },
     )
-    run = WorkflowRun(goal="看 README", shared_state={"interpreted_target": {"preferred_path": "README.md"}, "search_plan": {"search_goal": "find readme"}})
+    run = WorkflowRun(
+        goal="看 README",
+        shared_state={
+            "agent_graph_state_ref": new_agent_graph_state(
+                run_id="read-partial-repair",
+                goal_envelope=GoalEnvelope(goal="看 README", normalized_goal="看 README", intent="file_read"),
+            ),
+            "interpreted_target": {"preferred_path": "README.md"},
+            "search_plan": {"search_goal": "find readme"},
+        },
+    )
 
     result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
 

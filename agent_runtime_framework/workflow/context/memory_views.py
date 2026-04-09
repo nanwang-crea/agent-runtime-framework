@@ -97,8 +97,6 @@ def build_response_context_view(memory_state: dict[str, Any] | None) -> dict[str
         "confirmed_targets": list(working_memory.confirmed_targets),
         "excluded_targets": list(working_memory.excluded_targets),
     }
-
-
 __all__ = [
     "build_task_snapshot_view",
     "build_working_memory_view",

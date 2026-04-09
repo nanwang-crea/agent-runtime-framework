@@ -42,7 +42,7 @@ class WorkflowPersistenceStore:
     def _json_safe_run_payload(self, run: WorkflowRun) -> dict[str, Any]:
         payload = asdict(run)
         shared_state = dict(payload.get("shared_state", {}))
-        for volatile_key in ("runtime_context", "agent_graph_state_ref", "session_memory_snapshot"):
+        for volatile_key in ("runtime_context", "agent_graph_state_ref"):
             shared_state.pop(volatile_key, None)
         payload["shared_state"] = self._json_safe_value(shared_state)
         payload["metadata"] = self._json_safe_value(dict(payload.get("metadata", {})))

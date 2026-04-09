@@ -139,7 +139,6 @@ def test_workflow_persistence_store_omits_runtime_only_shared_state(tmp_path):
         application_context=SimpleNamespace(config={"default_directory": Path(tmp_path) / "workspace"}),
     )
     run.shared_state["agent_graph_state_ref"] = SimpleNamespace(run_id=run.run_id)
-    run.shared_state["session_memory_snapshot"] = SimpleNamespace(last_summary="focused")
     run.shared_state["safe_value"] = {"workspace_root": Path(tmp_path)}
 
     store.save(run)
@@ -147,5 +146,4 @@ def test_workflow_persistence_store_omits_runtime_only_shared_state(tmp_path):
 
     assert "runtime_context" not in restored.shared_state
     assert "agent_graph_state_ref" not in restored.shared_state
-    assert "session_memory_snapshot" not in restored.shared_state
     assert restored.shared_state["safe_value"]["workspace_root"] == str(tmp_path)

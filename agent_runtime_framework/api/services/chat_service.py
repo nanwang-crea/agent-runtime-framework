@@ -243,7 +243,6 @@ class ChatService:
             context=self.runtime_state.context,
         ).as_payload()
         run.shared_state["memory"] = self.session_responses.memory_payload()
-        run.shared_state["session_memory_snapshot"] = self.runtime_state.context.application_context.session_memory.snapshot()
         run = runtime.run(run)
         self._remember_workflow_run(message, run)
         resume_token_id = self._register_pending_run(run)

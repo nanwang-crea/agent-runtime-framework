@@ -73,7 +73,6 @@ class AgentGraphRuntime:
         run.metadata.setdefault("process_events", [])
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
         run.shared_state["agent_graph_state_ref"] = state
-        run.shared_state["memory_state"] = state.memory_state.as_payload()
         self._seed_system_nodes(run, goal_envelope, runtime_context)
         if clarification_response:
             run.shared_state["clarification_response"] = clarification_response

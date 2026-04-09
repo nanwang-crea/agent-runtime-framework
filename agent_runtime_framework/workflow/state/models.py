@@ -333,6 +333,17 @@ class SessionMemoryState:
             "last_clarification": dict(self.last_clarification) if isinstance(self.last_clarification, dict) else None,
         }
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any] | None) -> SessionMemoryState:
+        data = dict(payload or {})
+        return cls(
+            last_active_target=str(data.get("last_active_target")).strip() if data.get("last_active_target") else None,
+            recent_paths=[str(item) for item in data.get("recent_paths", []) or [] if str(item).strip()],
+            last_action_summary=str(data.get("last_action_summary")).strip() if data.get("last_action_summary") else None,
+            last_read_files=[str(item) for item in data.get("last_read_files", []) or [] if str(item).strip()],
+            last_clarification=dict(data.get("last_clarification") or {}) if isinstance(data.get("last_clarification"), dict) else None,
+        )
+
 
 @dataclass(slots=True)
 class WorkingMemory:
@@ -352,6 +363,18 @@ class WorkingMemory:
             "open_issues": list(self.open_issues),
             "last_tool_result_summary": dict(self.last_tool_result_summary) if isinstance(self.last_tool_result_summary, dict) else None,
         }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any] | None) -> WorkingMemory:
+        data = dict(payload or {})
+        return cls(
+            active_target=str(data.get("active_target")).strip() if data.get("active_target") else None,
+            confirmed_targets=[str(item) for item in data.get("confirmed_targets", []) or [] if str(item).strip()],
+            excluded_targets=[str(item) for item in data.get("excluded_targets", []) or [] if str(item).strip()],
+            current_step=str(data.get("current_step")).strip() if data.get("current_step") else None,
+            open_issues=[str(item) for item in data.get("open_issues", []) or [] if str(item).strip()],
+            last_tool_result_summary=dict(data.get("last_tool_result_summary") or {}) if isinstance(data.get("last_tool_result_summary"), dict) else None,
+        )
 
 
 def _goal_session_memory(goal_envelope: GoalEnvelope) -> SessionMemoryState:
@@ -378,6 +401,15 @@ class WorkflowMemoryState:
             "working_memory": self.working_memory.as_payload(),
             "long_term_memory": dict(self.long_term_memory),
         }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any] | None) -> WorkflowMemoryState:
+        data = dict(payload or {})
+        return cls(
+            session_memory=SessionMemoryState.from_payload(data.get("session_memory")),
+            working_memory=WorkingMemory.from_payload(data.get("working_memory")),
+            long_term_memory=dict(data.get("long_term_memory") or {}),
+        )
 
 
 @dataclass(slots=True)

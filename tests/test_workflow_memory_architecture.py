@@ -6,6 +6,7 @@ from agent_runtime_framework.workflow.state.models import (
     ConversationTurn,
     GoalEnvelope,
     SessionMemoryState,
+    WorkflowMemoryState,
     WorkingMemory,
 )
 
@@ -111,6 +112,39 @@ def test_graph_state_store_restores_working_memory_only():
         open_issues=["need summary"],
         last_tool_result_summary={"tool": "read_file", "path": "README.md"},
     )
+
+
+def test_memory_models_restore_from_payload():
+    session_memory = SessionMemoryState.from_payload(
+        {
+            "last_active_target": "README.md",
+            "recent_paths": ["README.md", "docs/README.md"],
+            "last_action_summary": "read readme",
+            "last_read_files": ["README.md"],
+            "last_clarification": {"preferred_path": "README.md"},
+        }
+    )
+    working_memory = WorkingMemory.from_payload(
+        {
+            "active_target": "README.md",
+            "confirmed_targets": ["README.md"],
+            "excluded_targets": ["docs/README.md"],
+            "current_step": "explain readme",
+            "open_issues": ["need summary"],
+            "last_tool_result_summary": {"tool_name": "read_file"},
+        }
+    )
+    workflow_memory = WorkflowMemoryState.from_payload(
+        {
+            "session_memory": session_memory.as_payload(),
+            "working_memory": working_memory.as_payload(),
+            "long_term_memory": {"path_aliases": {"readme": "README.md"}},
+        }
+    )
+
+    assert workflow_memory.session_memory.last_active_target == "README.md"
+    assert workflow_memory.working_memory.confirmed_targets == ["README.md"]
+    assert workflow_memory.long_term_memory["path_aliases"]["readme"] == "README.md"
 
 
 def test_memory_manager_invalidates_stale_working_memory_against_session_memory():

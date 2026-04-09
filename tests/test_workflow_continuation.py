@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from agent_runtime_framework.api.services.chat_service import ChatService
 from agent_runtime_framework.api.services.run_service import RunService
 from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
-from agent_runtime_framework.workflow.state.models import GoalEnvelope, InteractionRequest, RUN_STATUS_WAITING_INPUT, WorkflowGraph, WorkflowRun
+from agent_runtime_framework.workflow.state.models import GoalEnvelope, InteractionRequest, RUN_STATUS_WAITING_INPUT, WorkflowGraph, WorkflowRun, new_agent_graph_state
 from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor
 
 
@@ -172,24 +172,20 @@ def test_final_response_executor_includes_response_memory_view(monkeypatch):
         output={"summaries": ["readme summary"], "facts": [], "evidence_items": [], "verification": None},
         references=["README.md"],
     )
-    run.shared_state["memory_state"] = {
-        "session_memory": {
-            "last_active_target": "README.md",
-            "recent_paths": ["README.md"],
-            "last_action_summary": "read readme",
-            "last_read_files": ["README.md"],
-            "last_clarification": {"preferred_path": "README.md"},
-        },
-        "working_memory": {
-            "active_target": "README.md",
-            "confirmed_targets": ["README.md"],
-            "excluded_targets": ["frontend-shell/README.md"],
-            "current_step": "explain readme",
-            "open_issues": [],
-            "last_tool_result_summary": None,
-        },
-        "long_term_memory": {},
-    }
+    state = new_agent_graph_state(
+        run_id="final-response-memory",
+        goal_envelope=GoalEnvelope(goal="解释根目录 README", normalized_goal="解释根目录 README", intent="file_read"),
+    )
+    state.memory_state.session_memory.last_active_target = "README.md"
+    state.memory_state.session_memory.recent_paths = ["README.md"]
+    state.memory_state.session_memory.last_action_summary = "read readme"
+    state.memory_state.session_memory.last_read_files = ["README.md"]
+    state.memory_state.session_memory.last_clarification = {"preferred_path": "README.md"}
+    state.memory_state.working_memory.active_target = "README.md"
+    state.memory_state.working_memory.confirmed_targets = ["README.md"]
+    state.memory_state.working_memory.excluded_targets = ["frontend-shell/README.md"]
+    state.memory_state.working_memory.current_step = "explain readme"
+    run.shared_state["agent_graph_state_ref"] = state
 
     result = FinalResponseExecutor().execute(SimpleNamespace(node_id="final", node_type="final_response", metadata={}), run, context={})
 

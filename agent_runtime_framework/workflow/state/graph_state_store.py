@@ -6,8 +6,6 @@ from uuid import uuid4
 
 from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
-    SessionMemoryState,
-    WorkingMemory,
     GoalEnvelope,
     JudgeDecision,
     NodeResult,
@@ -50,48 +48,7 @@ class AgentGraphStateStore:
             attempted_strategies=[str(item) for item in prior_state.get("attempted_strategies", []) or [] if str(item).strip()],
             recovery_history=[dict(item) for item in prior_state.get("recovery_history", []) or [] if isinstance(item, dict)],
             repair_history=[dict(item) for item in prior_state.get("repair_history", []) or [] if isinstance(item, dict)],
-            memory_state=WorkflowMemoryState(
-                session_memory=SessionMemoryState(
-                    last_active_target=str((((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("last_active_target")) or "").strip() or None,
-                    recent_paths=[
-                        str(item)
-                        for item in (((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("recent_paths", []) or [])
-                        if str(item).strip()
-                    ],
-                    last_action_summary=str((((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("last_action_summary")) or "").strip() or None,
-                    last_read_files=[
-                        str(item)
-                        for item in (((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("last_read_files", []) or [])
-                        if str(item).strip()
-                    ],
-                    last_clarification=dict((((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("last_clarification") or {}))
-                    if isinstance((((prior_state.get("memory_state") or {}).get("session_memory") or {}).get("last_clarification")), dict)
-                    else None,
-                ),
-                working_memory=WorkingMemory(
-                    active_target=str((((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("active_target")) or "").strip() or None,
-                    confirmed_targets=[
-                        str(item)
-                        for item in (((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("confirmed_targets", []) or [])
-                        if str(item).strip()
-                    ],
-                    excluded_targets=[
-                        str(item)
-                        for item in (((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("excluded_targets", []) or [])
-                        if str(item).strip()
-                    ],
-                    current_step=str((((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("current_step")) or "").strip() or None,
-                    open_issues=[
-                        str(item)
-                        for item in (((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("open_issues", []) or [])
-                        if str(item).strip()
-                    ],
-                    last_tool_result_summary=dict((((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("last_tool_result_summary") or {}))
-                    if isinstance((((prior_state.get("memory_state") or {}).get("working_memory") or {}).get("last_tool_result_summary")), dict)
-                    else None,
-                ),
-                long_term_memory=dict((prior_state.get("memory_state") or {}).get("long_term_memory") or {}),
-            ),
+            memory_state=WorkflowMemoryState.from_payload(prior_state.get("memory_state")),
         )
         for item in prior_state.get("planned_subgraphs", []) or []:
             nodes = [

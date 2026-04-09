@@ -322,7 +322,12 @@ class FinalResponseExecutor:
             facts = aggregated.output.get("facts", []) if aggregated and isinstance(aggregated.output, dict) else []
             evidence_items = aggregated.output.get("evidence_items", []) if aggregated and isinstance(aggregated.output, dict) else []
             verification = aggregated.output.get("verification") if aggregated and isinstance(aggregated.output, dict) else None
-            response_memory_view = build_response_context_view(run.shared_state.get("memory_state"))
+            state = run.shared_state.get("agent_graph_state_ref")
+            response_memory_view = (
+                build_response_context_view(state.memory_state.as_payload())
+                if state is not None
+                else build_response_context_view(None)
+            )
             final_response = synthesize_text(
                 context,
                 role="composer",

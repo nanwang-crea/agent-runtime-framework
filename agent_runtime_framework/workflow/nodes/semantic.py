@@ -114,20 +114,11 @@ def _normalize_read_plan(payload: dict[str, Any], *, interpreted_target: dict[st
     }
 
 
-def _shared_memory_state(run: WorkflowRun) -> dict[str, Any]:
-    memory_state = dict(run.shared_state.get("memory_state") or {})
-    memory_state.setdefault("session_memory", {})
-    memory_state.setdefault("working_memory", {})
-    memory_state.setdefault("long_term_memory", {})
-    return memory_state
-
-
-def _session_memory(run: WorkflowRun) -> SessionMemoryState:
-    return SessionMemoryState(**dict(_shared_memory_state(run).get("session_memory") or {}))
-
-
-def _working_memory(run: WorkflowRun) -> WorkingMemory:
-    return WorkingMemory(**dict(_shared_memory_state(run).get("working_memory") or {}))
+def _require_state(run: WorkflowRun):
+    state = run.shared_state.get("agent_graph_state_ref")
+    if state is None:
+        raise RuntimeError("Missing agent_graph_state_ref for semantic executor")
+    return state
 
 
 def _normalize_string_list(values: list[str]) -> list[str]:
@@ -262,11 +253,11 @@ def _structured_semantic_plan_with_repair(
 
 class InterpretTargetExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = run.shared_state.get("agent_graph_state_ref")
+        state = _require_state(run)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
-        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
-        session_memory = state.memory_state.session_memory if state is not None else _session_memory(run)
+        task_snapshot = build_task_snapshot_view(state)
+        working_view = build_working_memory_view(state)
+        session_memory = state.memory_state.session_memory
         prior_candidates = list(getattr(getattr(run, "pending_interaction", None), "items", []) or [])
         if not prior_candidates:
             prior_candidates = list((run.shared_state.get("clarification_request") or {}).get("items") or [])
@@ -314,48 +305,24 @@ class InterpretTargetExecutor:
             ),
         )
         run.shared_state["interpreted_target"] = interpreted
-        if state is not None:
-            _update_state_working_memory(
-                state,
-                active_target=interpreted["preferred_path"],
-                confirmed_targets=[interpreted["preferred_path"]] if interpreted["confirmed"] else [],
-                excluded_targets=list(interpreted.get("exclude_paths") or []),
-                current_step=run.goal,
-            )
-            _update_state_session_memory(
-                state,
-                last_active_target=interpreted["preferred_path"],
-                recent_paths=[interpreted["preferred_path"], *list(state.memory_state.session_memory.recent_paths)],
-                last_action_summary=str(interpreted.get("rationale") or ""),
-                last_clarification={
-                    "candidate_items": list(payload["prior_candidates"]),
-                    "preferred_path": interpreted["preferred_path"],
-                    "confidence": interpreted["confidence"],
-                },
-            )
-            run.shared_state["memory_state"] = state.memory_state.as_payload()
-        else:
-            memory_state = _shared_memory_state(run)
-            session_payload = _session_memory(run).as_payload()
-            session_payload["last_active_target"] = interpreted["preferred_path"]
-            session_payload["recent_paths"] = [
-                interpreted["preferred_path"],
-                *[str(item) for item in session_payload.get("recent_paths", []) if str(item).strip() and str(item) != interpreted["preferred_path"]],
-            ]
-            session_payload["last_action_summary"] = str(interpreted.get("rationale") or "")
-            session_payload["last_clarification"] = {
+        _update_state_working_memory(
+            state,
+            active_target=interpreted["preferred_path"],
+            confirmed_targets=[interpreted["preferred_path"]] if interpreted["confirmed"] else [],
+            excluded_targets=list(interpreted.get("exclude_paths") or []),
+            current_step=run.goal,
+        )
+        _update_state_session_memory(
+            state,
+            last_active_target=interpreted["preferred_path"],
+            recent_paths=[interpreted["preferred_path"], *list(state.memory_state.session_memory.recent_paths)],
+            last_action_summary=str(interpreted.get("rationale") or ""),
+            last_clarification={
                 "candidate_items": list(payload["prior_candidates"]),
                 "preferred_path": interpreted["preferred_path"],
                 "confidence": interpreted["confidence"],
-            }
-            working_payload = _working_memory(run).as_payload()
-            working_payload["active_target"] = interpreted["preferred_path"]
-            working_payload["confirmed_targets"] = [interpreted["preferred_path"]] if interpreted["confirmed"] else []
-            working_payload["excluded_targets"] = list(interpreted.get("exclude_paths") or [])
-            working_payload["current_step"] = run.goal
-            memory_state["session_memory"] = session_payload
-            memory_state["working_memory"] = working_payload
-            run.shared_state["memory_state"] = memory_state
+            },
+        )
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -376,10 +343,10 @@ class InterpretTargetExecutor:
 
 class PlanSearchExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = run.shared_state.get("agent_graph_state_ref")
+        state = _require_state(run)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
-        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
+        task_snapshot = build_task_snapshot_view(state)
+        working_view = build_working_memory_view(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         payload = {
             "goal": run.goal,
@@ -416,15 +383,7 @@ class PlanSearchExecutor:
             interpreted_target=interpreted_target,
         )
         run.shared_state["search_plan"] = search_plan
-        if state is not None:
-            _update_state_working_memory(state, current_step=search_plan["search_goal"])
-            run.shared_state["memory_state"] = state.memory_state.as_payload()
-        else:
-            memory_state = _shared_memory_state(run)
-            working_payload = _working_memory(run).as_payload()
-            working_payload["current_step"] = search_plan["search_goal"]
-            memory_state["working_memory"] = working_payload
-            run.shared_state["memory_state"] = memory_state
+        _update_state_working_memory(state, current_step=search_plan["search_goal"])
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={
@@ -445,10 +404,10 @@ class PlanSearchExecutor:
 
 class PlanReadExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = run.shared_state.get("agent_graph_state_ref")
+        state = _require_state(run)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state) if state is not None else {}
-        working_view = build_working_memory_view(state) if state is not None else _working_memory(run).as_payload()
+        task_snapshot = build_task_snapshot_view(state)
+        working_view = build_working_memory_view(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         search_plan = dict(run.shared_state.get("search_plan") or {})
         payload = {
@@ -489,22 +448,12 @@ class PlanReadExecutor:
             search_plan=search_plan,
         )
         run.shared_state["read_plan"] = read_plan
-        if state is not None:
-            _update_state_working_memory(
-                state,
-                active_target=read_plan["target_path"],
-                confirmed_targets=[read_plan["target_path"]],
-                current_step=read_plan["read_goal"],
-            )
-            run.shared_state["memory_state"] = state.memory_state.as_payload()
-        else:
-            memory_state = _shared_memory_state(run)
-            working_payload = _working_memory(run).as_payload()
-            working_payload["active_target"] = read_plan["target_path"]
-            working_payload["confirmed_targets"] = [read_plan["target_path"]]
-            working_payload["current_step"] = read_plan["read_goal"]
-            memory_state["working_memory"] = working_payload
-            run.shared_state["memory_state"] = memory_state
+        _update_state_working_memory(
+            state,
+            active_target=read_plan["target_path"],
+            confirmed_targets=[read_plan["target_path"]],
+            current_step=read_plan["read_goal"],
+        )
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
             output={

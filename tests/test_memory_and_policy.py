@@ -250,5 +250,5 @@ def test_context_assembly_collects_application_workspace_memory_and_policy(tmp_p
     assert runtime_context["application_context"] is app_context
     assert runtime_context["workspace_context"]["workspace_root"] == str(workspace)
     assert runtime_context["memory"]["last_summary"] == "focused"
-    assert runtime_context["session_memory_snapshot"].last_summary == "focused"
+    assert "session_memory_snapshot" not in runtime_context
     assert runtime_context["policy_context"]["policy_name"] == "SimpleDesktopPolicy"
