@@ -89,6 +89,30 @@ class VerificationExecutor:
         if not verification_events:
             verification_events = self._active_verification_events(node_results, context, verification_type=str(node.metadata.get("verification_type") or "").strip())
         if not verification_events:
+            if self._has_read_only_grounded_evidence(node_results):
+                summary = str(node.metadata.get("verification_summary") or "Read-only workflow does not require explicit verification.")
+                verification = {"status": "passed", "success": True, "summary": summary}
+                return NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "summary": summary,
+                        "verification": verification,
+                        "verification_events": [],
+                        "quality_signals": [
+                            {
+                                "source": "verification",
+                                "relevance": "medium",
+                                "confidence": 0.85,
+                                "progress_contribution": "verification_completed",
+                                "verification_needed": False,
+                                "recoverable_error": False,
+                            }
+                        ],
+                        "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+                    },
+                    references=references,
+                    error=None,
+                )
             summary = str(node.metadata.get("verification_summary") or "No verification result was produced.")
             verification = {"status": "failed", "success": False, "summary": summary}
             return NodeResult(
@@ -176,6 +200,25 @@ class VerificationExecutor:
             references=references,
             error=None,
         )
+
+    def _has_read_only_grounded_evidence(self, node_results: dict[str, NodeResult]) -> bool:
+        for result in node_results.values():
+            output = result.output if isinstance(getattr(result, "output", None), dict) else {}
+            if not output:
+                continue
+            tool_name = str(output.get("tool_name") or "").strip()
+            if tool_name in {
+                "create_workspace_path",
+                "move_workspace_path",
+                "delete_workspace_path",
+                "apply_text_patch",
+                "edit_workspace_text",
+                "append_workspace_text",
+            }:
+                return False
+            if output.get("facts") or output.get("evidence_items") or output.get("chunks") or output.get("summary"):
+                return True
+        return False
 
     def _active_verification_events(
         self,

@@ -1160,6 +1160,35 @@ def test_verification_executor_actively_verifies_post_write_nodes(tmp_path):
     assert result.output["verification_by_type"]["post_write"]["status"] == "passed"
 
 
+def test_verification_executor_does_not_block_read_only_workflows():
+    run = WorkflowRun(
+        goal="解释 README.md",
+        shared_state={
+            "node_results": {
+                "chunked_file_read": NodeResult(
+                    status=NODE_STATUS_COMPLETED,
+                    output={
+                        "summary": "README explains the runtime architecture",
+                        "facts": [{"kind": "file", "path": "README.md"}],
+                        "evidence_items": [{"kind": "path", "path": "README.md", "summary": "Project overview"}],
+                    },
+                    references=["README.md"],
+                )
+            }
+        },
+    )
+
+    result = VerificationExecutor().execute(
+        WorkflowNode(node_id="verification", node_type="verification"),
+        run,
+        context={"workspace_root": "."},
+    )
+
+    assert result.status == NODE_STATUS_COMPLETED
+    assert result.output["verification"]["status"] == "passed"
+    assert result.output["verification"]["success"] is True
+
+
 def test_final_response_executor_prefers_evidence_synthesis_output():
     run = WorkflowRun(
         goal="解释仓库",
