@@ -8,7 +8,7 @@ from agent_runtime_framework.workflow.llm.structured_output_repair import repair
 
 repair_structured_output = repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import chat_json
-from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
+from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
 from agent_runtime_framework.workflow.planning.prompts import build_judge_system_prompt
 
@@ -94,18 +94,12 @@ def _has_grounded_progress(signals: list[dict[str, Any]]) -> bool:
 
 
 def _judge_context_payload(goal_envelope: GoalEnvelope, payload: dict[str, Any], graph_state: AgentGraphState) -> dict[str, Any]:
-    return {
-        "goal": goal_envelope.goal,
-        "intent": goal_envelope.intent,
-        "target_hints": list(goal_envelope.target_hints),
-        "success_criteria": list(goal_envelope.success_criteria),
-        "constraints": dict(goal_envelope.constraints),
-        "current_iteration": graph_state.current_iteration,
-        "aggregated_payload": payload,
-        "execution_summary": build_agent_graph_execution_summary(graph_state),
-        "task_snapshot": build_task_snapshot_view(graph_state),
-        "working_memory_view": build_working_memory_view(graph_state),
-    }
+    return DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_judge_context(
+        goal_envelope=goal_envelope,
+        aggregated_payload=payload,
+        graph_state=graph_state,
+        execution_summary=build_agent_graph_execution_summary(graph_state),
+    )
 
 
 def _normalize_optional_mapping(value: Any) -> dict[str, Any]:
@@ -152,7 +146,7 @@ def _guardrail_decision(
     payload: dict[str, Any],
     graph_state: AgentGraphState,
 ) -> JudgeDecision | None:
-    judge_memory_view = build_working_memory_view(graph_state)
+    judge_memory_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(graph_state)
     max_iterations = int(goal_envelope.constraints.get("max_iterations") or 0)
     if max_iterations and graph_state.current_iteration >= max_iterations:
         return JudgeDecision(

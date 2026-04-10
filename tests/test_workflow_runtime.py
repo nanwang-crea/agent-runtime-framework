@@ -20,6 +20,7 @@ from agent_runtime_framework.workflow import (
 )
 from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
 import pytest
+from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRuntime
 from agent_runtime_framework.workflow.runtime.scheduler import WorkflowScheduler
 from agent_runtime_framework.workflow.nodes.interaction import ClarificationExecutor, ToolCallExecutor
@@ -86,6 +87,10 @@ class RecordingGraphExecutionRuntime(GraphExecutionRuntime):
     def run(self, run):
         self.calls.append([node.node_type for node in run.graph.nodes])
         return super().run(run)
+
+
+def _semantic_test_context():
+    return {"application_context": SimpleNamespace(memory_manager=MemoryManager())}
 
 
 def test_scheduler_only_returns_nodes_with_completed_dependencies():
@@ -829,7 +834,7 @@ def test_interpret_target_executor_stores_interpreted_target(monkeypatch):
         },
     )
 
-    result = InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
+    result = InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context=_semantic_test_context())
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["interpreted_target"]["preferred_path"] == "README.md"
@@ -861,7 +866,7 @@ def test_interpret_target_executor_requires_confirmed_and_preferred_path(monkeyp
     )
 
     with pytest.raises(ValueError, match="preferred_path"):
-        InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context={})
+        InterpretTargetExecutor().execute(WorkflowNode(node_id="interpret", node_type="interpret_target"), run, context=_semantic_test_context())
 
 
 def test_interpret_target_executor_uses_recent_focus_as_fallback_path(monkeypatch):
@@ -900,7 +905,7 @@ def test_interpret_target_executor_uses_recent_focus_as_fallback_path(monkeypatc
     result = InterpretTargetExecutor().execute(
         WorkflowNode(node_id="interpret", node_type="interpret_target"),
         run,
-        context={},
+        context=_semantic_test_context(),
     )
 
     assert result.status == NODE_STATUS_COMPLETED
@@ -940,7 +945,7 @@ def test_plan_search_executor_stores_search_plan(monkeypatch):
         },
     )
 
-    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context=_semantic_test_context())
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["search_plan"]["semantic_queries"] == ["README", "agent runtime"]
@@ -972,7 +977,7 @@ def test_plan_search_executor_requires_semantic_queries(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="semantic_queries"):
-        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context=_semantic_test_context())
 
 
 def test_plan_read_executor_stores_read_plan(monkeypatch):
@@ -1006,7 +1011,7 @@ def test_plan_read_executor_stores_read_plan(monkeypatch):
         },
     )
 
-    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context=_semantic_test_context())
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["read_plan"]["preferred_regions"] == ["head"]
@@ -1038,7 +1043,7 @@ def test_plan_read_executor_requires_target_path(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="target_path"):
-        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context=_semantic_test_context())
 
 
 def test_semantic_executors_require_agent_graph_state_reference(monkeypatch):
@@ -1059,6 +1064,35 @@ def test_semantic_executors_require_agent_graph_state_reference(monkeypatch):
     run = WorkflowRun(goal="看根目录 README", shared_state={})
 
     with pytest.raises(RuntimeError, match="agent_graph_state_ref"):
+        InterpretTargetExecutor().execute(
+            WorkflowNode(node_id="interpret", node_type="interpret_target"),
+            run,
+            context={},
+        )
+
+
+def test_semantic_executors_require_application_memory_manager(monkeypatch):
+    from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor
+
+    monkeypatch.setattr(
+        "agent_runtime_framework.workflow.nodes.semantic._structured_semantic_plan",
+        lambda context, payload, system_prompt, max_tokens=400: {
+            "target_kind": "file",
+            "preferred_path": "README.md",
+            "scope_preference": "workspace_root",
+            "exclude_paths": [],
+            "confirmed": True,
+            "confidence": 0.9,
+            "rationale": "resolved",
+        },
+    )
+    state = new_agent_graph_state(
+        run_id="interpret-no-manager",
+        goal_envelope=GoalEnvelope(goal="看根目录 README", normalized_goal="看根目录 README", intent="file_read"),
+    )
+    run = WorkflowRun(goal="看根目录 README", shared_state={"agent_graph_state_ref": state})
+
+    with pytest.raises(RuntimeError, match="memory_manager"):
         InterpretTargetExecutor().execute(
             WorkflowNode(node_id="interpret", node_type="interpret_target"),
             run,
@@ -1089,7 +1123,7 @@ def test_plan_search_executor_rejects_partial_model_output(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="search_goal"):
-        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+        PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context=_semantic_test_context())
 
 
 def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
@@ -1121,7 +1155,7 @@ def test_plan_search_executor_repairs_partial_model_output(monkeypatch):
         },
     )
 
-    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context={})
+    result = PlanSearchExecutor().execute(WorkflowNode(node_id="search_plan", node_type="plan_search"), run, context=_semantic_test_context())
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["search_plan"]["search_goal"] == "find the root readme"
@@ -1150,7 +1184,7 @@ def test_plan_read_executor_rejects_partial_model_output(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="read_goal"):
-        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+        PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context=_semantic_test_context())
 
 
 def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
@@ -1185,7 +1219,7 @@ def test_plan_read_executor_repairs_partial_model_output(monkeypatch):
         },
     )
 
-    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context={})
+    result = PlanReadExecutor().execute(WorkflowNode(node_id="read_plan", node_type="plan_read"), run, context=_semantic_test_context())
 
     assert result.status == NODE_STATUS_COMPLETED
     assert run.shared_state["read_plan"]["read_goal"] == "summarize the readme"

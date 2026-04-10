@@ -8,7 +8,7 @@ from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output, repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import get_application_context
-from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
+from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.state.models import build_agent_graph_execution_summary
 from agent_runtime_framework.workflow.planning.prompts import build_subgraph_planner_system_prompt
@@ -294,17 +294,12 @@ def _compact_execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
 
 
 def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> dict[str, Any]:
-    return {
-        "goal": goal_envelope.goal,
-        "intent": goal_envelope.intent,
-        "target_hints": goal_envelope.target_hints,
-        "success_criteria": goal_envelope.success_criteria,
-        "iteration": graph_state.current_iteration + 1,
-        "latest_judge_decision": _judge_feedback_payload(_latest_judge_decision(graph_state)),
-        "execution_summary": _compact_execution_summary(graph_state),
-        "task_snapshot": build_task_snapshot_view(graph_state),
-        "working_memory_view": build_working_memory_view(graph_state),
-    }
+    return DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_planner_context(
+        goal_envelope=goal_envelope,
+        graph_state=graph_state,
+        latest_judge_decision=_judge_feedback_payload(_latest_judge_decision(graph_state)),
+        execution_summary=_compact_execution_summary(graph_state),
+    )
 
 
 def _resolved_target_payload(graph_state: AgentGraphState) -> dict[str, Any]:

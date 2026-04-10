@@ -338,8 +338,8 @@ def test_agent_graph_state_store_restores_workflow_memory_state():
     assert state.memory_state.long_term_memory["path_aliases"]["readme"] == "README.md"
 
 
-def test_memory_views_compact_structured_workflow_memory():
-    from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
+def test_model_context_compact_structured_workflow_memory():
+    from agent_runtime_framework.workflow.context.model_context import WorkflowModelContextBuilder
     from agent_runtime_framework.workflow.state.models import new_agent_graph_state
 
     goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="file_read")
@@ -364,8 +364,9 @@ def test_memory_views_compact_structured_workflow_memory():
     state.memory_state.working_memory.open_issues = ["verification"]
     state.memory_state.working_memory.last_tool_result_summary = {"summary": "inspect docs"}
 
-    task_snapshot = build_task_snapshot_view(state)
-    working_view = build_working_memory_view(state)
+    builder = WorkflowModelContextBuilder()
+    task_snapshot = builder.build_task_snapshot_fragment(state)
+    working_view = builder.build_working_memory_fragment(state)
 
     assert task_snapshot["recent_focus"] == ["README.md"]
     assert task_snapshot["recent_paths"] == ["README.md", "frontend-shell/README.md"]
@@ -373,6 +374,41 @@ def test_memory_views_compact_structured_workflow_memory():
     assert working_view["confirmed_targets"] == ["README.md"]
     assert working_view["excluded_targets"] == ["frontend-shell/README.md"]
     assert working_view["open_issues"] == ["verification"]
+
+
+def test_workflow_model_context_builder_restores_prior_state_for_clarification_and_response():
+    from agent_runtime_framework.workflow.context.model_context import WorkflowModelContextBuilder
+
+    builder = WorkflowModelContextBuilder()
+    prior_state = {
+        "memory_state": {
+            "session_memory": {
+                "last_active_target": "README.md",
+                "recent_paths": ["README.md", "docs/README.md"],
+                "last_action_summary": "read root readme",
+                "last_read_files": ["README.md"],
+                "last_clarification": {"candidate_items": ["README.md", "docs/README.md"]},
+            },
+            "working_memory": {
+                "active_target": "README.md",
+                "confirmed_targets": ["README.md"],
+                "excluded_targets": ["docs/README.md"],
+                "current_step": "read readme",
+                "open_issues": ["verification"],
+                "last_tool_result_summary": {"summary": "opened file"},
+            },
+        }
+    }
+
+    clarification_context = builder.build_clarification_context(prior_state)
+    response_context = builder.build_response_context(prior_state["memory_state"])
+
+    assert clarification_context["task_snapshot"]["recent_focus"] == ["README.md"]
+    assert clarification_context["working_memory_view"]["active_target"] == "README.md"
+    assert clarification_context["working_memory_view"]["open_issues"] == ["verification"]
+    assert response_context["recent_paths"] == ["README.md", "docs/README.md"]
+    assert response_context["confirmed_targets"] == ["README.md"]
+    assert response_context["excluded_targets"] == ["docs/README.md"]
 
 
 def test_memory_manager_writes_session_and_working_memory():

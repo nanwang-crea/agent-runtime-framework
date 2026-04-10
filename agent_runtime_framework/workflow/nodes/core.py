@@ -9,7 +9,7 @@ from agent_runtime_framework.workflow.orchestration.aggregation import aggregate
 from agent_runtime_framework.workflow.interaction.conversation_messages import build_conversation_messages
 from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context, get_workspace_root
 from agent_runtime_framework.workflow.llm.synthesis import synthesize_text
-from agent_runtime_framework.workflow.context.memory_views import build_response_context_view
+from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
@@ -324,9 +324,9 @@ class FinalResponseExecutor:
             verification = aggregated.output.get("verification") if aggregated and isinstance(aggregated.output, dict) else None
             state = run.shared_state.get("agent_graph_state_ref")
             response_memory_view = (
-                build_response_context_view(state.memory_state.as_payload())
+                DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_response_context(state.memory_state.as_payload())
                 if state is not None
-                else build_response_context_view(None)
+                else DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_response_context(None)
             )
             final_response = synthesize_text(
                 context,

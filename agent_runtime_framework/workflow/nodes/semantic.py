@@ -8,7 +8,7 @@ from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
 from agent_runtime_framework.workflow.llm.access import get_application_context
-from agent_runtime_framework.workflow.context.memory_views import build_task_snapshot_view, build_working_memory_view
+from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, SessionMemoryState, WorkflowNode, WorkflowRun, WorkingMemory
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
@@ -124,7 +124,12 @@ def _require_state(run: WorkflowRun):
 
 def _memory_manager(context: RuntimeContextLike) -> MemoryManager:
     application_context = get_application_context(context)
-    return getattr(application_context, "memory_manager", None) or MemoryManager()
+    if application_context is None:
+        raise RuntimeError("Missing application_context for semantic executor memory_manager")
+    manager = getattr(application_context, "memory_manager", None)
+    if manager is None:
+        raise RuntimeError("Missing memory_manager for semantic executor")
+    return manager
 
 
 def _repair_recorder(run: WorkflowRun):
@@ -220,8 +225,8 @@ class InterpretTargetExecutor:
         state = _require_state(run)
         memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state)
-        working_view = build_working_memory_view(state)
+        task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
+        working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         session_memory = state.memory_state.session_memory
         prior_candidates = list(getattr(getattr(run, "pending_interaction", None), "items", []) or [])
         if not prior_candidates:
@@ -311,8 +316,8 @@ class PlanSearchExecutor:
         state = _require_state(run)
         memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state)
-        working_view = build_working_memory_view(state)
+        task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
+        working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         payload = {
             "goal": run.goal,
@@ -376,8 +381,8 @@ class PlanReadExecutor:
         state = _require_state(run)
         memory_manager = _memory_manager(context)
         repair_record = _repair_recorder(run)
-        task_snapshot = build_task_snapshot_view(state)
-        working_view = build_working_memory_view(state)
+        task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
+        working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
         search_plan = dict(run.shared_state.get("search_plan") or {})
         payload = {

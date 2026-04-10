@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from agent_runtime_framework.api.services.chat_service import ChatService
 from agent_runtime_framework.api.services.run_service import RunService
+from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
 from agent_runtime_framework.workflow.state.models import GoalEnvelope, InteractionRequest, RUN_STATUS_WAITING_INPUT, WorkflowGraph, WorkflowRun, new_agent_graph_state
 from agent_runtime_framework.workflow.nodes.core import FinalResponseExecutor
@@ -71,6 +72,8 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
             "reason": "user explicitly chose README.md",
         },
     )
+    manager_calls = []
+    real_manager = MemoryManager()
 
     store = SimpleNamespace(load=lambda run_id: prior_run, save=lambda run: None)
     recorded = []
@@ -87,7 +90,20 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
             workflow_runtime_context=lambda: {},
             _workflow_store=store,
             _pending_workflow_interaction={"run_id": prior_run.run_id, "kind": "clarification", "items": ["README.md", "frontend-shell/README.md"]},
-            context=SimpleNamespace(application_context=None),
+                context=SimpleNamespace(
+                    application_context=SimpleNamespace(
+                        memory_manager=SimpleNamespace(
+                            update_session_memory=lambda memory_state, **kwargs: (
+                                manager_calls.append(("session", kwargs)),
+                                real_manager.update_session_memory(memory_state, **kwargs),
+                            )[-1],
+                            update_working_memory=lambda memory_state, **kwargs: (
+                                manager_calls.append(("working", kwargs)),
+                                real_manager.update_working_memory(memory_state, **kwargs),
+                            )[-1],
+                        )
+                    )
+                ),
             workspace=".",
             record_run=lambda payload, message: recorded.append((payload, message)),
         )
@@ -118,6 +134,7 @@ def test_chat_service_merges_clarification_into_prior_goal(monkeypatch):
     assert call["goal_envelope"].target_hints == ["README.md"]
     assert call["clarification_resolution"]["confirmed_target"] == "README.md"
     assert call["clarification_resolution"]["confirmed"] is True
+    assert manager_calls
     assert call["prior_state"]["memory_state"]["working_memory"]["confirmed_targets"] == ["README.md"]
     assert call["prior_state"]["memory_state"]["working_memory"]["active_target"] == "README.md"
     assert call["prior_state"]["memory_state"]["session_memory"]["last_clarification"]["confirmed_target"] == "README.md"
@@ -262,16 +279,21 @@ def test_run_service_replay_falls_back_to_chat_when_run_is_missing(monkeypatch):
 
 
 def test_resolve_clarification_response_repairs_semantically_invalid_payload(monkeypatch):
+    captured = {}
+
     monkeypatch.setattr(
         "agent_runtime_framework.workflow.interaction.clarification_resolution.chat_json",
-        lambda *args, **kwargs: {
-            "preferred_path": "",
-            "confirmed_target": "",
-            "updated_target_hints": [],
-            "should_reask": False,
-            "confidence": 0.8,
-            "reason": "still ambiguous",
-        },
+        lambda *args, **kwargs: (
+            captured.update({"payload": kwargs.get("payload")})
+            or {
+                "preferred_path": "",
+                "confirmed_target": "",
+                "updated_target_hints": [],
+                "should_reask": False,
+                "confidence": 0.8,
+                "reason": "still ambiguous",
+            }
+        ),
     )
     monkeypatch.setattr(
         "agent_runtime_framework.workflow.interaction.clarification_resolution.repair_structured_output_until_valid",
@@ -295,3 +317,6 @@ def test_resolve_clarification_response_repairs_semantically_invalid_payload(mon
 
     assert resolved["confirmed_target"] == "README.md"
     assert resolved["confirmed"] is True
+    assert "memory_state" not in captured["payload"]
+    assert "task_snapshot" in captured["payload"]
+    assert "working_memory_view" in captured["payload"]

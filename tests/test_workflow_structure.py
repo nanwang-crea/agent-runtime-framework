@@ -11,7 +11,6 @@ def test_workflow_package_uses_classified_subdirectories():
     assert (workflow_root / "executors").is_dir()
     assert (workflow_root / "interaction").is_dir()
     assert (workflow_root / "llm").is_dir()
-    assert (workflow_root / "memory").is_dir()
     assert (workflow_root / "orchestration").is_dir()
     assert (workflow_root / "runtime" / "agent_graph.py").exists()
     assert (workflow_root / "runtime" / "execution.py").exists()
@@ -21,6 +20,7 @@ def test_workflow_package_uses_classified_subdirectories():
     assert (workflow_root / "planning" / "prompt_utils.py").exists()
     assert (workflow_root / "state" / "graph_state_store.py").exists()
     assert (workflow_root / "context" / "app_context.py").exists()
+    assert (workflow_root / "context" / "model_context.py").exists()
     assert (workflow_root / "context" / "runtime_context.py").exists()
     assert (workflow_root / "executors" / "chunked_file_read.py").exists()
     assert (workflow_root / "executors" / "clarification.py").exists()
@@ -32,8 +32,6 @@ def test_workflow_package_uses_classified_subdirectories():
     assert (workflow_root / "llm" / "access.py").exists()
     assert (workflow_root / "llm" / "synthesis.py").exists()
     assert (workflow_root / "llm" / "structured_output_repair.py").exists()
-    assert (workflow_root / "memory" / "updates.py").exists()
-    assert (workflow_root / "memory" / "views.py").exists()
     assert (workflow_root / "interaction" / "clarification_resolution.py").exists()
     assert (workflow_root / "interaction" / "conversation_messages.py").exists()
     assert (workflow_root / "orchestration" / "aggregation.py").exists()
@@ -74,6 +72,7 @@ def test_workflow_root_no_longer_keeps_core_planning_and_state_files_flat():
     assert not (workflow_root / "state" / "agent_graph_state_store.py").exists()
     assert not (workflow_root / "context" / "application_context.py").exists()
     assert not (workflow_root / "context" / "context_assembly.py").exists()
+    assert not (workflow_root / "context" / "memory_views.py").exists()
 
 
 def test_workflow_root_no_longer_keeps_executor_llm_and_memory_files_flat():
@@ -105,7 +104,6 @@ def test_workflow_root_no_longer_keeps_executor_llm_and_memory_files_flat():
     assert not (workflow_root / "llm" / "llm_access.py").exists()
     assert not (workflow_root / "llm" / "llm_synthesis.py").exists()
     assert not (workflow_root / "llm" / "contract_repair.py").exists()
-    assert not (workflow_root / "memory" / "memory_updates.py").exists()
-    assert not (workflow_root / "memory" / "memory_views.py").exists()
+    assert not (workflow_root / "memory").exists()
     assert not (workflow_root / "interaction" / "clarification_interpreter.py").exists()
     assert not (workflow_root / "orchestration" / "result_aggregation.py").exists()

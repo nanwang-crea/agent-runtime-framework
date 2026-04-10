@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent_runtime_framework.api.process_trace import emit_process_event
+from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.llm.access import chat_json
 from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
 
@@ -52,7 +53,7 @@ def resolve_clarification_response(
         "target_hints": list(prior_goal_envelope.get("target_hints") or []),
         "pending_request": dict(pending_request or {}),
         "user_response": str(user_response or "").strip(),
-        "memory_state": dict((prior_state or {}).get("memory_state") or {}),
+        **DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_clarification_context(prior_state),
     }
     resolved = chat_json(
         context,

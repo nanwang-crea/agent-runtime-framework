@@ -18,7 +18,7 @@ from agent_runtime_framework.workflow import AgentGraphRuntime, GraphExecutionRu
 from agent_runtime_framework.workflow.interaction.clarification_resolution import resolve_clarification_response
 from agent_runtime_framework.workflow.nodes import create_workflow_node_executors
 from agent_runtime_framework.workflow.planning.goal_intake import build_goal_envelope
-from agent_runtime_framework.workflow.state.models import GoalSpec, WorkflowGraph, WorkflowNode
+from agent_runtime_framework.workflow.state.models import GoalSpec, WorkflowGraph, WorkflowMemoryState, WorkflowNode
 from agent_runtime_framework.workflow.runtime.routing import RootGraphPayload, RuntimePayload
 
 
@@ -289,25 +289,41 @@ class ChatService:
                 clarification_resolution = {**dict(clarification_resolution), "confirmed": True}
             updated_hints = list(dict.fromkeys([*list(prior_goal_envelope.get("target_hints") or []), *list(clarification_resolution.get("updated_target_hints") or [])]))
             prior_goal_envelope["target_hints"] = updated_hints
-            memory_state = dict((prior_state or {}).get("memory_state") or {})
-            session_memory = dict(memory_state.get("session_memory") or {})
-            working_memory = dict(memory_state.get("working_memory") or {})
+            memory_manager = getattr(self.runtime_state.context.application_context, "memory_manager", None)
+            workflow_memory = WorkflowMemoryState.from_payload((prior_state or {}).get("memory_state"))
             if confirmed_target := str(clarification_resolution.get("confirmed_target") or "").strip():
-                working_memory["confirmed_targets"] = [confirmed_target]
+                memory_manager.update_working_memory(
+                    workflow_memory,
+                    confirmed_targets=[confirmed_target],
+                )
             if excluded_targets := [str(item) for item in clarification_resolution.get("excluded_targets", []) or [] if str(item).strip()]:
-                working_memory["excluded_targets"] = excluded_targets
+                memory_manager.update_working_memory(
+                    workflow_memory,
+                    excluded_targets=excluded_targets,
+                )
             if str(clarification_resolution.get("preferred_path") or "").strip():
                 preferred_path = str(clarification_resolution.get("preferred_path") or "").strip()
-                working_memory["active_target"] = preferred_path
-                session_memory["last_active_target"] = preferred_path
-                session_memory["recent_paths"] = [
-                    preferred_path,
-                    *[str(item) for item in session_memory.get("recent_paths", []) or [] if str(item).strip() and str(item) != preferred_path],
-                ]
-            session_memory["last_clarification"] = dict(clarification_resolution)
-            memory_state["working_memory"] = working_memory
-            memory_state["session_memory"] = session_memory
-            prior_state = {**dict(prior_state or {}), "memory_state": memory_state}
+                memory_manager.update_working_memory(
+                    workflow_memory,
+                    active_target=preferred_path,
+                )
+                memory_manager.update_session_memory(
+                    workflow_memory,
+                    last_active_target=preferred_path,
+                    recent_paths=[
+                        preferred_path,
+                        *[
+                            str(item)
+                            for item in workflow_memory.session_memory.recent_paths
+                            if str(item).strip() and str(item) != preferred_path
+                        ],
+                    ],
+                )
+            memory_manager.update_session_memory(
+                workflow_memory,
+                last_clarification=dict(clarification_resolution),
+            )
+            prior_state = {**dict(prior_state or {}), "memory_state": workflow_memory.as_payload()}
             goal_envelope = build_goal_envelope(
                 str(prior_goal_envelope.get("goal") or message),
                 application_context=self.runtime_state.context.application_context,
