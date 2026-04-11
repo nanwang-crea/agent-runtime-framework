@@ -5,7 +5,7 @@ from typing import Any
 from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.llm.access import chat_json
-from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
+from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_contract
 
 
 def _normalize_clarification_resolution(resolved: dict[str, Any]) -> dict[str, Any]:
@@ -81,7 +81,7 @@ def resolve_clarification_response(
                 },
             )
 
-        repaired = repair_structured_output_until_valid(
+        repaired = repair_structured_contract(
             context,
             role="planner",
             contract_kind="clarification_resolution",

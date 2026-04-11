@@ -105,7 +105,7 @@ def test_analyze_goal_repairs_invalid_model_output(monkeypatch):
     context = _workflow_context("not json")
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output_until_valid",
+        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_contract",
         lambda *args, **kwargs: {
             "primary_intent": "file_read",
             "requires_target_interpretation": True,
@@ -125,7 +125,7 @@ def test_analyze_goal_repairs_semantically_invalid_model_output(monkeypatch):
     context = _workflow_context('{"primary_intent":"not_real","requires_target_interpretation":true,"requires_search":false,"requires_read":true,"requires_verification":false}')
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_output_until_valid",
+        "agent_runtime_framework.workflow.planning.goal_analysis.repair_structured_contract",
         lambda *args, **kwargs: {
             "primary_intent": "file_read",
             "requires_target_interpretation": True,
@@ -180,7 +180,7 @@ def test_decompose_goal_repairs_semantically_invalid_subtasks(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.planning.decomposition.repair_structured_output_until_valid",
+        "agent_runtime_framework.workflow.planning.decomposition.repair_structured_contract",
         lambda *args, **kwargs: {
             "subtasks": [
                 {"task_id": "workspace_discovery", "task_profile": "workspace_discovery", "target": "."},
@@ -401,7 +401,7 @@ def test_plan_next_subgraph_repairs_semantic_contract_violations(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.planning.subgraph_planner.repair_structured_output_until_valid",
+        "agent_runtime_framework.workflow.planning.subgraph_planner.repair_structured_contract",
         lambda *args, **kwargs: {
             "planner_summary": "repair to read path",
             "nodes": [

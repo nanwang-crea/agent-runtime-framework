@@ -528,5 +528,7 @@ def test_workflow_planner_prompt_helpers_expose_intent_and_node_taxonomy():
     assert "change_and_verify" in goal_prompt
     assert "task_profile" in decomposition_prompt
     assert "workspace_discovery" in decomposition_prompt
-    assert "graph-native nodes first" in subgraph_prompt
-    assert "target_resolution" in subgraph_prompt
+    assert "capability/recipe-first strategy" in subgraph_prompt
+    assert "selected_recipe_id" in subgraph_prompt
+    assert "selected_capability_ids" in subgraph_prompt
+    assert "preferred_recipe_ids" in subgraph_prompt

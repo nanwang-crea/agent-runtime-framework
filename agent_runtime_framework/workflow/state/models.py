@@ -309,6 +309,9 @@ class JudgeDecision:
     strategy_guidance: dict[str, Any] = field(default_factory=dict)
     capability_gap: str = ""
     preferred_capability_ids: list[str] = field(default_factory=list)
+    preferred_recipe_ids: list[str] = field(default_factory=list)
+    blocked_recipe_ids: list[str] = field(default_factory=list)
+    must_cover_capabilities: list[str] = field(default_factory=list)
     recommended_recovery_mode: str = ""
     verification_required: bool = False
     human_handoff_required: bool = False

@@ -14,6 +14,7 @@ class _FakeRuntime:
     def __init__(self, run: WorkflowRun) -> None:
         self.run_result = run
         self.calls: list[dict] = []
+        self.context: dict = {}
 
     def run(self, goal_envelope, **kwargs):
         self.calls.append({"goal_envelope": goal_envelope, **kwargs})
@@ -202,9 +203,12 @@ def test_final_response_executor_includes_response_memory_view(monkeypatch):
     state.memory_state.working_memory.confirmed_targets = ["README.md"]
     state.memory_state.working_memory.excluded_targets = ["frontend-shell/README.md"]
     state.memory_state.working_memory.current_step = "explain readme"
-    run.shared_state["agent_graph_state_ref"] = state
 
-    result = FinalResponseExecutor().execute(SimpleNamespace(node_id="final", node_type="final_response", metadata={}), run, context={})
+    result = FinalResponseExecutor().execute(
+        SimpleNamespace(node_id="final", node_type="final_response", metadata={}),
+        run,
+        context=SimpleNamespace(agent_graph_state=state),
+    )
 
     assert result.output["final_response"] == "final"
     assert captured["payload"]["response_memory_view"]["confirmed_targets"] == ["README.md"]
@@ -296,7 +300,7 @@ def test_resolve_clarification_response_repairs_semantically_invalid_payload(mon
         ),
     )
     monkeypatch.setattr(
-        "agent_runtime_framework.workflow.interaction.clarification_resolution.repair_structured_output_until_valid",
+        "agent_runtime_framework.workflow.interaction.clarification_resolution.repair_structured_contract",
         lambda *args, **kwargs: {
             "preferred_path": "README.md",
             "confirmed_target": "README.md",

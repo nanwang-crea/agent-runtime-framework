@@ -76,8 +76,8 @@
   },
   "routes": {
     "default": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "router": {
       "instance": "dashscope",
@@ -88,32 +88,32 @@
       "model": "qwen3.5-plus"
     },
     "conversation": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "capability_selector": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "planner": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "interpreter": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "resolver": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "executor": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     },
     "composer": {
-      "instance": "openai",
-      "model": "gpt-5.4"
+      "instance": "minimax",
+      "model": "MiniMax-M2.1"
     }
   }
 }

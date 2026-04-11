@@ -6,10 +6,11 @@ from typing import Any
 from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.memory import MemoryManager
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output
+from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_contract
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, SessionMemoryState, WorkflowNode, WorkflowRun, WorkingMemory
+from agent_runtime_framework.workflow.runtime.graph_state_access import process_sink_from_context, require_agent_graph_state
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
@@ -115,11 +116,26 @@ def _normalize_read_plan(payload: dict[str, Any], *, interpreted_target: dict[st
     }
 
 
-def _require_state(run: WorkflowRun):
-    state = run.shared_state.get("agent_graph_state_ref")
-    if state is None:
-        raise RuntimeError("Missing agent_graph_state_ref for semantic executor")
-    return state
+def _semantic_contract_shallow_error(candidate: Any, required_fields: list[str]) -> str | None:
+    if not isinstance(candidate, dict):
+        return "output is not a JSON object"
+    if "system_prompt" in candidate and "payload" in candidate:
+        return "expected planner contract JSON, not request wrapper"
+    for field in required_fields:
+        if field == "confirmed":
+            if field not in candidate:
+                return "missing confirmed"
+            continue
+        if field == "semantic_queries":
+            if not _as_string_list(candidate.get(field)):
+                return "semantic_queries missing or empty"
+            continue
+        val = candidate.get(field)
+        if val is None:
+            return f"missing {field}"
+        if isinstance(val, str) and not str(val).strip():
+            return f"empty {field}"
+    return None
 
 
 def _memory_manager(context: RuntimeContextLike) -> MemoryManager:
@@ -132,9 +148,9 @@ def _memory_manager(context: RuntimeContextLike) -> MemoryManager:
     return manager
 
 
-def _repair_recorder(run: WorkflowRun):
-    state = run.shared_state.get("agent_graph_state_ref")
-    sink = getattr(run.shared_state.get("runtime_context") or {}, "process_sink", None)
+def _repair_recorder(run: WorkflowRun, context: RuntimeContextLike):
+    state = require_agent_graph_state(context)
+    sink = process_sink_from_context(context)
 
     def _record(event: dict[str, Any]) -> None:
         event_payload = dict(event)
@@ -171,23 +187,32 @@ def _normalize_with_repair(
     on_record: Any | None = None,
     **normalizer_kwargs: Any,
 ) -> dict[str, Any]:
-    try:
+    def _validation_error(sample: Any) -> str | None:
+        if not isinstance(sample, dict):
+            return "output is not a JSON object"
+        try:
+            normalizer(sample, **normalizer_kwargs)
+            return None
+        except ValueError as exc:
+            return str(exc)
+
+    if _validation_error(original_output) is None:
         return normalizer(original_output, **normalizer_kwargs)
-    except ValueError as exc:
-        repaired = repair_structured_output(
-            context,
-            role=role,
-            contract_kind=contract_kind,
-            required_fields=required_fields,
-            original_output=original_output,
-            validation_error=str(exc),
-            request_payload=request_payload,
-            extra_instructions=extra_instructions,
-            on_record=on_record,
-        )
-        if not isinstance(repaired, dict):
-            raise
-        return normalizer(repaired, **normalizer_kwargs)
+
+    repaired = repair_structured_contract(
+        context,
+        role=role,
+        contract_kind=contract_kind,
+        required_fields=required_fields,
+        original_output=original_output,
+        request_payload=request_payload,
+        validate=_validation_error,
+        extra_instructions=extra_instructions,
+        on_record=on_record,
+    )
+    if repaired is None:
+        return normalizer(original_output, **normalizer_kwargs)
+    return normalizer(repaired, **normalizer_kwargs)
 
 
 def _structured_semantic_plan_with_repair(
@@ -201,30 +226,40 @@ def _structured_semantic_plan_with_repair(
     max_tokens: int = 400,
     on_record: Any | None = None,
 ) -> dict[str, Any]:
+    def _shallow_err(candidate: Any) -> str | None:
+        return _semantic_contract_shallow_error(candidate, required_fields)
+
     try:
-        return _structured_semantic_plan(context, payload, system_prompt, max_tokens=max_tokens)
-    except ValueError as exc:
-        repaired = repair_structured_output(
-            context,
-            role="planner",
-            contract_kind=contract_kind,
-            required_fields=required_fields,
-            original_output={"system_prompt": system_prompt, "payload": payload},
-            validation_error=str(exc),
-            request_payload=payload,
-            extra_instructions=extra_instructions,
-            on_record=on_record,
-        )
-        if isinstance(repaired, dict):
-            return repaired
-        raise
+        original: Any = _structured_semantic_plan(context, payload, system_prompt, max_tokens=max_tokens)
+    except ValueError:
+        original = {"system_prompt": system_prompt, "payload": payload}
+
+    if _shallow_err(original) is None:
+        return original
+
+    repaired = repair_structured_contract(
+        context,
+        role="planner",
+        contract_kind=contract_kind,
+        required_fields=required_fields,
+        original_output=original,
+        request_payload=payload,
+        validate=_shallow_err,
+        extra_instructions=extra_instructions,
+        on_record=on_record,
+    )
+    if repaired is None:
+        if isinstance(original, dict) and not ("system_prompt" in original and "payload" in original):
+            return original
+        raise ValueError("invalid model response")
+    return repaired
 
 
 class InterpretTargetExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = _require_state(run)
+        state = require_agent_graph_state(context)
         memory_manager = _memory_manager(context)
-        repair_record = _repair_recorder(run)
+        repair_record = _repair_recorder(run, context)
         task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
         working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         session_memory = state.memory_state.session_memory
@@ -313,9 +348,9 @@ class InterpretTargetExecutor:
 
 class PlanSearchExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = _require_state(run)
+        state = require_agent_graph_state(context)
         memory_manager = _memory_manager(context)
-        repair_record = _repair_recorder(run)
+        repair_record = _repair_recorder(run, context)
         task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
         working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
@@ -378,9 +413,9 @@ class PlanSearchExecutor:
 
 class PlanReadExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
-        state = _require_state(run)
+        state = require_agent_graph_state(context)
         memory_manager = _memory_manager(context)
-        repair_record = _repair_recorder(run)
+        repair_record = _repair_recorder(run, context)
         task_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_task_snapshot_fragment(state)
         working_view = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_working_memory_fragment(state)
         interpreted_target = dict(run.shared_state.get("interpreted_target") or {})
@@ -452,5 +487,4 @@ __all__ = [
     "PlanSearchExecutor",
     "PlanReadExecutor",
     "_structured_semantic_plan",
-    "repair_structured_output",
 ]

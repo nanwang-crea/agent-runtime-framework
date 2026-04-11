@@ -33,7 +33,7 @@ class SystemNodeManager:
             context_result = NodeResult(
                 status="completed",
                 output={
-                    "memory": dict((runtime_context or {}).get("memory") or {}),
+                    "session_focus_snapshot": dict((runtime_context or {}).get("session_focus_snapshot") or {}),
                     "policy_context": dict((runtime_context or {}).get("policy_context") or {}),
                     "workspace_root": (runtime_context or {}).get("workspace_root"),
                 },

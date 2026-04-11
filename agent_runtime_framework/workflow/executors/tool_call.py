@@ -13,6 +13,7 @@ from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLik
 
 from agent_runtime_framework.workflow.workspace.models import TaskState
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
+from agent_runtime_framework.workflow.runtime.graph_state_access import require_agent_graph_state
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 
 
@@ -61,9 +62,10 @@ class ToolCallExecutor:
 
         output = dict(result.output or {})
         memory_manager = getattr(application_context, "memory_manager", None) or MemoryManager()
-        state = run.shared_state.get("agent_graph_state_ref")
-        if state is None:
-            return NodeResult(status=NODE_STATUS_FAILED, error="Missing agent_graph_state_ref for tool_call executor")
+        try:
+            state = require_agent_graph_state(context)
+        except RuntimeError as exc:
+            return NodeResult(status=NODE_STATUS_FAILED, error=str(exc))
         state.memory_state.session_memory = memory_manager.update_session_from_tool_result(
             state.memory_state.session_memory,
             {

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
+from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_contract
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.state.models import GoalSpec
 from agent_runtime_framework.workflow.planning.prompts import build_goal_analysis_system_prompt
@@ -88,7 +88,7 @@ def _analyze_goal_with_model(user_input: str, *, context: Any | None) -> tuple[G
         goal = _goal_spec_from_payload(user_input, parsed)
         if goal is not None:
             return goal, None
-    repaired = repair_structured_output_until_valid(
+    repaired = repair_structured_contract(
         context,
         role="planner",
         contract_kind="goal_analysis",

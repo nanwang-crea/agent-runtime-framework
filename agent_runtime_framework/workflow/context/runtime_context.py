@@ -8,12 +8,17 @@ from agent_runtime_framework.policy import SimpleDesktopPolicy
 
 @dataclass(slots=True)
 class WorkflowRuntimeContext:
+    """Carries dependencies and read-only views for one workflow execution path."""
+
     application_context: Any = None
     workspace_context: Any = None
     workspace_root: str = "."
-    memory: dict[str, Any] = field(default_factory=dict)
+    # Focused resources / last summary from ApplicationContext.session_memory (not WorkflowMemoryState).
+    session_focus_snapshot: dict[str, Any] = field(default_factory=dict)
     policy_context: dict[str, Any] = field(default_factory=dict)
     process_sink: Any = None
+    # Current AgentGraphState while AgentGraphRuntime runs a subgraph (not serialized).
+    agent_graph_state: Any = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
@@ -25,7 +30,15 @@ class WorkflowRuntimeContext:
         return isinstance(key, str) and hasattr(self, key)
 
     def keys(self):
-        return ("application_context", "workspace_context", "workspace_root", "memory", "policy_context", "process_sink")
+        return (
+            "application_context",
+            "workspace_context",
+            "workspace_root",
+            "session_focus_snapshot",
+            "policy_context",
+            "process_sink",
+            "agent_graph_state",
+        )
 
     def items(self):
         return [(key, getattr(self, key)) for key in self.keys()]
@@ -46,7 +59,7 @@ def _resource_payload(resource: Any) -> dict[str, Any]:
     }
 
 
-def _memory_payload(application_context: Any | None) -> dict[str, Any]:
+def _session_focus_snapshot_payload(application_context: Any | None) -> dict[str, Any]:
     if application_context is None:
         return {}
     session_memory = getattr(application_context, "session_memory", None)
@@ -78,7 +91,7 @@ def build_runtime_context(*, application_context: Any, workspace_context: Any, w
         application_context=application_context,
         workspace_context=workspace_context,
         workspace_root=str(workspace_root or "."),
-        memory=_memory_payload(application_context),
+        session_focus_snapshot=_session_focus_snapshot_payload(application_context),
         policy_context=_policy_context(application_context),
         process_sink=process_sink,
     )

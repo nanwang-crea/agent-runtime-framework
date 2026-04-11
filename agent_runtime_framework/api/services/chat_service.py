@@ -42,9 +42,14 @@ class ChatService:
         )
 
     def _agent_runtime(self, *, process_sink: Callable[[dict[str, Any]], None] | None = None) -> AgentGraphRuntime:
+        ctx = self._runtime_context(process_sink=process_sink)
         return AgentGraphRuntime(
-            workflow_runtime=self._graph_runtime(process_sink=process_sink),
-            context=self._runtime_context(process_sink=process_sink),
+            workflow_runtime=GraphExecutionRuntime(
+                executors=create_workflow_node_executors(),
+                context=ctx,
+                process_sink=process_sink,
+            ),
+            context=ctx,
             process_sink=process_sink,
         )
 
@@ -259,7 +264,6 @@ class ChatService:
         process_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> RuntimePayload:
         runtime = self._agent_runtime(process_sink=process_sink)
-        runtime_context = self._runtime_context(process_sink=process_sink)
         prior_bundle = self._pending_interaction_bundle()
         prior_run = None
         prior_state = None
@@ -275,7 +279,7 @@ class ChatService:
             prior_graph = prior_run.graph
             prior_goal_envelope = dict(prior_run.metadata.get("goal_envelope") or {})
             clarification_resolution = resolve_clarification_response(
-                self._runtime_context(),
+                runtime.context,
                 prior_goal_envelope=prior_goal_envelope,
                 pending_request=prior_bundle or {},
                 user_response=message,
@@ -349,7 +353,7 @@ class ChatService:
             )
         run = runtime.run(
             goal_envelope,
-            context=runtime_context,
+            context=runtime.context,
             prior_state=prior_state,
             prior_graph=prior_graph,
             clarification_response=(message if prior_run is not None else None),

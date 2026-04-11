@@ -6,9 +6,11 @@ from typing import Any
 
 from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output, repair_structured_output_until_valid
+from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_contract
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
+from agent_runtime_framework.workflow.planning.capability_selection import select_capability_plan
+from agent_runtime_framework.workflow.planning.recipe_expansion import expand_recipe_selection
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GRAPH_NATIVE_WRITE_NODE_TYPES, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
 from agent_runtime_framework.workflow.state.models import build_agent_graph_execution_summary
 from agent_runtime_framework.workflow.planning.prompts import build_subgraph_planner_system_prompt
@@ -65,6 +67,16 @@ def _judge_feedback_payload(decision: Any | None) -> dict[str, Any] | None:
     if isinstance(decision, dict):
         return dict(decision)
     return None
+
+
+def _enforce_recipe_route_contract(recipe_id: str, decision: Any | None) -> None:
+    payload = _judge_feedback_payload(decision) or {}
+    blocked = {str(item).strip() for item in payload.get("blocked_recipe_ids", []) or [] if str(item).strip()}
+    if recipe_id and recipe_id in blocked:
+        raise ValueError(f"selected recipe violates judge blocked_recipe_ids: {recipe_id}")
+    preferred = [str(item).strip() for item in payload.get("preferred_recipe_ids", []) or [] if str(item).strip()]
+    if recipe_id and preferred and recipe_id not in preferred:
+        raise ValueError(f"selected recipe violates judge preferred_recipe_ids: {recipe_id}")
 
 
 def _enforce_judge_route_contract(nodes: list[PlannedNode], decision: Any | None) -> None:
@@ -269,7 +281,10 @@ def _inject_capability_diagnosis_if_needed(graph_state: AgentGraphState, nodes: 
     payload = _judge_feedback_payload(_latest_judge_decision(graph_state)) or {}
     gap = str(payload.get("capability_gap") or "").strip()
     preferred = [str(item).strip() for item in payload.get("preferred_capability_ids", []) or [] if str(item).strip()]
-    if not gap and not preferred:
+    preferred_recipes = [str(item).strip() for item in payload.get("preferred_recipe_ids", []) or [] if str(item).strip()]
+    blocked_recipes = [str(item).strip() for item in payload.get("blocked_recipe_ids", []) or [] if str(item).strip()]
+    must_cover_capabilities = [str(item).strip() for item in payload.get("must_cover_capabilities", []) or [] if str(item).strip()]
+    if not gap and not preferred and not preferred_recipes and not must_cover_capabilities:
         return nodes
     if any(node.node_type == "capability_diagnosis" for node in nodes):
         return nodes
@@ -286,7 +301,13 @@ def _inject_capability_diagnosis_if_needed(graph_state: AgentGraphState, nodes: 
         node_id=node_id,
         node_type="capability_diagnosis",
         reason="Diagnose capability gaps signaled by judge before other work",
-        inputs={"capability_gap": gap, "preferred_capability_ids": preferred},
+        inputs={
+            "capability_gap": gap,
+            "preferred_capability_ids": preferred,
+            "preferred_recipe_ids": preferred_recipes,
+            "blocked_recipe_ids": blocked_recipes,
+            "must_cover_capabilities": must_cover_capabilities,
+        },
         depends_on=[],
         success_criteria=["emit capability diagnosis output"],
     )
@@ -483,7 +504,12 @@ def _max_dynamic_nodes(goal_envelope: GoalEnvelope, context: Any | None) -> int:
         return _DEFAULT_MAX_DYNAMIC_NODES
 
 
-def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> dict[str, Any] | None:
+def _invoke_model_planner_chat(
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    context: Any | None,
+    request_payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str] | None:
     application_context = get_application_context(context)
     if application_context is None:
         return None
@@ -492,7 +518,6 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
     model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
         return None
-    request_payload = _planner_context_payload(goal_envelope, graph_state, context)
     response = chat_once(
         llm_client,
         ChatRequest(
@@ -512,23 +537,35 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
         ),
     )
     raw_content = str(response.content or "")
-    parsed, parse_error = parse_json_object(raw_content)
-    if isinstance(parsed, dict):
-        return parsed
-    repaired = repair_structured_output(
-        context,
-        role="planner",
-        contract_kind="subgraph_plan",
-        required_fields=["planner_summary", "nodes"],
-        original_output=raw_content,
-        validation_error=parse_error or "invalid model response",
-        request_payload=request_payload,
-        extra_instructions="nodes must be a non-empty array of planned workflow nodes.",
-        on_record=_repair_recorder(graph_state, context),
+    parsed, _ = parse_json_object(raw_content)
+    dict_out = parsed if isinstance(parsed, dict) else None
+    return dict_out, raw_content
+
+
+def _validate_subgraph_plan_candidate(
+    candidate: Any,
+    *,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    iteration: int,
+    max_dynamic_nodes: int,
+    context: Any | None,
+) -> str | None:
+    if isinstance(candidate, str):
+        parsed, _ = parse_json_object(candidate)
+        if not isinstance(parsed, dict):
+            return "model planner returned invalid json"
+        candidate = parsed
+    if not isinstance(candidate, dict):
+        return "model planner returned invalid json"
+    return _validate_subgraph_plan_payload(
+        candidate,
+        goal_envelope=goal_envelope,
+        graph_state=graph_state,
+        iteration=iteration,
+        max_dynamic_nodes=max_dynamic_nodes,
+        context=context,
     )
-    if isinstance(repaired, dict):
-        return repaired
-    raise ValueError("model planner returned invalid json")
 
 
 def _normalize_model_planned_nodes(payload: dict[str, Any], iteration: int, max_dynamic_nodes: int) -> tuple[list[PlannedNode], list[WorkflowEdge]]:
@@ -579,6 +616,33 @@ def _validate_subgraph_plan_payload(
     max_dynamic_nodes: int,
     context: Any | None = None,
 ) -> str | None:
+    if isinstance(payload, dict) and payload.get("nodes") is not None:
+        return _validate_legacy_subgraph_plan_payload(
+            payload,
+            goal_envelope=goal_envelope,
+            graph_state=graph_state,
+            iteration=iteration,
+            max_dynamic_nodes=max_dynamic_nodes,
+            context=context,
+        )
+    return _validate_recipe_selection_payload(
+        payload,
+        goal_envelope=goal_envelope,
+        graph_state=graph_state,
+        iteration=iteration,
+        context=context,
+    )
+
+
+def _validate_legacy_subgraph_plan_payload(
+    payload: Any,
+    *,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    iteration: int,
+    max_dynamic_nodes: int,
+    context: Any | None = None,
+) -> str | None:
     if not isinstance(payload, dict):
         return "model planner returned invalid json"
     try:
@@ -592,59 +656,129 @@ def _validate_subgraph_plan_payload(
     return None
 
 
+def _expand_recipe_first_payload(
+    payload: dict[str, Any],
+    *,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    iteration: int,
+    context: Any | None = None,
+) -> PlannedSubgraph:
+    selection = select_capability_plan(goal_envelope, graph_state, context=context, planner_payload=payload)
+    subgraph = expand_recipe_selection(
+        goal_envelope,
+        graph_state,
+        selection,
+        iteration=iteration,
+        context=context,
+    )
+    subgraph.nodes = _inject_capability_diagnosis_if_needed(graph_state, subgraph.nodes, iteration)
+    subgraph.nodes = _inject_post_recovery_verification_if_needed(graph_state, subgraph.nodes, iteration, context)
+    subgraph.edges = [WorkflowEdge(source=dependency, target=node.node_id) for node in subgraph.nodes for dependency in node.depends_on]
+    _enforce_recipe_route_contract(selection.recipe_id, _latest_judge_decision(graph_state))
+    _enforce_judge_route_contract(subgraph.nodes, _latest_judge_decision(graph_state))
+    subgraph.metadata = {
+        **dict(subgraph.metadata),
+        "planner": "recipe_first_v2",
+        "selection": selection.as_payload(),
+    }
+    return subgraph
+
+
+def _validate_recipe_selection_payload(
+    payload: Any,
+    *,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    iteration: int,
+    context: Any | None = None,
+) -> str | None:
+    if not isinstance(payload, dict):
+        return "model planner returned invalid json"
+    if not str(payload.get("planner_summary") or "").strip():
+        return "model planner missing planner_summary"
+    recipe_id = str(payload.get("selected_recipe_id") or payload.get("recipe_id") or "").strip()
+    capability_ids = [str(item).strip() for item in payload.get("selected_capability_ids", []) or [] if str(item).strip()]
+    if not recipe_id and not capability_ids:
+        return "model planner missing selected_recipe_id or selected_capability_ids"
+    try:
+        _expand_recipe_first_payload(
+            payload,
+            goal_envelope=goal_envelope,
+            graph_state=graph_state,
+            iteration=iteration,
+            context=context,
+        )
+    except (ValueError, TypeError) as exc:
+        return str(exc)
+    return None
+
+
 def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None) -> PlannedSubgraph:
     if _should_use_constrained_read_path(goal_envelope, graph_state):
         return _constrained_read_subgraph(goal_envelope, graph_state)
-    payload = _call_model_planner(goal_envelope, graph_state, context)
-    if payload is None:
-        raise ValueError("model planner unavailable")
     max_dynamic_nodes = _max_dynamic_nodes(goal_envelope, context)
     iteration = graph_state.current_iteration + 1
     request_payload = _planner_context_payload(goal_envelope, graph_state, context)
-    validation_error = _validate_subgraph_plan_payload(
+    chat_out = _invoke_model_planner_chat(goal_envelope, graph_state, context, request_payload)
+    if chat_out is None:
+        raise ValueError("model planner unavailable")
+    parsed_dict, raw_content = chat_out
+    if isinstance(parsed_dict, dict):
+        original_output: Any = parsed_dict
+    else:
+        reparsed, _ = parse_json_object(raw_content)
+        original_output = reparsed if isinstance(reparsed, dict) else raw_content
+
+    def _validate_plan(candidate: Any) -> str | None:
+        return _validate_subgraph_plan_candidate(
+            candidate,
+            goal_envelope=goal_envelope,
+            graph_state=graph_state,
+            iteration=iteration,
+            max_dynamic_nodes=max_dynamic_nodes,
+            context=context,
+        )
+
+    payload = repair_structured_contract(
+        context,
+        role="planner",
+        contract_kind="subgraph_plan",
+        required_fields=["planner_summary"],
+        original_output=original_output,
+        request_payload=request_payload,
+        validate=_validate_plan,
+        extra_instructions=(
+            "Prefer returning selected_recipe_id and selected_capability_ids. "
+            "Use latest_judge_decision preferred_recipe_ids and preferred_capability_ids first. "
+            "Do not select blocked recipes. "
+            "If you must fall back to raw nodes, return only node types permitted by latest_judge_decision."
+        ),
+        on_record=_repair_recorder(graph_state, context),
+    )
+    if not isinstance(payload, dict):
+        if isinstance(original_output, dict):
+            payload = original_output
+        else:
+            raise ValueError("model planner returned invalid json")
+    if payload.get("nodes") is not None:
+        nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
+        nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
+        nodes = _inject_capability_diagnosis_if_needed(graph_state, nodes, iteration)
+        nodes = _inject_post_recovery_verification_if_needed(graph_state, nodes, iteration, context)
+        _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
+        edges = [WorkflowEdge(source=dependency, target=node.node_id) for node in nodes for dependency in node.depends_on]
+        return PlannedSubgraph(
+            iteration=iteration,
+            planner_summary=str(payload.get("planner_summary") or f"Legacy node plan iteration {iteration} for {goal_envelope.intent}"),
+            nodes=nodes,
+            edges=edges,
+            metadata={"planner": "legacy_nodes_v1", "max_dynamic_nodes": max_dynamic_nodes},
+        )
+    return _expand_recipe_first_payload(
         payload,
         goal_envelope=goal_envelope,
         graph_state=graph_state,
         iteration=iteration,
-        max_dynamic_nodes=max_dynamic_nodes,
         context=context,
-    )
-    if validation_error is not None:
-        repaired = repair_structured_output_until_valid(
-            context,
-            role="planner",
-            contract_kind="subgraph_plan",
-            required_fields=["planner_summary", "nodes"],
-            original_output=payload,
-            request_payload=request_payload,
-            validate=lambda candidate: _validate_subgraph_plan_payload(
-                candidate,
-                goal_envelope=goal_envelope,
-                graph_state=graph_state,
-                iteration=iteration,
-                max_dynamic_nodes=max_dynamic_nodes,
-                context=context,
-            ),
-            extra_instructions=(
-                "Return only node types permitted by latest_judge_decision. "
-                "Do not emit blocked node types. "
-                "If verification is allowed, verification_step is also acceptable. "
-                "If plan_read is allowed, chunked_file_read is also acceptable."
-            ),
-            on_record=_repair_recorder(graph_state, context),
-        )
-        if isinstance(repaired, dict):
-            payload = repaired
-    nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
-    nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
-    nodes = _inject_capability_diagnosis_if_needed(graph_state, nodes, iteration)
-    nodes = _inject_post_recovery_verification_if_needed(graph_state, nodes, iteration, context)
-    _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
-    edges = [WorkflowEdge(source=dependency, target=node.node_id) for node in nodes for dependency in node.depends_on]
-    return PlannedSubgraph(
-        iteration=iteration,
-        planner_summary=str(payload.get("planner_summary") or f"Model plan iteration {iteration} for {goal_envelope.intent}"),
-        nodes=nodes,
-        edges=edges,
-        metadata={"planner": "model_v1", "max_dynamic_nodes": max_dynamic_nodes},
     )

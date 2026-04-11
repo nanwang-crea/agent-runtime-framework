@@ -32,6 +32,7 @@ class FailureDiagnosis:
     suggested_recovery_mode: str = DEFAULT_RECOVERY_MODE
     missing_capability: str | None = None
     suggested_capabilities: list[str] = field(default_factory=list)
+    suggested_recipes: list[str] = field(default_factory=list)
     suggested_tools: list[str] = field(default_factory=list)
 
     def as_payload(self) -> dict[str, Any]:
@@ -96,6 +97,9 @@ def judge_failure_diagnosis(
     summary: str,
     blocking_issue: str,
     primary_gap: str | None = None,
+    capability_gap: str | None = None,
+    preferred_capability_ids: list[str] | None = None,
+    preferred_recipe_ids: list[str] | None = None,
     verification_required: bool = False,
     human_handoff_required: bool = False,
     recommended_recovery_mode: str | None = None,
@@ -116,6 +120,24 @@ def judge_failure_diagnosis(
     else:
         category = "planning_gap"
         default_mode = "collect_more_evidence"
+    suggested_capabilities = [str(item).strip() for item in preferred_capability_ids or [] if str(item).strip()]
+    suggested_recipes = [str(item).strip() for item in preferred_recipe_ids or [] if str(item).strip()]
+    missing_capability = str(capability_gap or "").strip() or None
+    if verification_required and "run_workspace_verification" not in suggested_capabilities:
+        suggested_capabilities.append("run_workspace_verification")
+    if gap == "conflicting_evidence":
+        for capability_id in ("resolve_target_in_workspace", "read_workspace_evidence"):
+            if capability_id not in suggested_capabilities:
+                suggested_capabilities.append(capability_id)
+        for recipe_id in ("resolve_then_read_target", "search_then_read_evidence"):
+            if recipe_id not in suggested_recipes:
+                suggested_recipes.append(recipe_id)
+    if gap == "clarification_missing" and not missing_capability:
+        missing_capability = "resolve_target_in_workspace"
+        if "resolve_target_in_workspace" not in suggested_capabilities:
+            suggested_capabilities.append("resolve_target_in_workspace")
+    if gap == "verification_missing" and not missing_capability:
+        missing_capability = "run_workspace_verification"
     return FailureDiagnosis(
         category=category,
         subcategory=gap or None,
@@ -123,6 +145,9 @@ def judge_failure_diagnosis(
         blocking_issue=blocking_issue,
         recoverable=not human_handoff_required,
         suggested_recovery_mode=normalize_recovery_mode(recommended_recovery_mode, default=default_mode),
+        missing_capability=missing_capability,
+        suggested_capabilities=suggested_capabilities,
+        suggested_recipes=suggested_recipes,
     )
 
 

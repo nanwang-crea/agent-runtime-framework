@@ -22,13 +22,13 @@ def test_capability_diagnosis_executor_emits_preferred_capabilities():
             },
         }
     )
-    run = WorkflowRun(goal="demo", shared_state={"agent_graph_state_ref": state, "node_results": {}})
+    run = WorkflowRun(goal="demo", shared_state={"node_results": {}})
     node = WorkflowNode(
         node_id="cd1",
         node_type="capability_diagnosis",
         metadata={"preferred_capability_ids": ["read_workspace_evidence"]},
     )
-    ctx = SimpleNamespace(services={})
+    ctx = SimpleNamespace(services={}, agent_graph_state=state)
     result = CapabilityDiagnosisExecutor().execute(node, run, context=ctx)
     assert result.status == "completed"
     assert "read_workspace_evidence" in result.output["preferred_capability_ids"]

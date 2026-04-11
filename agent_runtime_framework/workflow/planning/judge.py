@@ -4,10 +4,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_runtime_framework.api.process_trace import emit_process_event
-from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
+from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_contract
 from agent_runtime_framework.workflow.recovery.models import normalize_recovery_mode
-
-repair_structured_output = repair_structured_output_until_valid
 from agent_runtime_framework.workflow.llm.access import chat_json, get_application_context
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
@@ -137,6 +135,9 @@ def _normalize_model_judge_decision(raw: dict[str, Any]) -> JudgeDecision:
         strategy_guidance=_normalize_optional_mapping(raw.get("strategy_guidance")),
         capability_gap=str(raw.get("capability_gap") or "").strip(),
         preferred_capability_ids=[str(item) for item in raw.get("preferred_capability_ids", []) or [] if str(item).strip()],
+        preferred_recipe_ids=[str(item) for item in raw.get("preferred_recipe_ids", []) or [] if str(item).strip()],
+        blocked_recipe_ids=[str(item) for item in raw.get("blocked_recipe_ids", []) or [] if str(item).strip()],
+        must_cover_capabilities=[str(item) for item in raw.get("must_cover_capabilities", []) or [] if str(item).strip()],
         recommended_recovery_mode=normalize_recovery_mode(
             raw.get("recommended_recovery_mode"),
             default="collect_more_evidence",
@@ -158,8 +159,15 @@ def _judge_contract_error(raw: dict[str, Any] | None) -> str | None:
         return "judge contract missing valid status"
     if not str(raw.get("reason") or "").strip():
         return "judge contract missing reason"
-    if status == "replan" and not [str(item).strip() for item in raw.get("allowed_next_node_types", []) or [] if str(item).strip()]:
-        return "judge contract missing allowed_next_node_types"
+    if status == "replan":
+        has_recipe_guidance = bool([str(item).strip() for item in raw.get("preferred_recipe_ids", []) or [] if str(item).strip()])
+        has_capability_guidance = bool(
+            [str(item).strip() for item in raw.get("preferred_capability_ids", []) or [] if str(item).strip()]
+            or [str(item).strip() for item in raw.get("must_cover_capabilities", []) or [] if str(item).strip()]
+        )
+        has_node_guidance = bool([str(item).strip() for item in raw.get("allowed_next_node_types", []) or [] if str(item).strip()])
+        if not (has_recipe_guidance or has_capability_guidance or has_node_guidance):
+            return "judge contract missing recipe/capability/node routing guidance"
     return None
 
 
@@ -185,6 +193,8 @@ def _guardrail_decision(
                 "recommended_strategy": "summarize_current_progress",
                 "focus": ["report_remaining_gaps"],
             },
+            preferred_recipe_ids=[],
+            blocked_recipe_ids=["resolve_then_read_target", "search_then_read_evidence", "locate_inspect_edit_verify", "inspect_patch_verify_python"],
             recommended_recovery_mode="handoff_to_human",
             human_handoff_required=True,
             blocked_next_node_types=["final_response"],
@@ -209,6 +219,8 @@ def _guardrail_decision(
                 "recommended_strategy": "resolve_conflict_before_answering",
                 "focus": ["target_resolution", "compare evidence"],
             },
+            preferred_recipe_ids=["resolve_then_read_target", "search_then_read_evidence"],
+            must_cover_capabilities=["resolve_target_in_workspace", "read_workspace_evidence"],
             recommended_recovery_mode="collect_more_evidence",
             allowed_next_node_types=["target_resolution", "plan_read", "chunked_file_read", "verification"],
             blocked_next_node_types=["final_response"],
@@ -275,15 +287,15 @@ def judge_progress(
     if contract_error is None and isinstance(model_payload, dict):
         return _normalize_model_judge_decision(model_payload)
     if contract_error is not None:
-        repaired = repair_structured_output(
+        repaired = repair_structured_contract(
             context,
             role="judge",
             contract_kind="judge_contract",
-            required_fields=["status", "reason", "allowed_next_node_types"],
+            required_fields=["status", "reason", "preferred_capability_ids"],
             original_output=model_payload,
             request_payload=judge_payload,
             validate=_judge_contract_error,
-            extra_instructions="status must be either accept or replan. replan requires allowed_next_node_types.",
+            extra_instructions="status must be either accept or replan. replan requires recipe guidance, capability guidance, or allowed_next_node_types.",
             on_record=_record_repair_with_process(graph_state, context),
         )
         if isinstance(repaired, dict) and _judge_contract_error(repaired) is None:
@@ -297,6 +309,8 @@ def judge_progress(
             "primary_gap": "judge_model_unavailable",
             "verification_status": _verification_status(payload, goal_envelope),
         },
+        preferred_capability_ids=["run_workspace_verification"] if _needs_verification(goal_envelope) else ["read_workspace_evidence"],
+        preferred_recipe_ids=["locate_inspect_edit_verify"] if _needs_verification(goal_envelope) else ["resolve_then_read_target"],
         recommended_recovery_mode="handoff_to_human",
         human_handoff_required=True,
         blocked_next_node_types=["final_response"],

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+"""Structured JSON repair: loop LLM fix attempts until ``validate`` accepts the payload."""
+
 import json
+from collections.abc import Callable
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.planning.prompt_utils import extract_json_block
-
 
 DEFAULT_REPAIR_ATTEMPTS = 3
 
@@ -68,7 +70,7 @@ def _repair_attempt(
     return parse_json_object(str(response.content or ""))
 
 
-def repair_structured_output(
+def _repair_structured_json_round(
     context: Any,
     *,
     role: str,
@@ -77,64 +79,33 @@ def repair_structured_output(
     original_output: Any,
     validation_error: str,
     request_payload: dict[str, Any],
-    extra_instructions: str = "",
-    max_attempts: int = DEFAULT_REPAIR_ATTEMPTS,
-    on_record: Any | None = None,
+    extra_instructions: str,
+    outer_attempt: int,
+    outer_max: int,
 ) -> dict[str, Any] | None:
     system_prompt = build_contract_repair_system_prompt(
         contract_kind=contract_kind,
         required_fields=required_fields,
         extra_instructions=extra_instructions,
     )
-    latest_output = original_output
-    latest_error = validation_error
-    for attempt in range(1, max_attempts + 1):
-        payload = {
-            "contract_kind": contract_kind,
-            "validation_error": latest_error,
-            "original_output": latest_output,
-            "request_payload": request_payload,
-            "attempt": attempt,
-            "max_attempts": max_attempts,
-        }
-        repaired, parse_error = _repair_attempt(
-            context,
-            role=role,
-            system_prompt=system_prompt,
-            payload=payload,
-        )
-        if isinstance(repaired, dict):
-            if callable(on_record):
-                on_record(
-                    {
-                        "contract_kind": contract_kind,
-                        "role": role,
-                        "success": True,
-                        "attempts_used": attempt,
-                        "max_attempts": max_attempts,
-                        "initial_error": validation_error,
-                        "final_error": parse_error or "",
-                    }
-                )
-            return repaired
-        latest_output = {"prior_repair_attempt": latest_output, "attempt": attempt}
-        latest_error = parse_error or latest_error
-    if callable(on_record):
-        on_record(
-            {
-                "contract_kind": contract_kind,
-                "role": role,
-                "success": False,
-                "attempts_used": max_attempts,
-                "max_attempts": max_attempts,
-                "initial_error": validation_error,
-                "final_error": latest_error,
-            }
-        )
-    return None
+    payload = {
+        "contract_kind": contract_kind,
+        "validation_error": validation_error,
+        "original_output": original_output,
+        "request_payload": request_payload,
+        "attempt": outer_attempt,
+        "max_attempts": outer_max,
+    }
+    repaired, _ = _repair_attempt(
+        context,
+        role=role,
+        system_prompt=system_prompt,
+        payload=payload,
+    )
+    return repaired if isinstance(repaired, dict) else None
 
 
-def repair_structured_output_until_valid(
+def repair_structured_contract(
     context: Any,
     *,
     role: str,
@@ -142,18 +113,21 @@ def repair_structured_output_until_valid(
     required_fields: list[str],
     original_output: Any,
     request_payload: dict[str, Any],
-    validate: Any,
+    validate: Callable[[Any], str | None],
     extra_instructions: str = "",
     max_attempts: int = DEFAULT_REPAIR_ATTEMPTS,
-    on_record: Any | None = None,
+    on_record: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
+    """Ask the repair model up to ``max_attempts`` times until ``validate(candidate)`` returns ``None``."""
+
     latest_output = original_output
     latest_error = validate(original_output)
     if latest_error is None and isinstance(original_output, dict):
         return original_output
 
+    initial_validation_error = latest_error
     for attempt in range(1, max_attempts + 1):
-        repaired = repair_structured_output(
+        repaired = _repair_structured_json_round(
             context,
             role=role,
             contract_kind=contract_kind,
@@ -162,8 +136,8 @@ def repair_structured_output_until_valid(
             validation_error=str(latest_error or "invalid structured output"),
             request_payload=request_payload,
             extra_instructions=extra_instructions,
-            max_attempts=1,
-            on_record=None,
+            outer_attempt=attempt,
+            outer_max=max_attempts,
         )
         if not isinstance(repaired, dict):
             latest_output = {"prior_repair_attempt": latest_output, "attempt": attempt}
@@ -179,7 +153,7 @@ def repair_structured_output_until_valid(
                         "success": True,
                         "attempts_used": attempt,
                         "max_attempts": max_attempts,
-                        "initial_error": validate(original_output) or "",
+                        "initial_error": initial_validation_error or "",
                         "final_error": "",
                     }
                 )
@@ -193,7 +167,7 @@ def repair_structured_output_until_valid(
                 "success": False,
                 "attempts_used": max_attempts,
                 "max_attempts": max_attempts,
-                "initial_error": validate(original_output) or "",
+                "initial_error": initial_validation_error or "",
                 "final_error": str(latest_error or "invalid structured output"),
             }
         )

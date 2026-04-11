@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_runtime_framework.memory import TaskSnapshot, trim_task_snapshot
 from agent_runtime_framework.capabilities.defaults import default_capability_macros
+from agent_runtime_framework.memory import TaskSnapshot, trim_task_snapshot
 from agent_runtime_framework.capabilities.registry import resolve_capability_registry
 from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
@@ -100,8 +100,11 @@ class WorkflowModelContextBuilder:
     ) -> dict[str, Any]:
         registry = resolve_capability_registry(services or {})
         available = registry.list_payloads()
+        recipes = registry.list_recipe_payloads() or [macro.as_payload() for macro in default_capability_macros()]
         ineffective: list[str] = []
         missing: list[str] = []
+        preferred_recipe_ids: list[str] = []
+        blocked_recipe_ids: list[str] = []
         if graph_state is not None:
             for item in graph_state.failure_history[-3:]:
                 if not isinstance(item, dict):
@@ -118,15 +121,24 @@ class WorkflowModelContextBuilder:
                     token = str(cid).strip()
                     if token and not registry.has(token):
                         missing.append(token)
+                preferred_recipe_ids.extend(
+                    [str(item).strip() for item in getattr(jd, "preferred_recipe_ids", []) or [] if str(item).strip()]
+                )
+                blocked_recipe_ids.extend(
+                    [str(item).strip() for item in getattr(jd, "blocked_recipe_ids", []) or [] if str(item).strip()]
+                )
         verification_pending = False
         if graph_state is not None:
             summary = build_agent_graph_execution_summary(graph_state)
             verification_pending = bool(summary.get("verification_pending"))
         return {
             "available_capabilities": available,
-            "capability_macros": [macro.as_payload() for macro in default_capability_macros()],
+            "recipes": recipes,
+            "capability_macros": recipes,
             "ineffective_capabilities": self._dedupe([str(x) for x in ineffective if str(x).strip()]),
             "missing_capabilities": self._dedupe([str(x) for x in missing if str(x).strip()]),
+            "preferred_recipe_ids": self._dedupe(preferred_recipe_ids),
+            "blocked_recipe_ids": self._dedupe(blocked_recipe_ids),
             "verification_pending": verification_pending,
         }
 

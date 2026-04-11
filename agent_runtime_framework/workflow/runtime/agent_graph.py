@@ -54,6 +54,26 @@ def _resolve_memory_manager(runtime_context: Any | None, fallback: MemoryManager
     return getattr(application_context, "memory_manager", None) or fallback
 
 
+def _push_agent_graph_state(ctx: Any, state: AgentGraphState) -> Any:
+    if isinstance(ctx, dict):
+        previous = ctx.get("agent_graph_state")
+        ctx["agent_graph_state"] = state
+        return previous
+    previous = ctx.agent_graph_state
+    ctx.agent_graph_state = state
+    return previous
+
+
+def _pop_agent_graph_state(ctx: Any, previous: Any) -> None:
+    if isinstance(ctx, dict):
+        if previous is None:
+            ctx.pop("agent_graph_state", None)
+        else:
+            ctx["agent_graph_state"] = previous
+        return
+    ctx.agent_graph_state = previous
+
+
 @dataclass(slots=True)
 class AgentGraphRuntime:
     workflow_runtime: GraphExecutionRuntime
@@ -78,7 +98,6 @@ class AgentGraphRuntime:
         run = WorkflowRun(goal=goal_envelope.goal, run_id=state.run_id, graph=graph)
         run.metadata.setdefault("process_events", [])
         run.metadata["goal_envelope"] = goal_envelope.as_payload()
-        run.shared_state["agent_graph_state_ref"] = state
         self._seed_system_nodes(run, goal_envelope, runtime_context)
         if clarification_response:
             run.shared_state["clarification_response"] = clarification_response
@@ -112,7 +131,12 @@ class AgentGraphRuntime:
             edges=[WorkflowEdge(**edge) for edge in pending_subgraph_payload.get("edges", [])],
             metadata=dict(pending_subgraph_payload.get("metadata") or {}),
         )
-        resumed = self.workflow_runtime.resume(subrun, resume_token=resume_token, approved=approved)
+        exec_ctx = self.workflow_runtime.context
+        prev_ag = _push_agent_graph_state(exec_ctx, state)
+        try:
+            resumed = self.workflow_runtime.resume(subrun, resume_token=resume_token, approved=approved)
+        finally:
+            _pop_agent_graph_state(exec_ctx, prev_ag)
         run.metadata.pop("pending_subrun", None)
         run.metadata.pop("pending_subgraph", None)
         outcome = self._consume_subrun(goal_envelope, state, run, resumed, subgraph, runtime_context)
@@ -141,7 +165,12 @@ class AgentGraphRuntime:
             subrun = WorkflowRun(goal=goal_envelope.goal, graph=self._execution_graph(subgraph))
             subrun.metadata.setdefault("process_events", run.metadata.setdefault("process_events", []))
             subrun.shared_state["node_results"] = dict(run.shared_state.get("node_results") or {})
-            executed = self.workflow_runtime.run(subrun)
+            exec_ctx = self.workflow_runtime.context
+            prev_ag = _push_agent_graph_state(exec_ctx, state)
+            try:
+                executed = self.workflow_runtime.run(subrun)
+            finally:
+                _pop_agent_graph_state(exec_ctx, prev_ag)
             outcome = self._consume_subrun(goal_envelope, state, run, executed, subgraph, runtime_context)
             if outcome is not None:
                 return outcome
@@ -326,6 +355,9 @@ class AgentGraphRuntime:
             summary=decision.reason,
             blocking_issue=decision.reason,
             primary_gap=str(decision.diagnosis.get("primary_gap") or ""),
+            capability_gap=decision.capability_gap,
+            preferred_capability_ids=list(decision.preferred_capability_ids),
+            preferred_recipe_ids=list(decision.preferred_recipe_ids),
             verification_required=decision.verification_required,
             human_handoff_required=decision.human_handoff_required,
             recommended_recovery_mode=decision.recommended_recovery_mode,
@@ -388,6 +420,9 @@ class AgentGraphRuntime:
             strategy_guidance=dict(decision.get("strategy_guidance") or {}),
             capability_gap=str(decision.get("capability_gap") or "").strip(),
             preferred_capability_ids=[str(item) for item in decision.get("preferred_capability_ids", []) or [] if str(item).strip()],
+            preferred_recipe_ids=[str(item) for item in decision.get("preferred_recipe_ids", []) or [] if str(item).strip()],
+            blocked_recipe_ids=[str(item) for item in decision.get("blocked_recipe_ids", []) or [] if str(item).strip()],
+            must_cover_capabilities=[str(item) for item in decision.get("must_cover_capabilities", []) or [] if str(item).strip()],
             recommended_recovery_mode=normalize_recovery_mode(
                 decision.get("recommended_recovery_mode"),
                 default="collect_more_evidence",

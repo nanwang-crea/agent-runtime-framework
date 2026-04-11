@@ -7,13 +7,15 @@ from agent_runtime_framework.capabilities.registry import resolve_capability_reg
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.recovery.models import normalize_recovery_mode
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NodeResult, WorkflowNode, WorkflowRun
+from agent_runtime_framework.workflow.runtime.graph_state_access import optional_agent_graph_state
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
 
 def _services_from_context(context: RuntimeContextLike | None) -> dict[str, Any]:
-    if not isinstance(context, dict):
-        return {}
-    services = dict(context.get("services") or {})
+    if isinstance(context, dict):
+        services = dict(context.get("services") or {})
+    else:
+        services = dict(getattr(context, "services", {}) or {})
     app = get_application_context(context)
     if app is not None and isinstance(getattr(app, "services", None), dict):
         services = {**dict(app.services), **services}
@@ -39,12 +41,22 @@ def _latest_tool_failure_summary(run: WorkflowRun) -> dict[str, Any]:
     return last or {}
 
 
+def _infer_recipe_candidates(registry: Any, capability_ids: list[str]) -> list[str]:
+    candidates: list[str] = []
+    recipes = registry.list_recipes() if hasattr(registry, "list_recipes") else []
+    for recipe in recipes:
+        required = set(getattr(recipe, "required_capabilities", []) or [])
+        if required.intersection(capability_ids):
+            candidates.append(str(getattr(recipe, "recipe_id", "") or "").strip())
+    return [item for item in candidates if item]
+
+
 @dataclass(slots=True)
 class CapabilityDiagnosisExecutor:
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
         services = _services_from_context(context)
         registry = resolve_capability_registry(services)
-        graph_state = run.shared_state.get("agent_graph_state_ref")
+        graph_state = optional_agent_graph_state(context)
         failure_diagnosis: dict[str, Any] = {}
         if graph_state is not None and graph_state.failure_history:
             last_fail = dict(graph_state.failure_history[-1])
@@ -55,14 +67,28 @@ class CapabilityDiagnosisExecutor:
         tool_hint = _latest_tool_failure_summary(run)
         matched = registry.match_failure(failure_diagnosis)
 
-        missing_capability = str(failure_diagnosis.get("missing_capability") or "").strip()
+        capability_gap = str(node.metadata.get("capability_gap") or failure_diagnosis.get("missing_capability") or "").strip()
+        missing_capability = capability_gap
         if not missing_capability and tool_hint.get("failure_category") == "tool_execution":
             missing_capability = "unknown_tool_failure"
 
         preferred = [str(x).strip() for x in (node.metadata.get("preferred_capability_ids") or []) if str(x).strip()]
+        preferred.extend([str(x).strip() for x in failure_diagnosis.get("suggested_capabilities", []) or [] if str(x).strip()])
         for cap in matched:
             if cap not in preferred:
                 preferred.append(cap)
+        preferred = [cap for cap in preferred if cap]
+
+        preferred_recipes = [str(x).strip() for x in (node.metadata.get("preferred_recipe_ids") or []) if str(x).strip()]
+        preferred_recipes.extend([str(x).strip() for x in failure_diagnosis.get("suggested_recipes", []) or [] if str(x).strip()])
+        for recipe_id in _infer_recipe_candidates(registry, preferred):
+            if recipe_id not in preferred_recipes:
+                preferred_recipes.append(recipe_id)
+        blocked_recipes = [str(x).strip() for x in (node.metadata.get("blocked_recipe_ids") or []) if str(x).strip()]
+        must_cover_capabilities = [str(x).strip() for x in (node.metadata.get("must_cover_capabilities") or []) if str(x).strip()]
+        for capability_id in must_cover_capabilities:
+            if capability_id and capability_id not in preferred:
+                preferred.append(capability_id)
 
         recoverable = bool(failure_diagnosis.get("recoverable", True))
         human_handoff_required = bool(node.metadata.get("human_handoff_required", False))
@@ -78,11 +104,15 @@ class CapabilityDiagnosisExecutor:
         output = {
             "missing_capability": missing_capability or None,
             "preferred_capability_ids": preferred[:8],
+            "preferred_recipe_ids": preferred_recipes[:8],
+            "blocked_recipe_ids": blocked_recipes[:8],
+            "must_cover_capabilities": must_cover_capabilities[:8],
             "recovery_mode": recovery_mode,
             "human_handoff_required": human_handoff_required,
             "failure_diagnosis": failure_diagnosis,
             "latest_tool_failure": tool_hint or None,
             "available_capabilities_count": len(registry.list_payloads()),
+            "available_recipes_count": len(registry.list_recipe_payloads()) if hasattr(registry, "list_recipe_payloads") else 0,
             "quality_signals": [
                 {
                     "source": "capability_diagnosis",

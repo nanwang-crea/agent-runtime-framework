@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from agent_runtime_framework.models import ChatMessage, ChatRequest, chat_once, resolve_model_runtime
-from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_output_until_valid
+from agent_runtime_framework.workflow.llm.structured_output_repair import parse_json_object, repair_structured_contract
 from agent_runtime_framework.workflow.llm.access import get_application_context
 from agent_runtime_framework.workflow.state.models import GoalSpec, SubTaskSpec
 from agent_runtime_framework.workflow.planning.prompts import build_decomposition_system_prompt
@@ -91,7 +91,7 @@ def _decompose_goal_with_model(goal: GoalSpec, *, context: Any | None) -> tuple[
     parsed, parse_error = parse_json_object(raw_content)
     validation_error = _decomposition_error(parsed)
     if validation_error is not None:
-        parsed = repair_structured_output_until_valid(
+        parsed = repair_structured_contract(
             context,
             role="planner",
             contract_kind="decomposition",
