@@ -83,6 +83,16 @@ def build_default_capability_registry() -> CapabilityRegistry:
             verification_recipe=["post_write_workspace_path"],
         ),
         _spec(
+            "create_workspace_path",
+            "在工作区创建新文件或目录（含初始内容）。",
+            intents=["change_and_verify"],
+            preconditions=["resolved_target"],
+            produces=["modified_paths", "filesystem_changes"],
+            toolchains=[["create_path", "tool_call"]],
+            failure_signatures=["create_workspace_path", "sandbox_policy", "path_outside_workspace", "tool_validation"],
+            verification_recipe=["post_write_workspace_path"],
+        ),
+        _spec(
             "delete_workspace_path",
             "删除工作区内路径并确认删除结果。",
             intents=["dangerous_change"],
@@ -158,6 +168,21 @@ def default_capability_macros() -> list[CapabilityMacro]:
             verification_strategy="search_hits_non_empty",
         ),
         CapabilityMacro(
+            recipe_id="resolve_then_create_path",
+            description="解析目标路径后创建文件或目录并做写后校验。",
+            intent_scope=["change_and_verify"],
+            entry_conditions=["new_path_or_file_requested"],
+            required_capabilities=[
+                "resolve_target_in_workspace",
+                "create_workspace_path",
+                "run_workspace_verification",
+            ],
+            optional_capabilities=["read_workspace_evidence"],
+            exit_conditions=["filesystem_changes", "verification_result"],
+            fallback_recipes=["locate_inspect_edit_verify"],
+            verification_strategy="post_write_workspace_path",
+        ),
+        CapabilityMacro(
             recipe_id="locate_inspect_edit_verify",
             description="先定位并检查目标，再修改并做验证。",
             intent_scope=["change_and_verify"],
@@ -169,7 +194,7 @@ def default_capability_macros() -> list[CapabilityMacro]:
                 "run_workspace_verification",
             ],
             exit_conditions=["verification_result"],
-            fallback_recipes=["inspect_patch_verify_python"],
+            fallback_recipes=["inspect_patch_verify_python", "resolve_then_create_path"],
             verification_strategy="post_write_workspace_path",
         ),
         CapabilityMacro(
@@ -187,9 +212,10 @@ def default_capability_macros() -> list[CapabilityMacro]:
             recipe_id="resolve_then_move_or_rename",
             description="解析路径后执行移动或重命名，并做结果确认。",
             intent_scope=["dangerous_change", "change_and_verify"],
-            entry_conditions=["path_change_requested"],
+            entry_conditions=["path_change_requested", "rename_or_move_requested"],
             required_capabilities=["resolve_target_in_workspace", "move_or_rename_path", "run_workspace_verification"],
             exit_conditions=["filesystem_changes", "verification_result"],
+            fallback_recipes=["resolve_then_delete_path"],
             verification_strategy="post_write_workspace_path",
         ),
         CapabilityMacro(
@@ -199,6 +225,7 @@ def default_capability_macros() -> list[CapabilityMacro]:
             entry_conditions=["delete_requested"],
             required_capabilities=["resolve_target_in_workspace", "delete_workspace_path", "run_workspace_verification"],
             exit_conditions=["filesystem_changes", "verification_result"],
+            fallback_recipes=["resolve_then_move_or_rename"],
             verification_strategy="post_write_workspace_path",
         ),
     ]

@@ -82,7 +82,7 @@ def _workflow_context(model_payload: str):
     app_context.services["model_router"] = router
     return SimpleNamespace(
         application_context=app_context,
-        services={},
+        services={"planner_allow_legacy_nodes": True},
     )
 
 
@@ -216,7 +216,7 @@ def test_plan_next_subgraph_model_payload_includes_latest_judge_feedback():
     router.set_route("planner", instance_id="fake", model_name="planner-model")
     app_context.services["model_registry"] = registry
     app_context.services["model_router"] = router
-    context = SimpleNamespace(application_context=app_context, services={})
+    context = SimpleNamespace(application_context=app_context, services={"planner_allow_legacy_nodes": True})
 
     envelope = SimpleNamespace(
         goal="创建 tet.txt 并写入内容",
@@ -287,7 +287,7 @@ def test_plan_next_subgraph_prompt_includes_judge_route_constraints():
     router.set_route("planner", instance_id="fake", model_name="planner-model")
     app_context.services["model_registry"] = registry
     app_context.services["model_router"] = router
-    context = SimpleNamespace(application_context=app_context, services={})
+    context = SimpleNamespace(application_context=app_context, services={"planner_allow_legacy_nodes": True})
     envelope = SimpleNamespace(
         goal="解释根目录 README",
         normalized_goal="解释根目录 README",
@@ -476,7 +476,11 @@ def test_plan_next_subgraph_uses_model_even_when_context_requests_deterministic_
     )
     state = new_agent_graph_state(run_id="run-model-first", goal_envelope=envelope)
 
-    subgraph = plan_next_subgraph(envelope, state, context=SimpleNamespace(application_context=context.application_context, services={}))
+    subgraph = plan_next_subgraph(
+        envelope,
+        state,
+        context=SimpleNamespace(application_context=context.application_context, services={"planner_allow_legacy_nodes": True}),
+    )
 
     assert subgraph.nodes[0].node_type == "verification"
 
@@ -687,7 +691,11 @@ def test_plan_next_subgraph_request_body_uses_compacted_context():
         {"iteration": 4, "planner_summary": "verify tet", "judge_status": "needs_verification"},
     ]
 
-    plan_next_subgraph(envelope, state, context=SimpleNamespace(application_context=context.application_context, services={}))
+    plan_next_subgraph(
+        envelope,
+        state,
+        context=SimpleNamespace(application_context=context.application_context, services={"planner_allow_legacy_nodes": True}),
+    )
 
     instance = context.application_context.services["model_registry"].instance("fake")
     client = instance.last_client
@@ -698,3 +706,22 @@ def test_plan_next_subgraph_request_body_uses_compacted_context():
     assert '"working_memory_view"' in request_body
     assert '"ineffective_actions"' in request_body
     assert '"workspace scan"' not in request_body
+
+
+def test_plan_next_subgraph_without_legacy_ignores_raw_nodes_and_expands_recipe():
+    ctx = _workflow_context(
+        '{"planner_summary":"legacy only","nodes":[{"node_id":"search","node_type":"content_search","reason":"find","inputs":{},"depends_on":[],"success_criteria":["collect search evidence"]}]}'
+    )
+    ctx.services["planner_allow_legacy_nodes"] = False
+    envelope = SimpleNamespace(
+        goal="解释 README",
+        normalized_goal="解释 README",
+        intent="file_read",
+        target_hints=["README"],
+        success_criteria=["read target"],
+        constraints={},
+    )
+    state = new_agent_graph_state(run_id="run-recipe-first-no-legacy", goal_envelope=envelope)
+    subgraph = plan_next_subgraph(envelope, state, context=ctx)
+    assert subgraph.metadata.get("planner") == "recipe_first_v2"
+    assert subgraph.nodes[0].node_type == "interpret_target"

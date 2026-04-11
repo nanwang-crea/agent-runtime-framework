@@ -65,6 +65,38 @@ def _goal_text(goal_envelope: GoalEnvelope) -> str:
     return f"{goal_envelope.goal} {goal_envelope.normalized_goal}".lower()
 
 
+def _suggests_delete(goal_text: str) -> bool:
+    return any(
+        token in goal_text
+        for token in ("删除", "remove", "delete", "unlink", "rm ", " rm", " rm ")
+    )
+
+
+def _suggests_move_rename(goal_text: str) -> bool:
+    return any(
+        token in goal_text
+        for token in ("重命名", "移动", "rename", "move", " mv", "mv ", "mv\t")
+    )
+
+
+def _suggests_new_path_creation(goal_text: str) -> bool:
+    return any(
+        token in goal_text
+        for token in (
+            "创建",
+            "新建",
+            "mkdir",
+            "touch",
+            "new file",
+            "新文件",
+            "空文件",
+            "目录",
+            "folder",
+            "add file",
+        )
+    )
+
+
 def _recent_failure_text(graph_state: AgentGraphState) -> str:
     if not graph_state.failure_history:
         return ""
@@ -107,15 +139,19 @@ def _infer_recipe_id(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, 
     failure_text = _recent_failure_text(graph_state)
     fallback_candidates: list[str]
     if goal_envelope.intent == "dangerous_change":
-        if any(keyword in goal_text for keyword in ("delete", "remove", "删除")):
+        if _suggests_delete(goal_text):
             fallback_candidates = ["resolve_then_delete_path", "resolve_then_move_or_rename"]
+        elif _suggests_move_rename(goal_text):
+            fallback_candidates = ["resolve_then_move_or_rename", "resolve_then_delete_path"]
         else:
             fallback_candidates = ["resolve_then_move_or_rename", "resolve_then_delete_path"]
     elif goal_envelope.intent == "change_and_verify":
-        if any(keyword in f"{goal_text} {failure_text}" for keyword in ("pytest", "test", "python", ".py")):
+        if _suggests_new_path_creation(goal_text) and not _suggests_delete(goal_text):
+            fallback_candidates = ["resolve_then_create_path", "locate_inspect_edit_verify", "inspect_patch_verify_python"]
+        elif any(keyword in f"{goal_text} {failure_text}" for keyword in ("pytest", "test", "python", ".py")):
             fallback_candidates = ["inspect_patch_verify_python", "locate_inspect_edit_verify"]
         else:
-            fallback_candidates = ["locate_inspect_edit_verify", "inspect_patch_verify_python"]
+            fallback_candidates = ["locate_inspect_edit_verify", "inspect_patch_verify_python", "resolve_then_create_path"]
     elif goal_envelope.intent in {"repository_overview", "compound"}:
         fallback_candidates = ["search_then_read_evidence", "resolve_then_read_target"]
     else:
@@ -126,7 +162,12 @@ def _infer_recipe_id(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, 
     return ""
 
 
-def _optional_capability_allowed(capability_id: str, goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> bool:
+def _optional_capability_allowed(
+    capability_id: str,
+    goal_envelope: GoalEnvelope,
+    graph_state: AgentGraphState,
+    recipe: CapabilityMacro | None,
+) -> bool:
     goal_text = _goal_text(goal_envelope)
     failure_text = _recent_failure_text(graph_state)
     if capability_id == "resolve_target_in_workspace":
@@ -134,6 +175,10 @@ def _optional_capability_allowed(capability_id: str, goal_envelope: GoalEnvelope
         return not bool(str(working_memory.active_target or "").strip() and working_memory.confirmed_targets)
     if capability_id == "inspect_test_failure":
         return any(keyword in f"{goal_text} {failure_text}" for keyword in ("pytest", "test", "failed", "stderr"))
+    if capability_id == "read_workspace_evidence" and recipe is not None and recipe.recipe_id == "resolve_then_create_path":
+        return bool(failure_text) and any(
+            keyword in failure_text for keyword in ("ambiguous", "clarification", "unknown", "missing", "path")
+        )
     return True
 
 
@@ -152,7 +197,7 @@ def _resolve_capability_ids(
     if recipe is not None:
         capability_ids.extend(recipe.required_capabilities)
         for capability_id in recipe.optional_capabilities:
-            if _optional_capability_allowed(capability_id, goal_envelope, graph_state):
+            if _optional_capability_allowed(capability_id, goal_envelope, graph_state, recipe):
                 capability_ids.append(capability_id)
     judge_payload = _latest_judge_payload(graph_state)
     for capability_id in judge_payload.get("preferred_capability_ids", []) or []:
@@ -164,10 +209,19 @@ def _resolve_capability_ids(
         if token and registry.has(token):
             capability_ids.append(token)
     if not capability_ids:
+        gt = _goal_text(goal_envelope)
         if goal_envelope.intent == "change_and_verify":
-            capability_ids = ["read_workspace_evidence", "edit_workspace_file", "run_workspace_verification"]
+            if _suggests_new_path_creation(gt) and not _suggests_delete(gt):
+                capability_ids = ["resolve_target_in_workspace", "create_workspace_path", "run_workspace_verification"]
+            else:
+                capability_ids = ["read_workspace_evidence", "edit_workspace_file", "run_workspace_verification"]
         elif goal_envelope.intent == "dangerous_change":
-            capability_ids = ["resolve_target_in_workspace", "move_or_rename_path", "run_workspace_verification"]
+            if _suggests_delete(gt):
+                capability_ids = ["resolve_target_in_workspace", "delete_workspace_path", "run_workspace_verification"]
+            elif _suggests_move_rename(gt):
+                capability_ids = ["resolve_target_in_workspace", "move_or_rename_path", "run_workspace_verification"]
+            else:
+                capability_ids = ["resolve_target_in_workspace", "move_or_rename_path", "run_workspace_verification"]
         elif goal_envelope.intent in {"compound", "repository_overview"}:
             capability_ids = ["search_workspace_content", "read_workspace_evidence"]
         else:

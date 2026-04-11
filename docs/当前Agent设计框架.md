@@ -16,7 +16,7 @@
 - recipe/capability 选择后，会展开为 `PlannedNode` + `WorkflowEdge`
 - 实际执行仍由 `GraphExecutionRuntime` 调度原子节点
 - approval / resume / clarification / verification / final response 继续挂在图执行语义上
-- 为兼容模型波动，planner 仍保留 legacy `nodes` 契约回退，但不再是首选路径
+- 默认关闭 legacy `nodes` 规划：模型只返回 `nodes` 且未给出 recipe/capability 时，会走确定性 `select_capability_plan` 展开；仅当 `services.planner_allow_legacy_nodes` 为 true 时才接受原始 `nodes` DAG（测试与迁移场景）
 
 ## 2. 分层边界
 
@@ -31,7 +31,7 @@
 - `GraphExecutionRuntime`：scheduler-driven node execution
 - `capabilities/*`：能力定义、recipe 定义、registry
 - `workflow/planning/capability_selection.py`：按目标、judge、diagnosis 选择 recipe / capability chain
-- `workflow/planning/recipe_expansion.py`：将 recipe / capability chain 展开成可执行子图
+- `workflow/planning/recipe_expansion.py`：将 recipe / capability chain 展开成可执行子图；对危险变更类 recipe 与 `dangerous_change` 意图下的写节点默认打上 `requires_approval`
 - `workflow/planning/judge.py`：判断是否收敛、缺什么能力、下一轮应偏向哪条 recipe/capability 路线
 - `workflow/nodes/*`：原子节点与 graph-native 写节点执行
 
@@ -59,6 +59,7 @@
 - `search_workspace_content`
 - `search_workspace_symbols`
 - `read_workspace_evidence`
+- `create_workspace_path`
 - `edit_workspace_file`
 - `move_or_rename_path`
 - `delete_workspace_path`
@@ -81,6 +82,7 @@
 当前默认 recipe 包括：
 
 - `resolve_then_read_target`
+- `resolve_then_create_path`
 - `search_then_read_evidence`
 - `locate_inspect_edit_verify`
 - `inspect_patch_verify_python`

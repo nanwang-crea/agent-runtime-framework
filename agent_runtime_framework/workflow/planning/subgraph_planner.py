@@ -210,6 +210,36 @@ def _runtime_services(context: Any | None) -> dict[str, Any]:
     return services
 
 
+def _planner_legacy_nodes_enabled(context: Any | None) -> bool:
+    """When False (default), raw ``nodes`` from the model are ignored in favor of recipe-first planning."""
+    return bool(_runtime_services(context).get("planner_allow_legacy_nodes", False))
+
+
+def _has_recipe_contract(payload: dict[str, Any]) -> bool:
+    if not str(payload.get("planner_summary") or "").strip():
+        return False
+    recipe_id = str(payload.get("selected_recipe_id") or payload.get("recipe_id") or "").strip()
+    capability_ids = [str(x).strip() for x in payload.get("selected_capability_ids", []) or [] if str(x).strip()]
+    return bool(recipe_id or capability_ids)
+
+
+def _recipe_only_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in payload.items() if k != "nodes"}
+
+
+def _deterministic_planner_payload(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None, hints: dict[str, Any]) -> dict[str, Any]:
+    merged_hints = {k: v for k, v in dict(hints).items() if k != "nodes"}
+    sel = select_capability_plan(goal_envelope, graph_state, context=context, planner_payload=merged_hints)
+    planner_summary = str(merged_hints.get("planner_summary") or "").strip() or sel.planner_summary
+    return {
+        "planner_summary": planner_summary,
+        "selected_recipe_id": sel.recipe_id,
+        "selected_capability_ids": list(sel.capability_ids),
+        "expansion_hints": dict(sel.expansion_hints),
+        "rationale": str(merged_hints.get("rationale") or sel.rationale or "").strip(),
+    }
+
+
 def _harness_verification_gate_enabled(context: Any | None) -> bool:
     services = _runtime_services(context)
     return bool(services.get("harness_verification_gate", True))
@@ -616,7 +646,19 @@ def _validate_subgraph_plan_payload(
     max_dynamic_nodes: int,
     context: Any | None = None,
 ) -> str | None:
-    if isinstance(payload, dict) and payload.get("nodes") is not None:
+    if not isinstance(payload, dict):
+        return "model planner returned invalid json"
+    legacy = _planner_legacy_nodes_enabled(context)
+    recipe_part = _recipe_only_payload(payload)
+    if _has_recipe_contract(recipe_part):
+        return _validate_recipe_selection_payload(
+            recipe_part,
+            goal_envelope=goal_envelope,
+            graph_state=graph_state,
+            iteration=iteration,
+            context=context,
+        )
+    if legacy and payload.get("nodes") is not None:
         return _validate_legacy_subgraph_plan_payload(
             payload,
             goal_envelope=goal_envelope,
@@ -625,13 +667,7 @@ def _validate_subgraph_plan_payload(
             max_dynamic_nodes=max_dynamic_nodes,
             context=context,
         )
-    return _validate_recipe_selection_payload(
-        payload,
-        goal_envelope=goal_envelope,
-        graph_state=graph_state,
-        iteration=iteration,
-        context=context,
-    )
+    return "recipe-first contract required: set selected_recipe_id or selected_capability_ids (or enable services.planner_allow_legacy_nodes for raw nodes)"
 
 
 def _validate_legacy_subgraph_plan_payload(
@@ -749,10 +785,10 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
         request_payload=request_payload,
         validate=_validate_plan,
         extra_instructions=(
-            "Prefer returning selected_recipe_id and selected_capability_ids. "
-            "Use latest_judge_decision preferred_recipe_ids and preferred_capability_ids first. "
+            "Return selected_recipe_id and/or selected_capability_ids as the primary plan. "
+            "Use latest_judge_decision preferred_recipe_ids, preferred_capability_ids, and must_cover_capabilities. "
             "Do not select blocked recipes. "
-            "If you must fall back to raw nodes, return only node types permitted by latest_judge_decision."
+            "Raw nodes are only accepted when services.planner_allow_legacy_nodes is true for this run."
         ),
         on_record=_repair_recorder(graph_state, context),
     )
@@ -761,7 +797,18 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
             payload = original_output
         else:
             raise ValueError("model planner returned invalid json")
-    if payload.get("nodes") is not None:
+
+    legacy = _planner_legacy_nodes_enabled(context)
+    recipe_part = _recipe_only_payload(payload)
+    if _has_recipe_contract(recipe_part):
+        return _expand_recipe_first_payload(
+            recipe_part,
+            goal_envelope=goal_envelope,
+            graph_state=graph_state,
+            iteration=iteration,
+            context=context,
+        )
+    if legacy and payload.get("nodes") is not None:
         nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
         nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
         nodes = _inject_capability_diagnosis_if_needed(graph_state, nodes, iteration)
@@ -775,8 +822,9 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
             edges=edges,
             metadata={"planner": "legacy_nodes_v1", "max_dynamic_nodes": max_dynamic_nodes},
         )
+    deterministic = _deterministic_planner_payload(goal_envelope, graph_state, context, dict(payload))
     return _expand_recipe_first_payload(
-        payload,
+        deterministic,
         goal_envelope=goal_envelope,
         graph_state=graph_state,
         iteration=iteration,

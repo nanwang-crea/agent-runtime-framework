@@ -4,7 +4,22 @@ from typing import Any
 
 from agent_runtime_framework.capabilities.registry import resolve_capability_registry
 from agent_runtime_framework.workflow.planning.capability_selection import CapabilityPlanSelection
-from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, PlannedNode, PlannedSubgraph, WorkflowEdge
+from agent_runtime_framework.workflow.state.models import (
+    GRAPH_NATIVE_WRITE_NODE_TYPES,
+    AgentGraphState,
+    GoalEnvelope,
+    PlannedNode,
+    PlannedSubgraph,
+    WorkflowEdge,
+)
+
+_HIGH_RISK_RECIPE_IDS = frozenset(
+    {
+        "resolve_then_delete_path",
+        "resolve_then_move_or_rename",
+        "resolve_then_create_path",
+    }
+)
 
 
 def _services_from_context(context: Any | None) -> dict[str, Any]:
@@ -34,7 +49,20 @@ def _write_node_for_goal(goal_envelope: GoalEnvelope, hint: dict[str, Any]) -> s
     goal_text = f"{goal_envelope.goal} {goal_envelope.normalized_goal}".lower()
     if any(keyword in goal_text for keyword in ("append", "追加")):
         return "append_text"
-    if any(keyword in goal_text for keyword in ("create", "new file", "rewrite", "replace all", "覆盖", "重写")):
+    if any(
+        keyword in goal_text
+        for keyword in (
+            "patch",
+            "补丁",
+            "diff",
+            "search_text",
+            "replace_text",
+            "替换片段",
+            "局部修改",
+        )
+    ):
+        return "apply_patch"
+    if any(keyword in goal_text for keyword in ("create", "new file", "rewrite", "replace all", "覆盖", "重写", "新建", "创建")):
         return "write_file"
     return "apply_patch"
 
@@ -46,6 +74,8 @@ def _default_toolchain(capability_id: str, goal_envelope: GoalEnvelope, hint: di
         return ["plan_search", "content_search"]
     if capability_id == "read_workspace_evidence":
         return ["plan_read", "chunked_file_read"]
+    if capability_id == "create_workspace_path":
+        return ["create_path"]
     if capability_id == "move_or_rename_path":
         return ["move_path"]
     if capability_id == "delete_workspace_path":
@@ -91,6 +121,23 @@ def _node_success_criteria(node_type: str, spec: Any) -> list[str]:
     return list(defaults.get(node_type, [f"complete {node_type}"]))
 
 
+def _write_node_requires_approval(
+    node_type: str,
+    goal_envelope: GoalEnvelope,
+    selection: CapabilityPlanSelection,
+    hint: dict[str, Any],
+) -> bool:
+    if bool(hint.get("requires_approval", False)):
+        return True
+    if node_type not in GRAPH_NATIVE_WRITE_NODE_TYPES:
+        return False
+    if goal_envelope.intent == "dangerous_change":
+        return True
+    if selection.recipe_id in _HIGH_RISK_RECIPE_IDS:
+        return True
+    return False
+
+
 def _base_node_inputs(capability_id: str, recipe_id: str, hint: dict[str, Any], spec: Any, node_type: str) -> dict[str, Any]:
     inputs = dict(hint.get("node_inputs") or hint.get("inputs") or {})
     metadata = dict(inputs)
@@ -101,6 +148,8 @@ def _base_node_inputs(capability_id: str, recipe_id: str, hint: dict[str, Any], 
         recipe_ids = list(getattr(spec, "verification_recipe", []) or [])
         if recipe_ids:
             metadata.setdefault("verification_recipe_id", recipe_ids[0])
+        metadata.setdefault("verification_type", "post_change")
+    elif node_type == "verification_step" and capability_id == "inspect_test_failure":
         metadata.setdefault("verification_type", "post_change")
     return metadata
 
@@ -145,7 +194,7 @@ def expand_recipe_selection(
                 inputs=_base_node_inputs(capability_id, selection.recipe_id, hint, spec, node_type),
                 depends_on=[dependency for dependency in depends_on if dependency],
                 success_criteria=_node_success_criteria(node_type, spec),
-                requires_approval=bool(hint.get("requires_approval", False)),
+                requires_approval=_write_node_requires_approval(node_type, goal_envelope, selection, hint),
             )
             nodes.append(node)
             previous_node_id = node_id
