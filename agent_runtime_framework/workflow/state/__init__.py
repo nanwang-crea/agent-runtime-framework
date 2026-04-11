@@ -1,5 +1,9 @@
 from agent_runtime_framework.workflow.state.graph_state_store import AgentGraphStateStore
-from agent_runtime_framework.workflow.state.approval import WorkflowResumeToken, create_resume_token
+from agent_runtime_framework.workflow.state.approval import (
+    APPROVAL_KIND_CAPABILITY_EXTENSION,
+    WorkflowResumeToken,
+    create_resume_token,
+)
 from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
     ConversationTurn,
@@ -37,6 +41,7 @@ from agent_runtime_framework.workflow.state.models import (
 from agent_runtime_framework.workflow.state.persistence import WorkflowPersistenceStore
 
 __all__ = [
+    "APPROVAL_KIND_CAPABILITY_EXTENSION",
     "AgentGraphState",
     "AgentGraphStateStore",
     "ConversationTurn",

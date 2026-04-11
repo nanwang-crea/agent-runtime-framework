@@ -10,6 +10,7 @@ from agent_runtime_framework.workflow.interaction.conversation_messages import b
 from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context, get_workspace_root
 from agent_runtime_framework.workflow.llm.synthesis import synthesize_text
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
+from agent_runtime_framework.workflow.recovery.verification import get_verification_recipe
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
 
@@ -67,7 +68,21 @@ class AggregationExecutor:
 
 @dataclass(slots=True)
 class VerificationExecutor:
+    def _verification_recovery_fields(self, recipe_payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not recipe_payload:
+            return {}
+        mode = str(recipe_payload.get("on_failure_recovery_mode") or "").strip()
+        if not mode:
+            return {}
+        return {"verification_failure_recovery_mode": mode, "on_failure_recovery_mode": mode}
+
     def execute(self, node: WorkflowNode, run: WorkflowRun, context: RuntimeContextLike = None) -> NodeResult:
+        recipe_payload: dict[str, Any] | None = None
+        recipe_id = str(node.metadata.get("verification_recipe_id") or "").strip()
+        if recipe_id:
+            recipe = get_verification_recipe(recipe_id)
+            if recipe is not None:
+                recipe_payload = recipe.as_payload()
         node_results = run.shared_state.get("node_results", {})
         verification_events: list[dict[str, Any]] = []
         references: list[str] = []
@@ -132,6 +147,7 @@ class VerificationExecutor:
                         }
                     ],
                     "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+                    **self._verification_recovery_fields(recipe_payload),
                 },
                 references=references,
                 error=summary,
@@ -170,6 +186,7 @@ class VerificationExecutor:
                         }
                     ],
                     "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+                    **self._verification_recovery_fields(recipe_payload),
                 },
                 references=references,
                 error=summary,
@@ -178,25 +195,28 @@ class VerificationExecutor:
         summaries = [str(event.get("summary") or "").strip() for event in verification_events if str(event.get("summary") or "").strip()]
         summary = "；".join(summaries) or "Verification completed."
         verification = {"status": "passed", "success": True, "summary": summary}
+        output_payload: dict[str, Any] = {
+            "summary": summary,
+            "verification": verification,
+            "verification_events": verification_events,
+            "verification_by_type": verification_by_type,
+            "quality_signals": [
+                {
+                    "source": "verification",
+                    "relevance": "high",
+                    "confidence": 0.95,
+                    "progress_contribution": "verification_completed",
+                    "verification_needed": False,
+                    "recoverable_error": False,
+                }
+            ],
+            "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
+        }
+        if recipe_payload is not None:
+            output_payload["verification_recipe_applied"] = recipe_payload
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={
-                "summary": summary,
-                "verification": verification,
-                "verification_events": verification_events,
-                "verification_by_type": verification_by_type,
-                "quality_signals": [
-                    {
-                        "source": "verification",
-                        "relevance": "high",
-                        "confidence": 0.95,
-                        "progress_contribution": "verification_completed",
-                        "verification_needed": False,
-                        "recoverable_error": False,
-                    }
-                ],
-                "reasoning_trace": [{"kind": "verification_summary", "summary": summary}],
-            },
+            output=output_payload,
             references=references,
             error=None,
         )

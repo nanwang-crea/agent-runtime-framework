@@ -2266,8 +2266,11 @@ def test_agent_graph_runtime_tracks_failure_history_and_open_issues():
     assert result.metadata["agent_graph_state"]["open_issues"] == ["grounded evidence"]
     assert result.metadata["agent_graph_state"]["failure_history"][0]["status"] == "replan"
     assert result.metadata["agent_graph_state"]["failure_history"][0]["diagnosis"]["primary_gap"] == "grounded_evidence_missing"
+    assert result.metadata["agent_graph_state"]["failure_history"][0]["failure_diagnosis"]["category"] == "planning_gap"
     assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure"]["status"] == "replan"
+    assert result.metadata["agent_graph_state"]["execution_summary"]["latest_failure_category"] == "planning_gap"
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "replan"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["failure_diagnosis"]["category"] == "planning_gap"
     assert result.metadata["agent_graph_state"]["execution_summary"]["latest_recovery_decision"]["action"] == "replan"
 
 
@@ -2321,6 +2324,42 @@ def test_agent_graph_runtime_records_execution_failure_recovery_decision():
     assert result.status == RUN_STATUS_FAILED
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["action"] == "diagnose_and_replan"
     assert result.metadata["agent_graph_state"]["recovery_history"][0]["trigger"] == "execution_failed"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["failure_diagnosis"]["category"] == "execution_failure"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["recovery_mode"] == "collect_more_evidence"
+
+
+def test_agent_graph_runtime_keeps_judge_recovery_contract_fields():
+    from agent_runtime_framework.workflow.runtime.agent_graph import AgentGraphRuntime
+
+    goal = GoalEnvelope(goal="创建 docs/note.md", normalized_goal="创建 docs/note.md", intent="change_and_verify")
+    runtime = AgentGraphRuntime(
+        workflow_runtime=GraphExecutionRuntime(executors={"workspace_subtask": NoopExecutor()}),
+        planner=lambda goal_envelope, state, context: PlannedSubgraph(
+            iteration=1,
+            planner_summary="write file",
+            nodes=[PlannedNode(node_id="workspace_subtask_1", node_type="workspace_subtask", reason="write", success_criteria=["progress"])],
+            edges=[],
+            metadata={},
+        ),
+        judge=lambda goal_envelope, aggregated_payload, state: {
+            "status": "replan",
+            "reason": "Need verification before finalizing",
+            "missing_evidence": ["verification"],
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "strategy_guidance": {"recommended_strategy": "run_verification"},
+            "recommended_recovery_mode": "run_verification",
+            "verification_required": True,
+        },
+        max_iterations=1,
+    )
+
+    result = runtime.run(goal, context={})
+
+    judge_payload = result.shared_state["judge_decision"]
+    assert judge_payload["recommended_recovery_mode"] == "run_verification"
+    assert judge_payload["verification_required"] is True
+    assert result.metadata["agent_graph_state"]["iteration_summaries"][0]["recovery_mode"] == "run_verification"
+    assert result.metadata["agent_graph_state"]["recovery_history"][0]["recovery_mode"] == "run_verification"
 
 
 def test_system_node_manager_keeps_new_verification_over_stale_evidence_synthesis():

@@ -4,8 +4,10 @@ from contextlib import contextmanager
 from threading import Lock
 from typing import Any
 
+from agent_runtime_framework.errors import AppError
 from agent_runtime_framework.tools.specs import ToolSpec
 from agent_runtime_framework.tools.models import ToolCall, ToolResult
+from agent_runtime_framework.workflow.recovery.models import tool_execution_failure, tool_validation_failure
 
 _SERIALIZATION_LOCKS: dict[str, Lock] = {}
 _SERIALIZATION_GUARD = Lock()
@@ -60,12 +62,27 @@ def execute_tool_call(
     call = ToolCall(tool_name=tool.name, arguments=_repair_argument_aliases(tool, call.arguments))
     validation_error = _validate_arguments(tool, call.arguments)
     if validation_error is not None:
+        failure = tool_validation_failure(
+            subcategory=str(validation_error.get("failure_subcategory") or "invalid_arguments"),
+            summary=str(validation_error.get("message") or "tool validation failed"),
+            blocking_issue=str(validation_error.get("field") or validation_error.get("message") or "invalid arguments"),
+        ).as_payload()
+        failure_metadata = {
+            "failure_category": str(failure.get("category") or ""),
+            "failure_subcategory": failure.get("subcategory"),
+            "suggested_recovery_mode": str(failure.get("suggested_recovery_mode") or ""),
+            "suggested_tools": list(failure.get("suggested_tools") or []),
+            "suggested_capabilities": list(failure.get("suggested_capabilities") or []),
+            "missing_capability": failure.get("missing_capability"),
+            "failure_diagnosis": failure,
+        }
+        validation_error = {**validation_error, **failure_metadata}
         return ToolResult(
             tool_name=tool.name,
             success=False,
             error=str(validation_error["message"]),
             attempt_count=0,
-            metadata={"error": validation_error},
+            metadata={"error": validation_error, **failure_metadata},
         )
     while True:
         attempts += 1
@@ -85,6 +102,7 @@ def execute_tool_call(
             return result
         except Exception as exc:
             if attempts > tool.max_retries:
+                failure = _execution_failure_payload(exc)
                 return ToolResult(
                     tool_name=tool.name,
                     success=False,
@@ -96,8 +114,10 @@ def execute_tool_call(
                             "code": "TOOL_EXECUTION_ERROR",
                             "message": str(exc),
                             "retriable": attempts <= tool.max_retries,
-                        }
-                    },
+                            **failure,
+                        },
+                        **failure,
+                    }
                 )
 
 
@@ -122,6 +142,7 @@ def _validate_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, 
                 "message": f"missing required argument: {name}",
                 "field": name,
                 "retriable": True,
+                "failure_subcategory": "missing_required_argument",
             }
     for field, expected in dict(getattr(tool, "input_schema", {}) or {}).items():
         if field not in arguments:
@@ -136,9 +157,52 @@ def _validate_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, 
                 "expected_type": str(expected or ""),
                 "actual_type": type(value).__name__,
                 "retriable": True,
+                "failure_subcategory": "invalid_argument_type",
             }
         arguments[field] = normalized
     return None
+
+
+def _execution_failure_payload(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, AppError):
+        failure = tool_execution_failure(
+            summary=exc.message,
+            blocking_issue=str(exc.detail or exc.message),
+            recoverable=bool(exc.retriable),
+            subcategory=str(exc.context.get("failure_subcategory") or exc.code or "").strip() or None,
+            suggested_recovery_mode=str(exc.context.get("suggested_recovery_mode") or ""),
+            suggested_tools=[str(item) for item in exc.context.get("suggested_tools", []) or [] if str(item).strip()],
+            suggested_capabilities=[
+                str(item) for item in exc.context.get("suggested_capabilities", []) or [] if str(item).strip()
+            ],
+            missing_capability=str(exc.context.get("missing_capability") or "").strip() or None,
+        ).as_payload()
+        category = str(exc.context.get("failure_category") or "").strip()
+        if category:
+            failure["category"] = category
+        return {
+            "failure_category": str(failure.get("category") or ""),
+            "failure_subcategory": failure.get("subcategory"),
+            "suggested_recovery_mode": str(failure.get("suggested_recovery_mode") or ""),
+            "suggested_tools": list(failure.get("suggested_tools") or []),
+            "suggested_capabilities": list(failure.get("suggested_capabilities") or []),
+            "missing_capability": failure.get("missing_capability"),
+            "failure_diagnosis": failure,
+        }
+    failure = tool_execution_failure(
+        summary=str(exc),
+        blocking_issue=str(exc),
+        recoverable=True,
+    ).as_payload()
+    return {
+        "failure_category": str(failure.get("category") or ""),
+        "failure_subcategory": failure.get("subcategory"),
+        "suggested_recovery_mode": str(failure.get("suggested_recovery_mode") or ""),
+        "suggested_tools": [],
+        "suggested_capabilities": [],
+        "missing_capability": None,
+        "failure_diagnosis": failure,
+    }
 
 
 def _coerce_value(value: Any, expected_type: str) -> tuple[bool, Any]:

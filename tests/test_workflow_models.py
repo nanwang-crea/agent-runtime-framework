@@ -231,6 +231,9 @@ def test_judge_decision_serializes_route_constraints():
         replan_hint={"preferred_strategy": "direct_read_confirmed_target"},
         diagnosis={"primary_gap": "missing_read_grounding"},
         strategy_guidance={"recommended_strategy": "read_before_answering"},
+        recommended_recovery_mode="collect_more_evidence",
+        verification_required=False,
+        human_handoff_required=False,
         allowed_next_node_types=["plan_read", "chunked_file_read"],
         blocked_next_node_types=["final_response"],
         must_cover=["read README body"],
@@ -244,6 +247,7 @@ def test_judge_decision_serializes_route_constraints():
     assert payload["blocked_next_node_types"] == ["final_response"]
     assert payload["must_cover"] == ["read README body"]
     assert payload["planner_instructions"] == "Read the README content before answering."
+    assert payload["recommended_recovery_mode"] == "collect_more_evidence"
 
 
 def test_agent_graph_state_store_restores_repair_history():
@@ -409,6 +413,45 @@ def test_workflow_model_context_builder_restores_prior_state_for_clarification_a
     assert response_context["recent_paths"] == ["README.md", "docs/README.md"]
     assert response_context["confirmed_targets"] == ["README.md"]
     assert response_context["excluded_targets"] == ["docs/README.md"]
+
+
+def test_workflow_model_context_builder_exposes_recent_failure_diagnoses_and_recovery_modes():
+    from agent_runtime_framework.workflow.context.model_context import WorkflowModelContextBuilder
+    from agent_runtime_framework.workflow.state.models import new_agent_graph_state
+
+    goal = GoalEnvelope(goal="demo", normalized_goal="demo", intent="change_and_verify")
+    state = new_agent_graph_state(run_id="run-context-recovery", goal_envelope=goal)
+    state.aggregated_payload["verification"] = {"status": "failed", "success": False}
+    state.failure_history = [
+        {
+            "iteration": 1,
+            "status": "replan",
+            "reason": "Verification missing",
+            "diagnosis": {"primary_gap": "verification_missing"},
+            "failure_diagnosis": {
+                "category": "verification_gap",
+                "subcategory": "verification_missing",
+                "summary": "Verification missing",
+                "blocking_issue": "Verification missing",
+                "recoverable": True,
+                "suggested_recovery_mode": "run_verification",
+            },
+        }
+    ]
+    state.recovery_history = [
+        {
+            "trigger": "replan",
+            "action": "replan",
+            "recovery_mode": "run_verification",
+            "failure_diagnosis": {"category": "verification_gap"},
+        }
+    ]
+
+    working_view = WorkflowModelContextBuilder().build_working_memory_fragment(state)
+
+    assert working_view["recent_failure_diagnoses"][0]["category"] == "verification_gap"
+    assert working_view["recent_recovery_modes"] == ["run_verification"]
+    assert working_view["last_verification_result"]["status"] == "failed"
 
 
 def test_memory_manager_writes_session_and_working_memory():

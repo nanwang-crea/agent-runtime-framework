@@ -4,6 +4,7 @@ import pytest
 from threading import Event, Thread
 from types import SimpleNamespace
 
+from agent_runtime_framework.errors import AppError
 from agent_runtime_framework.tools.specs import ToolSpec
 from agent_runtime_framework.tools.executor import execute_tool_call
 from agent_runtime_framework.tools.models import ToolCall
@@ -206,6 +207,8 @@ def test_execute_tool_call_returns_structured_validation_error_for_type_mismatch
     assert result.success is False
     assert result.metadata["error"]["code"] == "TOOL_VALIDATION_ERROR"
     assert result.metadata["error"]["field"] == "max_lines"
+    assert result.metadata["failure_category"] == "tool_validation"
+    assert result.metadata["suggested_recovery_mode"] == "repair_arguments"
 
 
 def test_execute_tool_call_returns_structured_validation_error_for_missing_required_argument():
@@ -227,3 +230,40 @@ def test_execute_tool_call_returns_structured_validation_error_for_missing_requi
     assert result.success is False
     assert result.metadata["error"]["code"] == "TOOL_VALIDATION_ERROR"
     assert result.metadata["error"]["field"] == "path"
+    assert result.metadata["failure_category"] == "tool_validation"
+    assert result.metadata["failure_subcategory"] == "missing_required_argument"
+
+
+def test_execute_tool_call_returns_recovery_metadata_for_execution_error():
+    def _tool(task, context, arguments):
+        raise AppError(
+            code="SANDBOX_DENIED",
+            message="blocked",
+            detail="network command blocked: curl",
+            stage="sandbox",
+            retriable=False,
+            context={
+                "failure_category": "sandbox_policy",
+                "failure_subcategory": "network_blocked",
+                "suggested_recovery_mode": "repair_environment",
+            },
+        )
+
+    tool = ToolSpec(
+        name="shell",
+        description="run shell",
+        executor=_tool,
+    )
+
+    result = execute_tool_call(
+        tool,
+        ToolCall(tool_name="shell", arguments={"command": "curl example.com"}),
+        task=None,
+        context=None,
+    )
+
+    assert result.success is False
+    assert result.metadata["failure_category"] == "sandbox_policy"
+    assert result.metadata["failure_subcategory"] == "network_blocked"
+    assert result.metadata["suggested_recovery_mode"] == "repair_environment"
+    assert result.metadata["error"]["failure_diagnosis"]["category"] == "sandbox_policy"

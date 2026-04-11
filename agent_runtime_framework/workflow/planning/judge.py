@@ -5,9 +5,10 @@ from typing import Any
 
 from agent_runtime_framework.api.process_trace import emit_process_event
 from agent_runtime_framework.workflow.llm.structured_output_repair import repair_structured_output_until_valid
+from agent_runtime_framework.workflow.recovery.models import normalize_recovery_mode
 
 repair_structured_output = repair_structured_output_until_valid
-from agent_runtime_framework.workflow.llm.access import chat_json
+from agent_runtime_framework.workflow.llm.access import chat_json, get_application_context
 from agent_runtime_framework.workflow.context.model_context import DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER
 from agent_runtime_framework.workflow.state.models import AgentGraphState, GoalEnvelope, JudgeDecision, build_agent_graph_execution_summary, normalize_aggregated_workflow_payload
 from agent_runtime_framework.workflow.planning.prompts import build_judge_system_prompt
@@ -93,12 +94,25 @@ def _has_grounded_progress(signals: list[dict[str, Any]]) -> bool:
     return any(str(item.get("progress_contribution") or "").strip() in grounded_contributions for item in signals)
 
 
-def _judge_context_payload(goal_envelope: GoalEnvelope, payload: dict[str, Any], graph_state: AgentGraphState) -> dict[str, Any]:
+def _judge_context_payload(
+    goal_envelope: GoalEnvelope,
+    payload: dict[str, Any],
+    graph_state: AgentGraphState,
+    context: Any | None = None,
+) -> dict[str, Any]:
+    services: dict[str, Any] = {}
+    if context is not None:
+        services = dict(getattr(context, "services", {}) or {})
+        application_context = get_application_context(context)
+        if application_context is not None and isinstance(getattr(application_context, "services", None), dict):
+            services = {**dict(application_context.services), **services}
+    capability_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_capability_snapshot(graph_state, services)
     return DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_judge_context(
         goal_envelope=goal_envelope,
         aggregated_payload=payload,
         graph_state=graph_state,
         execution_summary=build_agent_graph_execution_summary(graph_state),
+        capability_snapshot=capability_snapshot,
     )
 
 
@@ -121,6 +135,14 @@ def _normalize_model_judge_decision(raw: dict[str, Any]) -> JudgeDecision:
         replan_hint=_normalize_optional_mapping(raw.get("replan_hint")),
         diagnosis=_normalize_optional_mapping(raw.get("diagnosis")),
         strategy_guidance=_normalize_optional_mapping(raw.get("strategy_guidance")),
+        capability_gap=str(raw.get("capability_gap") or "").strip(),
+        preferred_capability_ids=[str(item) for item in raw.get("preferred_capability_ids", []) or [] if str(item).strip()],
+        recommended_recovery_mode=normalize_recovery_mode(
+            raw.get("recommended_recovery_mode"),
+            default="collect_more_evidence",
+        ),
+        verification_required=bool(raw.get("verification_required", False)),
+        human_handoff_required=bool(raw.get("human_handoff_required", False)),
         allowed_next_node_types=[str(item) for item in raw.get("allowed_next_node_types", []) or [] if str(item).strip()],
         blocked_next_node_types=[str(item) for item in raw.get("blocked_next_node_types", []) or [] if str(item).strip()],
         must_cover=[str(item) for item in raw.get("must_cover", []) or [] if str(item).strip()],
@@ -163,6 +185,8 @@ def _guardrail_decision(
                 "recommended_strategy": "summarize_current_progress",
                 "focus": ["report_remaining_gaps"],
             },
+            recommended_recovery_mode="handoff_to_human",
+            human_handoff_required=True,
             blocked_next_node_types=["final_response"],
             must_cover=["report remaining gaps"],
             planner_instructions="Do not finalize. Summarize current progress and remaining gaps.",
@@ -185,6 +209,7 @@ def _guardrail_decision(
                 "recommended_strategy": "resolve_conflict_before_answering",
                 "focus": ["target_resolution", "compare evidence"],
             },
+            recommended_recovery_mode="collect_more_evidence",
             allowed_next_node_types=["target_resolution", "plan_read", "chunked_file_read", "verification"],
             blocked_next_node_types=["final_response"],
             must_cover=["resolve conflicting evidence"],
@@ -233,7 +258,7 @@ def judge_progress(
     guardrail_decision = _guardrail_decision(goal_envelope, payload, graph_state)
     if guardrail_decision is not None:
         return guardrail_decision
-    judge_payload = _judge_context_payload(goal_envelope, payload, graph_state)
+    judge_payload = _judge_context_payload(goal_envelope, payload, graph_state, context)
     try:
         model_payload = chat_json(
             context,
@@ -272,6 +297,8 @@ def judge_progress(
             "primary_gap": "judge_model_unavailable",
             "verification_status": _verification_status(payload, goal_envelope),
         },
+        recommended_recovery_mode="handoff_to_human",
+        human_handoff_required=True,
         blocked_next_node_types=["final_response"],
         must_cover=["obtain a valid judge routing decision"],
         planner_instructions="Do not finalize while the judge model is unavailable.",

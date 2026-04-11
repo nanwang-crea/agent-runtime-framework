@@ -25,6 +25,8 @@ ALLOWED_DYNAMIC_NODE_TYPES = {
     "clarification",
     "verification",
     "verification_step",
+    "capability_diagnosis",
+    "capability_extension",
     "aggregate_results",
     "evidence_synthesis",
     "final_response",
@@ -39,6 +41,7 @@ _SEMANTIC_FOUNDATION_ORDER = ("interpret_target", "plan_search", "plan_read")
 _JUDGE_ROUTE_TYPE_ALIASES = {
     "plan_read": {"chunked_file_read"},
     "verification": {"verification_step"},
+    "capability_diagnosis": {"capability_diagnosis"},
 }
 
 
@@ -181,6 +184,115 @@ def _inject_semantic_foundation(goal_envelope: GoalEnvelope, graph_state: AgentG
     return [*foundation_nodes, *nodes]
 
 
+def _runtime_services(context: Any | None) -> dict[str, Any]:
+    services: dict[str, Any] = {}
+    if context is None:
+        return services
+    if isinstance(context, dict):
+        services = dict(context.get("services") or {})
+    else:
+        services = dict(getattr(context, "services", {}) or {})
+    application_context = get_application_context(context)
+    if application_context is not None and isinstance(getattr(application_context, "services", None), dict):
+        services = {**dict(application_context.services), **services}
+    return services
+
+
+def _harness_verification_gate_enabled(context: Any | None) -> bool:
+    services = _runtime_services(context)
+    return bool(services.get("harness_verification_gate", True))
+
+
+def _should_force_verification_gate(graph_state: AgentGraphState, context: Any | None) -> bool:
+    if not _harness_verification_gate_enabled(context):
+        return False
+    summary = build_agent_graph_execution_summary(graph_state)
+    if summary.get("verification_pending"):
+        return True
+    if graph_state.recovery_history:
+        last = dict(graph_state.recovery_history[-1])
+        if str(last.get("trigger") or "") == "execution_failed":
+            return True
+        rm = str(last.get("recovery_mode") or "")
+        if rm in ("repair_environment", "run_verification"):
+            return True
+    payload = _judge_feedback_payload(_latest_judge_decision(graph_state)) or {}
+    if bool(payload.get("verification_required")):
+        return True
+    return False
+
+
+def _inject_post_recovery_verification_if_needed(
+    graph_state: AgentGraphState,
+    nodes: list[PlannedNode],
+    iteration: int,
+    context: Any | None,
+) -> list[PlannedNode]:
+    if not nodes:
+        return nodes
+    if not _should_force_verification_gate(graph_state, context):
+        return nodes
+    if any(node.node_type in ("verification", "verification_step") for node in nodes):
+        return nodes
+    judge_payload = _judge_feedback_payload(_latest_judge_decision(graph_state)) or {}
+    blocked = _expand_route_node_types(judge_payload.get("blocked_next_node_types", []) or [])
+    if "verification" in blocked and "verification_step" in blocked:
+        return nodes
+    allowed_types = _expand_route_node_types(judge_payload.get("allowed_next_node_types", []) or [])
+    if allowed_types and not (allowed_types & {"verification", "verification_step"}):
+        return nodes
+    if not allowed_types or "verification_step" in allowed_types:
+        node_type = "verification_step"
+    else:
+        node_type = "verification"
+    services = _runtime_services(context)
+    recipe_id = str(services.get("harness_post_recovery_verification_recipe_id") or "post_write_workspace_path").strip()
+    last = nodes[-1]
+    node_id = f"verification_gate_{iteration}"
+    suffix = 0
+    existing = {n.node_id for n in nodes}
+    while node_id in existing:
+        suffix += 1
+        node_id = f"verification_gate_{iteration}_{suffix}"
+    gate = PlannedNode(
+        node_id=node_id,
+        node_type=node_type,
+        reason="Harness: verify after recovery or while verification is still pending",
+        inputs={"verification_recipe_id": recipe_id, "verification_type": "post_change"},
+        depends_on=[last.node_id],
+        success_criteria=["surface verification outcome for upstream writes"],
+    )
+    return [*nodes, gate]
+
+
+def _inject_capability_diagnosis_if_needed(graph_state: AgentGraphState, nodes: list[PlannedNode], iteration: int) -> list[PlannedNode]:
+    payload = _judge_feedback_payload(_latest_judge_decision(graph_state)) or {}
+    gap = str(payload.get("capability_gap") or "").strip()
+    preferred = [str(item).strip() for item in payload.get("preferred_capability_ids", []) or [] if str(item).strip()]
+    if not gap and not preferred:
+        return nodes
+    if any(node.node_type == "capability_diagnosis" for node in nodes):
+        return nodes
+    allowed = _expand_route_node_types(payload.get("allowed_next_node_types", []) or [])
+    if allowed and "capability_diagnosis" not in allowed:
+        return nodes
+    node_id = f"capability_diagnosis_{iteration}"
+    suffix = 0
+    existing_ids = {node.node_id for node in nodes}
+    while node_id in existing_ids:
+        suffix += 1
+        node_id = f"capability_diagnosis_{iteration}_{suffix}"
+    diagnostic = PlannedNode(
+        node_id=node_id,
+        node_type="capability_diagnosis",
+        reason="Diagnose capability gaps signaled by judge before other work",
+        inputs={"capability_gap": gap, "preferred_capability_ids": preferred},
+        depends_on=[],
+        success_criteria=["emit capability diagnosis output"],
+    )
+    return [diagnostic, *nodes]
+
+
 def _execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
     payload = graph_state.aggregated_payload
     summary = build_agent_graph_execution_summary(graph_state)
@@ -241,6 +353,8 @@ def _compact_failure_history(graph_state: AgentGraphState) -> list[dict[str, Any
                 "missing_evidence": [str(value) for value in item.get("missing_evidence", []) or [] if str(value).strip()],
                 "diagnosis": dict(item.get("diagnosis") or {}),
                 "strategy_guidance": dict(item.get("strategy_guidance") or {}),
+                "failure_diagnosis": dict(item.get("failure_diagnosis") or {}),
+                "recovery_mode": str(item.get("recovery_mode") or ""),
             }
         )
     return compacted
@@ -293,12 +407,15 @@ def _compact_execution_summary(graph_state: AgentGraphState) -> dict[str, Any]:
     return summary
 
 
-def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGraphState) -> dict[str, Any]:
+def _planner_context_payload(goal_envelope: GoalEnvelope, graph_state: AgentGraphState, context: Any | None = None) -> dict[str, Any]:
+    services = _runtime_services(context)
+    capability_snapshot = DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_capability_snapshot(graph_state, services)
     return DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER.build_planner_context(
         goal_envelope=goal_envelope,
         graph_state=graph_state,
         latest_judge_decision=_judge_feedback_payload(_latest_judge_decision(graph_state)),
         execution_summary=_compact_execution_summary(graph_state),
+        capability_snapshot=capability_snapshot,
     )
 
 
@@ -375,7 +492,7 @@ def _call_model_planner(goal_envelope: GoalEnvelope, graph_state: AgentGraphStat
     model_name = runtime.profile.model_name if runtime is not None else application_context.llm_model
     if llm_client is None or not model_name:
         return None
-    request_payload = _planner_context_payload(goal_envelope, graph_state)
+    request_payload = _planner_context_payload(goal_envelope, graph_state, context)
     response = chat_once(
         llm_client,
         ChatRequest(
@@ -460,12 +577,15 @@ def _validate_subgraph_plan_payload(
     graph_state: AgentGraphState,
     iteration: int,
     max_dynamic_nodes: int,
+    context: Any | None = None,
 ) -> str | None:
     if not isinstance(payload, dict):
         return "model planner returned invalid json"
     try:
         nodes, _ = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
         nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
+        nodes = _inject_capability_diagnosis_if_needed(graph_state, nodes, iteration)
+        nodes = _inject_post_recovery_verification_if_needed(graph_state, nodes, iteration, context)
         _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
     except (ValueError, TypeError) as exc:
         return str(exc)
@@ -480,13 +600,14 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
         raise ValueError("model planner unavailable")
     max_dynamic_nodes = _max_dynamic_nodes(goal_envelope, context)
     iteration = graph_state.current_iteration + 1
-    request_payload = _planner_context_payload(goal_envelope, graph_state)
+    request_payload = _planner_context_payload(goal_envelope, graph_state, context)
     validation_error = _validate_subgraph_plan_payload(
         payload,
         goal_envelope=goal_envelope,
         graph_state=graph_state,
         iteration=iteration,
         max_dynamic_nodes=max_dynamic_nodes,
+        context=context,
     )
     if validation_error is not None:
         repaired = repair_structured_output_until_valid(
@@ -502,6 +623,7 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
                 graph_state=graph_state,
                 iteration=iteration,
                 max_dynamic_nodes=max_dynamic_nodes,
+                context=context,
             ),
             extra_instructions=(
                 "Return only node types permitted by latest_judge_decision. "
@@ -515,6 +637,8 @@ def plan_next_subgraph(goal_envelope: GoalEnvelope, graph_state: AgentGraphState
             payload = repaired
     nodes, edges = _normalize_model_planned_nodes(payload, iteration, max_dynamic_nodes)
     nodes = _inject_semantic_foundation(goal_envelope, graph_state, nodes, iteration)
+    nodes = _inject_capability_diagnosis_if_needed(graph_state, nodes, iteration)
+    nodes = _inject_post_recovery_verification_if_needed(graph_state, nodes, iteration, context)
     _enforce_judge_route_contract(nodes, _latest_judge_decision(graph_state))
     edges = [WorkflowEdge(source=dependency, target=node.node_id) for node in nodes for dependency in node.depends_on]
     return PlannedSubgraph(

@@ -12,6 +12,7 @@ from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
     GoalEnvelope,
     JudgeDecision,
+    NODE_STATUS_FAILED,
     NodeResult,
     NodeState,
     PlannedSubgraph,
@@ -31,6 +32,11 @@ from agent_runtime_framework.workflow.runtime.execution import GraphExecutionRun
 from agent_runtime_framework.workflow.planning.judge import judge_progress
 from agent_runtime_framework.workflow.planning.subgraph_planner import plan_next_subgraph
 from agent_runtime_framework.workflow.orchestration.system_nodes import SystemNodeManager
+from agent_runtime_framework.workflow.recovery.models import (
+    execution_failure_diagnosis,
+    judge_failure_diagnosis,
+    normalize_recovery_mode,
+)
 
 
 JudgeFn = Callable[[GoalEnvelope, dict[str, Any], AgentGraphState], JudgeDecision | dict[str, Any]]
@@ -162,11 +168,17 @@ class AgentGraphRuntime:
         if executed.status == RUN_STATUS_FAILED:
             run.status = RUN_STATUS_FAILED
             run.error = executed.error
+            failure_diagnosis = execution_failure_diagnosis(
+                str(executed.error or "workflow execution failed"),
+                blocking_issue=str(executed.error or "workflow execution failed"),
+            ).as_payload()
             state.recovery_history.append(
                 self._recovery_decision(
                     trigger="execution_failed",
                     action="diagnose_and_replan",
                     reason=str(executed.error or "workflow execution failed"),
+                    recovery_mode=str(failure_diagnosis.get("suggested_recovery_mode") or "collect_more_evidence"),
+                    failure_diagnosis=failure_diagnosis,
                     details={
                         "iteration": subgraph.iteration,
                         "planner_summary": subgraph.planner_summary,
@@ -197,6 +209,7 @@ class AgentGraphRuntime:
             subgraph,
         )
         state.aggregated_payload = normalize_aggregated_workflow_payload(getattr(evidence_result, "output", {}) or getattr(aggregated_result, "output", {}) or {})
+        self._merge_verification_failure_signals(state, executed)
 
         last_decision = self._judge(goal_envelope, state, runtime_context)
         self._emit(
@@ -222,9 +235,14 @@ class AgentGraphRuntime:
                 "missing_evidence": list(last_decision.missing_evidence),
                 "diagnosis": dict(last_decision.diagnosis),
                 "strategy_guidance": dict(last_decision.strategy_guidance),
+                "recovery_mode": normalize_recovery_mode(
+                    last_decision.recommended_recovery_mode,
+                    default="collect_more_evidence",
+                ),
             }
         )
         if last_decision.status != "accepted":
+            failure_diagnosis = self._failure_diagnosis_for_decision(last_decision)
             state.failure_history.append(
                 {
                     "iteration": state.current_iteration,
@@ -233,6 +251,9 @@ class AgentGraphRuntime:
                     "missing_evidence": list(last_decision.missing_evidence),
                     "diagnosis": dict(last_decision.diagnosis),
                     "strategy_guidance": dict(last_decision.strategy_guidance),
+                    "failure_category": str(failure_diagnosis.get("category") or ""),
+                    "recovery_mode": str(failure_diagnosis.get("suggested_recovery_mode") or ""),
+                    "failure_diagnosis": failure_diagnosis,
                 }
             )
         if last_decision.status != "accepted":
@@ -269,10 +290,13 @@ class AgentGraphRuntime:
 
     def _recovery_for_decision(self, decision: JudgeDecision, iteration: int) -> dict[str, Any]:
         action = "replan"
+        failure_diagnosis = self._failure_diagnosis_for_decision(decision)
         return self._recovery_decision(
             trigger=decision.status,
             action=action,
             reason=decision.reason,
+            recovery_mode=str(failure_diagnosis.get("suggested_recovery_mode") or decision.recommended_recovery_mode or ""),
+            failure_diagnosis=failure_diagnosis,
             details={
                 "iteration": iteration,
                 "missing_evidence": list(decision.missing_evidence),
@@ -281,11 +305,48 @@ class AgentGraphRuntime:
             },
         )
 
-    def _recovery_decision(self, *, trigger: str, action: str, reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _merge_verification_failure_signals(self, state: AgentGraphState, executed: WorkflowRun) -> None:
+        for _node_id, res in (executed.shared_state.get("node_results") or {}).items():
+            if getattr(res, "status", None) != NODE_STATUS_FAILED:
+                continue
+            out = getattr(res, "output", None)
+            if not isinstance(out, dict):
+                continue
+            mode = out.get("verification_failure_recovery_mode") or out.get("on_failure_recovery_mode")
+            if not mode:
+                continue
+            pay = dict(state.aggregated_payload or {})
+            pay["verification_failure_recovery_mode"] = str(mode)
+            pay.setdefault("verification_failure_summary", str(res.error or out.get("summary") or ""))
+            state.aggregated_payload = normalize_aggregated_workflow_payload(pay)
+            break
+
+    def _failure_diagnosis_for_decision(self, decision: JudgeDecision) -> dict[str, Any]:
+        return judge_failure_diagnosis(
+            summary=decision.reason,
+            blocking_issue=decision.reason,
+            primary_gap=str(decision.diagnosis.get("primary_gap") or ""),
+            verification_required=decision.verification_required,
+            human_handoff_required=decision.human_handoff_required,
+            recommended_recovery_mode=decision.recommended_recovery_mode,
+        ).as_payload()
+
+    def _recovery_decision(
+        self,
+        *,
+        trigger: str,
+        action: str,
+        reason: str,
+        recovery_mode: str = "",
+        failure_diagnosis: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "trigger": trigger,
             "action": action,
+            "recovery_mode": normalize_recovery_mode(recovery_mode, default="collect_more_evidence"),
             "reason": reason,
+            "failure_diagnosis": dict(failure_diagnosis or {}),
             "details": dict(details or {}),
         }
 
@@ -325,6 +386,14 @@ class AgentGraphRuntime:
             replan_hint=dict(decision.get("replan_hint") or {}),
             diagnosis=dict(decision.get("diagnosis") or {}),
             strategy_guidance=dict(decision.get("strategy_guidance") or {}),
+            capability_gap=str(decision.get("capability_gap") or "").strip(),
+            preferred_capability_ids=[str(item) for item in decision.get("preferred_capability_ids", []) or [] if str(item).strip()],
+            recommended_recovery_mode=normalize_recovery_mode(
+                decision.get("recommended_recovery_mode"),
+                default="collect_more_evidence",
+            ),
+            verification_required=bool(decision.get("verification_required", False)),
+            human_handoff_required=bool(decision.get("human_handoff_required", False)),
             allowed_next_node_types=[str(item) for item in decision.get("allowed_next_node_types", []) or [] if str(item).strip()],
             blocked_next_node_types=[str(item) for item in decision.get("blocked_next_node_types", []) or [] if str(item).strip()],
             must_cover=[str(item) for item in decision.get("must_cover", []) or [] if str(item).strip()],

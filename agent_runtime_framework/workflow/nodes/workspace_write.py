@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_runtime_framework.workflow.workspace.models import TaskState
 from agent_runtime_framework.tools import ToolCall, execute_tool_call
+from agent_runtime_framework.workflow.recovery.verification import workspace_write_verification_hint
 from agent_runtime_framework.workflow.llm.access import get_application_context, get_workspace_context
 from agent_runtime_framework.workflow.state.models import NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NodeResult, WorkflowNode, WorkflowRun
 from agent_runtime_framework.workflow.runtime.protocols import RuntimeContextLike
@@ -88,16 +89,33 @@ class WorkspaceToolNodeExecutor:
         output = dict(result.output or {})
         summary = str(output.get("summary") or output.get("text") or output.get("content") or output.get("stdout") or "")
         quality_signals, reasoning_trace = _workspace_quality_signal(self.tool_name, True, summary)
+        verification_events: list[dict[str, Any]] = []
+        vhint = workspace_write_verification_hint(self.tool_name)
+        if vhint:
+            verification_events.append(
+                {
+                    "verification_type": "post_write",
+                    "status": "not_run",
+                    "success": True,
+                    "summary": f"verification recipe scheduled: {vhint.get('recipe_id')}",
+                    "recipe": vhint,
+                }
+            )
+        out_payload: dict[str, Any] = {
+            "tool_name": self.tool_name,
+            "arguments": arguments,
+            "tool_output": output,
+            "summary": summary,
+            "quality_signals": quality_signals,
+            "reasoning_trace": reasoning_trace,
+        }
+        if vhint:
+            out_payload["verification_recipe"] = vhint
+        if verification_events:
+            out_payload["verification_events"] = verification_events
         return NodeResult(
             status=NODE_STATUS_COMPLETED,
-            output={
-                "tool_name": self.tool_name,
-                "arguments": arguments,
-                "tool_output": output,
-                "summary": summary,
-                "quality_signals": quality_signals,
-                "reasoning_trace": reasoning_trace,
-            },
+            output=out_payload,
             references=_collect_references(output),
         )
 

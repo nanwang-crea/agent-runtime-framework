@@ -307,6 +307,11 @@ class JudgeDecision:
     replan_hint: dict[str, Any] = field(default_factory=dict)
     diagnosis: dict[str, Any] = field(default_factory=dict)
     strategy_guidance: dict[str, Any] = field(default_factory=dict)
+    capability_gap: str = ""
+    preferred_capability_ids: list[str] = field(default_factory=list)
+    recommended_recovery_mode: str = ""
+    verification_required: bool = False
+    human_handoff_required: bool = False
     allowed_next_node_types: list[str] = field(default_factory=list)
     blocked_next_node_types: list[str] = field(default_factory=list)
     must_cover: list[str] = field(default_factory=list)
@@ -468,6 +473,32 @@ def build_agent_graph_execution_summary(state: AgentGraphState) -> dict[str, Any
         latest_strategy_guidance = {}
         missing_evidence = list(state.open_issues)
 
+    latest_failure_diagnosis = (
+        dict((latest_failure or {}).get("failure_diagnosis") or {})
+        if isinstance((latest_failure or {}).get("failure_diagnosis"), dict)
+        else {}
+    )
+    latest_failure_category = str(
+        latest_failure_diagnosis.get("category")
+        or (latest_failure or {}).get("failure_category")
+        or latest_diagnosis.get("primary_gap")
+        or ""
+    )
+    latest_recovery_mode = str((latest_recovery or {}).get("recovery_mode") or "")
+
+    verification_block = payload.get("verification") if isinstance(payload.get("verification"), dict) else None
+    verification_ok = bool(
+        verification_block and verification_block.get("success", verification_block.get("status") == "passed")
+    )
+    goal = state.goal_envelope
+    needs_verification = (
+        "verify" in str(goal.intent or "")
+        or "change" in str(goal.intent or "")
+        or bool((goal.constraints or {}).get("requires_verification"))
+    )
+    verification_pending = bool(needs_verification and not verification_ok)
+    vfail_mode = str(payload.get("verification_failure_recovery_mode") or "").strip() or None
+
     return {
         "current_iteration": state.current_iteration,
         "last_judge_status": last_judge_status,
@@ -476,6 +507,8 @@ def build_agent_graph_execution_summary(state: AgentGraphState) -> dict[str, Any
         "appended_node_ids": list(state.appended_node_ids),
         "summaries": list(payload.get("summaries", []) or []),
         "verification": dict(payload.get("verification") or {}) if isinstance(payload.get("verification"), dict) else None,
+        "verification_pending": verification_pending,
+        "latest_verification_failure_recovery_mode": vfail_mode,
         "quality_signals": [dict(item) for item in payload.get("quality_signals", []) or [] if isinstance(item, dict)],
         "conflicts": [str(item) for item in payload.get("conflicts", []) or [] if str(item).strip()],
         "open_issues": list(state.open_issues),
@@ -483,7 +516,10 @@ def build_agent_graph_execution_summary(state: AgentGraphState) -> dict[str, Any
         "latest_diagnosis": latest_diagnosis,
         "latest_strategy_guidance": latest_strategy_guidance,
         "latest_failure": latest_failure,
+        "latest_failure_category": latest_failure_category,
+        "latest_failure_diagnosis": latest_failure_diagnosis or None,
         "latest_recovery_decision": latest_recovery,
+        "latest_recovery_mode": latest_recovery_mode,
         "repair_count": len(state.repair_history),
         "latest_repair": latest_repair,
     }

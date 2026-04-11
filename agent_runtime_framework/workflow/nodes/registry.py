@@ -10,6 +10,8 @@ from agent_runtime_framework.workflow.nodes.discovery import (
 )
 from agent_runtime_framework.workflow.nodes.interaction import ClarificationExecutor, ToolCallExecutor
 from agent_runtime_framework.workflow.nodes.semantic import InterpretTargetExecutor, PlanReadExecutor, PlanSearchExecutor
+from agent_runtime_framework.workflow.nodes.capability_diagnosis import CapabilityDiagnosisExecutor
+from agent_runtime_framework.workflow.nodes.capability_extension import CapabilityExtensionExecutor
 from agent_runtime_framework.workflow.nodes.workspace_write import (
     AppendTextExecutor,
     ApplyPatchExecutor,
@@ -42,4 +44,6 @@ def create_workflow_node_executors() -> dict[str, object]:
         "tool_call": ToolCallExecutor(),
         "clarification": ClarificationExecutor(),
         "target_resolution": TargetResolutionExecutor(),
+        "capability_diagnosis": CapabilityDiagnosisExecutor(),
+        "capability_extension": CapabilityExtensionExecutor(),
     }

@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from agent_runtime_framework.memory import TaskSnapshot, trim_task_snapshot
+from agent_runtime_framework.capabilities.defaults import default_capability_macros
+from agent_runtime_framework.capabilities.registry import resolve_capability_registry
 from agent_runtime_framework.workflow.state.models import (
     AgentGraphState,
     GoalEnvelope,
     SessionMemoryState,
     WorkingMemory,
     WorkflowMemoryState,
+    build_agent_graph_execution_summary,
 )
 
 
@@ -57,6 +60,75 @@ class WorkflowModelContextBuilder:
                 if isinstance(item, dict) and str(item.get("status") or "") != "accepted"
             ]
         )
+
+    def _recent_failure_diagnoses(self, state: AgentGraphState | None) -> list[dict[str, Any]]:
+        if state is None:
+            return []
+        diagnoses: list[dict[str, Any]] = []
+        for item in state.failure_history[-2:]:
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item.get("failure_diagnosis") or {}) if isinstance(item.get("failure_diagnosis"), dict) else {}
+            if not payload:
+                primary_gap = str(dict(item.get("diagnosis") or {}).get("primary_gap") or "").strip()
+                payload = {
+                    "category": primary_gap or "planning_gap",
+                    "subcategory": primary_gap or None,
+                    "summary": str(item.get("reason") or ""),
+                    "blocking_issue": str(item.get("reason") or ""),
+                    "recoverable": True,
+                    "suggested_recovery_mode": str(item.get("recovery_mode") or "collect_more_evidence"),
+                }
+            diagnoses.append(payload)
+        return diagnoses
+
+    def _recent_recovery_modes(self, state: AgentGraphState | None) -> list[str]:
+        if state is None:
+            return []
+        return self._dedupe(
+            [
+                str(item.get("recovery_mode") or item.get("action") or "").strip()
+                for item in state.recovery_history[-2:]
+                if isinstance(item, dict)
+            ]
+        )
+
+    def build_capability_snapshot(
+        self,
+        graph_state: AgentGraphState | None,
+        services: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        registry = resolve_capability_registry(services or {})
+        available = registry.list_payloads()
+        ineffective: list[str] = []
+        missing: list[str] = []
+        if graph_state is not None:
+            for item in graph_state.failure_history[-3:]:
+                if not isinstance(item, dict):
+                    continue
+                fd = item.get("failure_diagnosis")
+                if isinstance(fd, dict) and str(fd.get("category") or "") == "tool_validation":
+                    ineffective.append(str(fd.get("subcategory") or "tool_validation"))
+            if graph_state.judge_history:
+                jd = graph_state.judge_history[-1]
+                gap = str(getattr(jd, "capability_gap", "") or "").strip()
+                if gap:
+                    missing.append(gap)
+                for cid in getattr(jd, "preferred_capability_ids", []) or []:
+                    token = str(cid).strip()
+                    if token and not registry.has(token):
+                        missing.append(token)
+        verification_pending = False
+        if graph_state is not None:
+            summary = build_agent_graph_execution_summary(graph_state)
+            verification_pending = bool(summary.get("verification_pending"))
+        return {
+            "available_capabilities": available,
+            "capability_macros": [macro.as_payload() for macro in default_capability_macros()],
+            "ineffective_capabilities": self._dedupe([str(x) for x in ineffective if str(x).strip()]),
+            "missing_capabilities": self._dedupe([str(x) for x in missing if str(x).strip()]),
+            "verification_pending": verification_pending,
+        }
 
     def build_task_snapshot_fragment(
         self,
@@ -118,6 +190,14 @@ class WorkflowModelContextBuilder:
             "ineffective_actions": self._ineffective_actions(state) if include_history else [],
             "recent_failures": [dict(item) for item in state.failure_history[-2:] if isinstance(item, dict)] if include_history and state is not None else [],
             "recent_recovery": [dict(item) for item in state.recovery_history[-2:] if isinstance(item, dict)] if include_history and state is not None else [],
+            "recent_failure_diagnoses": self._recent_failure_diagnoses(state) if include_history else [],
+            "recent_recovery_modes": self._recent_recovery_modes(state) if include_history else [],
+            "last_verification_result": dict(state.aggregated_payload.get("verification") or {})
+            if include_history and state is not None and isinstance(state.aggregated_payload.get("verification"), dict)
+            else None,
+            "verification_pending": bool(build_agent_graph_execution_summary(state).get("verification_pending"))
+            if include_history and state is not None
+            else False,
         }
 
     def build_response_context(self, memory_state: AgentGraphState | WorkflowMemoryState | dict[str, Any] | None) -> dict[str, Any]:
@@ -163,8 +243,9 @@ class WorkflowModelContextBuilder:
         graph_state: AgentGraphState,
         latest_judge_decision: dict[str, Any] | None,
         execution_summary: dict[str, Any],
+        capability_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "goal": goal_envelope.goal,
             "intent": goal_envelope.intent,
             "target_hints": list(goal_envelope.target_hints),
@@ -175,6 +256,9 @@ class WorkflowModelContextBuilder:
             "task_snapshot": self.build_task_snapshot_fragment(graph_state),
             "working_memory_view": self.build_working_memory_fragment(graph_state),
         }
+        if capability_snapshot:
+            payload["capability_view"] = dict(capability_snapshot)
+        return payload
 
     def build_judge_context(
         self,
@@ -183,8 +267,9 @@ class WorkflowModelContextBuilder:
         aggregated_payload: dict[str, Any],
         graph_state: AgentGraphState,
         execution_summary: dict[str, Any],
+        capability_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "goal": goal_envelope.goal,
             "intent": goal_envelope.intent,
             "target_hints": list(goal_envelope.target_hints),
@@ -196,6 +281,9 @@ class WorkflowModelContextBuilder:
             "task_snapshot": self.build_task_snapshot_fragment(graph_state),
             "working_memory_view": self.build_working_memory_fragment(graph_state),
         }
+        if capability_snapshot:
+            payload["capability_view"] = dict(capability_snapshot)
+        return payload
 
 
 DEFAULT_WORKFLOW_MODEL_CONTEXT_BUILDER = WorkflowModelContextBuilder()

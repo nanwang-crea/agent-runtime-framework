@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
+APPROVAL_KIND_CAPABILITY_EXTENSION = "capability_extension"
+
 
 @dataclass(slots=True)
 class WorkflowResumeToken:

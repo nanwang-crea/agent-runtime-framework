@@ -106,7 +106,6 @@ def run_sandboxed_command(command: str, context: Any, *, timeout: int | None = N
     sandbox = resolve_sandbox(context)
     workspace_root = sandbox.normalized_workspace_root()
     argv = _normalize_command(command)
-    executable = argv[0]
     _assert_command_allowed(argv, sandbox)
     completed = subprocess.run(
         argv,
@@ -134,42 +133,50 @@ def run_sandboxed_command(command: str, context: Any, *, timeout: int | None = N
 def _normalize_command(command: str) -> list[str]:
     stripped = command.strip()
     if not stripped:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_INVALID_COMMAND",
             message="Shell 命令不能为空。",
             detail="missing command",
-            stage="sandbox",
             retriable=True,
             suggestion="请提供一个明确的命令，例如 `pwd` 或 `pytest -q`。",
+            failure_category="sandbox_invalid_command",
+            failure_subcategory="missing_operands",
+            suggested_recovery_mode="repair_arguments",
         )
     if _SHELL_META_PATTERN.search(stripped) or "$(" in stripped:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_DENIED",
             message="Sandbox 拒绝包含 shell 元字符的命令。",
             detail=f"command requires shell parsing: {stripped}",
-            stage="sandbox",
             retriable=False,
             suggestion="请改为不依赖 shell 语法的直接命令，例如 `python3 -m pytest -q`。",
+            failure_category="sandbox_policy",
+            failure_subcategory="shell_meta_denied",
+            suggested_recovery_mode="repair_arguments",
         )
     try:
         argv = shlex.split(stripped)
     except ValueError as exc:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_INVALID_COMMAND",
             message="命令格式无法被安全解析。",
             detail=str(exc),
-            stage="sandbox",
             retriable=True,
             suggestion="请检查引号或转义是否完整。",
+            failure_category="sandbox_invalid_command",
+            failure_subcategory="command_parse_error",
+            suggested_recovery_mode="repair_arguments",
         ) from exc
     if not argv:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_INVALID_COMMAND",
             message="Shell 命令不能为空。",
             detail="empty argv after parsing",
-            stage="sandbox",
             retriable=True,
             suggestion="请提供一个明确的命令，例如 `pwd`。",
+            failure_category="sandbox_invalid_command",
+            failure_subcategory="missing_operands",
+            suggested_recovery_mode="repair_arguments",
         )
     return argv
 
@@ -177,31 +184,37 @@ def _normalize_command(command: str) -> list[str]:
 def _assert_command_allowed(argv: list[str], sandbox: SandboxConfig) -> None:
     executable = argv[0]
     if executable in sandbox.blocked_commands and not sandbox.allow_network:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_DENIED",
             message="Sandbox 阻止了潜在网络命令。",
             detail=f"network command blocked: {executable}",
-            stage="sandbox",
             retriable=False,
             suggestion="如确有必要，请显式开启 network policy 或改用本地工具。",
+            failure_category="sandbox_policy",
+            failure_subcategory="network_blocked",
+            suggested_recovery_mode="repair_environment",
         )
     if executable not in sandbox.allowed_commands:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_DENIED",
             message="当前 sandbox 模式不允许执行该命令。",
             detail=f"command not allowed: {executable}",
-            stage="sandbox",
             retriable=False,
             suggestion="请改用允许的开发命令，或在更高权限模式下重试。",
+            failure_category="sandbox_policy",
+            failure_subcategory="command_not_allowed",
+            suggested_recovery_mode="switch_tool",
         )
     if sandbox.mode == "read_only" and executable not in sandbox.read_only_commands:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_DENIED",
             message="read_only 模式下不允许执行该命令。",
             detail=f"command requires elevated mode: {executable}",
-            stage="sandbox",
             retriable=False,
             suggestion="请切换到 `workspace_write` 模式后再执行该命令。",
+            failure_category="sandbox_policy",
+            failure_subcategory="read_only_violation",
+            suggested_recovery_mode="repair_environment",
         )
     if executable in _WORKSPACE_MUTATION_COMMANDS:
         _assert_workspace_operands_allowed(argv, sandbox)
@@ -211,13 +224,15 @@ def _assert_workspace_operands_allowed(argv: list[str], sandbox: SandboxConfig) 
     workspace_root = sandbox.normalized_workspace_root()
     operands = [item for item in argv[1:] if item and not item.startswith("-")]
     if not operands:
-        raise AppError(
+        raise _sandbox_error(
             code="SANDBOX_INVALID_COMMAND",
             message="当前文件命令缺少路径参数。",
             detail=f"missing operands for command: {argv[0]}",
-            stage="sandbox",
             retriable=True,
             suggestion="请提供 workspace 内的目标路径。",
+            failure_category="sandbox_invalid_command",
+            failure_subcategory="missing_operands",
+            suggested_recovery_mode="repair_arguments",
         )
     for operand in operands:
         candidate = Path(operand).expanduser()
@@ -225,11 +240,39 @@ def _assert_workspace_operands_allowed(argv: list[str], sandbox: SandboxConfig) 
         try:
             target.relative_to(workspace_root)
         except ValueError as exc:
-            raise AppError(
+            raise _sandbox_error(
                 code="SANDBOX_DENIED",
                 message="当前 shell 文件命令只能操作工作区内路径。",
                 detail=f"path outside workspace: {operand}",
-                stage="sandbox",
                 retriable=False,
                 suggestion="请改用工作区内的相对路径，或切换到专用 workspace tool。",
+                failure_category="sandbox_policy",
+                failure_subcategory="path_outside_workspace",
+                suggested_recovery_mode="repair_arguments",
             ) from exc
+
+
+def _sandbox_error(
+    *,
+    code: str,
+    message: str,
+    detail: str,
+    retriable: bool,
+    suggestion: str,
+    failure_category: str,
+    failure_subcategory: str,
+    suggested_recovery_mode: str,
+) -> AppError:
+    return AppError(
+        code=code,
+        message=message,
+        detail=detail,
+        stage="sandbox",
+        retriable=retriable,
+        suggestion=suggestion,
+        context={
+            "failure_category": failure_category,
+            "failure_subcategory": failure_subcategory,
+            "suggested_recovery_mode": suggested_recovery_mode,
+        },
+    )
